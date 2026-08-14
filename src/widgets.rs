@@ -181,6 +181,67 @@ pub fn botao_icone(ui: &mut Ui, icone: Icone, dica: &str) -> Response {
     resposta
 }
 
+// ------------------------------------------------------------------- progresso
+
+/// Barra de progresso em cápsula de vidro. Com `fracao` em `None` a barra fica
+/// indeterminada: uma faixa de luz correndo pelo trilho, para o caso de o
+/// servidor não dizer o tamanho do arquivo.
+pub fn progresso(ui: &mut Ui, fracao: Option<f32>, rotulo: &str) {
+    const ALTURA: f32 = 10.0;
+
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ALTURA), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+
+    let raio = ALTURA / 2.0;
+    let painter = ui.painter();
+    painter.add(glass::peca(
+        rect,
+        raio,
+        Vidro {
+            corpo: glass::white(20),
+            brilho: 0.4,
+            borda: 0.5,
+            lente: 2.0,
+            base: 0.0,
+            foco: None,
+        },
+    ));
+
+    let cheio = match fracao {
+        Some(f) => {
+            let largura = (rect.width() * f.clamp(0.0, 1.0)).max(ALTURA);
+            Rect::from_min_size(rect.min, Vec2::new(largura, ALTURA))
+        }
+        None => {
+            // Vai e volta, sem nunca sair do trilho.
+            let t = ui.input(|i| i.time) as f32 * 0.8;
+            let largura = rect.width() * 0.3;
+            let curso = (rect.width() - largura).max(0.0);
+            let x = rect.left() + curso * (0.5 - 0.5 * (t * std::f32::consts::TAU).cos());
+            ui.ctx().request_repaint();
+            Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(largura, ALTURA))
+        }
+    };
+
+    painter.add(glass::glow(
+        cheio.expand(2.0),
+        raio,
+        ACCENT.gamma_multiply(0.20),
+        12.0,
+    ));
+    painter.add(glass::pastilha(
+        cheio,
+        glass::tint(ACCENT.r(), ACCENT.g(), ACCENT.b(), 235),
+    ));
+
+    if !rotulo.is_empty() {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(rotulo).size(11.5).color(MUTED));
+    }
+}
+
 // ---------------------------------------------------------------- interruptor
 
 /// Linha inteira com rótulo à esquerda e um interruptor de vidro à direita.

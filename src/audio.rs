@@ -253,7 +253,7 @@ where
     let channels = channels.max(1);
 
     let stream = device.build_input_stream(
-        config.clone(),
+        *config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             let mut peak = 0.0f32;
             {

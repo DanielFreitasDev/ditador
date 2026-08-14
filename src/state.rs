@@ -49,6 +49,8 @@ pub enum UiAction {
     StartHotkeyCapture,
     CancelHotkeyCapture,
     ReloadModel,
+    /// Baixa o modelo sugerido (só faz sentido quando ele está faltando).
+    DownloadModel,
     Quit,
 }
 
@@ -72,6 +74,8 @@ pub struct Shared {
     pub devices: Vec<String>,
     /// Sinaliza para a interface que o rascunho mudou fora dela.
     pub draft_revision: u64,
+    /// Download do modelo em curso, se houver.
+    pub download: Option<crate::modelo::Andamento>,
     /// Pedido de encerramento; a interface fecha a janela ao ver isto.
     pub quitting: bool,
 }
@@ -92,6 +96,7 @@ impl Shared {
             result_shown_at: None,
             devices,
             draft_revision: 0,
+            download: None,
             quitting: false,
         }
     }

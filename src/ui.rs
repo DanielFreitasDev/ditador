@@ -36,6 +36,42 @@ pub struct App {
     bars: Vec<f32>,
     /// Estado da captura de diagnóstico (ver `diagnostico`).
     captura: Captura,
+    /// Medição de quadros por segundo (ver `Medidor`).
+    medidor: Option<Medidor>,
+    /// Quando a tela atual começou a aparecer, para a animação de mola.
+    abertura: Option<std::time::Instant>,
+}
+
+/// Diagnóstico opcional: com `DITADOR_QUADROS=1` a janela repinta sem parar e
+/// sem sincronia vertical, e a cada dois segundos relata quantos quadros por
+/// segundo saíram. Serve para comparar mudanças no desenho — com a sincronia
+/// ligada todo mundo empata em 60.
+struct Medidor {
+    desde: std::time::Instant,
+    quadros: u32,
+}
+
+impl Medidor {
+    fn novo() -> Option<Self> {
+        std::env::var_os("DITADOR_QUADROS").map(|_| Self {
+            desde: std::time::Instant::now(),
+            quadros: 0,
+        })
+    }
+
+    fn quadro(&mut self, view: View) {
+        self.quadros += 1;
+        let decorrido = self.desde.elapsed().as_secs_f32();
+        if decorrido >= 2.0 {
+            log::info!(
+                "{view:?}: {:.0} quadros/s ({:.2} ms por quadro)",
+                self.quadros as f32 / decorrido,
+                1000.0 * decorrido / self.quadros as f32
+            );
+            self.desde = std::time::Instant::now();
+            self.quadros = 0;
+        }
+    }
 }
 
 /// Diagnóstico opcional: com `DITADOR_CAPTURA=<pasta>`, grava um PNG de cada
@@ -57,6 +93,9 @@ impl App {
         sinal: Sinal,
     ) -> Self {
         sinal.ligar_interface(cc.egui_ctx.clone());
+        if let Some(gl) = cc.gl.clone() {
+            crate::glass_gpu::iniciar(gl);
+        }
         carregar_fontes(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.all_styles_mut(estilo_de_vidro);
@@ -68,6 +107,8 @@ impl App {
             applied: None,
             bars: vec![0.0; crate::audio::LEVEL_HISTORY],
             captura: Captura::default(),
+            medidor: Medidor::novo(),
+            abertura: None,
         }
     }
 
@@ -293,11 +334,22 @@ impl eframe::App for App {
         }
 
         let view = state.view;
+        // Ao abrir as configurações, o interruptor de início automático precisa
+        // mostrar o que o sistema realmente tem armado, não o que ficou gravado
+        // da última vez — o usuário pode ter mexido nisso por fora.
+        if view == View::Settings && self.applied != Some(View::Settings) {
+            state.draft.start_with_session = crate::autostart::ligado();
+            state.config.start_with_session = state.draft.start_with_session;
+        }
         drop(state);
 
         if self.applied != Some(view) {
             apply_window(ctx, view);
             self.applied = Some(view);
+            // Cada tela entra com a sua própria mola. Trocar de tela também
+            // redimensiona a janela, e a animação é o que costura as duas
+            // coisas em um movimento só.
+            self.abertura = (view != View::Hidden).then(std::time::Instant::now);
         }
 
         match view {
@@ -306,6 +358,13 @@ impl eframe::App for App {
             // Mantém o aviso de "copiado" e o tempo limite em dia.
             View::Result => ctx.request_repaint_after(Duration::from_millis(250)),
             _ => {}
+        }
+
+        if let Some(medidor) = &mut self.medidor
+            && view != View::Hidden
+        {
+            medidor.quadro(view);
+            ctx.request_repaint();
         }
 
         self.diagnostico(ctx, view);
@@ -320,6 +379,20 @@ impl eframe::App for App {
         if view == View::Hidden {
             return;
         }
+
+        // O vidro por GPU precisa saber onde a janela caiu na tela, para
+        // recortar o papel de parede que vai por baixo dele.
+        // Com as configurações abertas vale o rascunho, não o que está salvo:
+        // assim o controle mostra o que faz enquanto está sendo arrastado.
+        let mut aparencia = if view == View::Settings {
+            state.draft.appearance
+        } else {
+            state.config.appearance
+        };
+        aparencia.sanear();
+        crate::glass_gpu::aplicar_aparencia(aparencia);
+        crate::glass_gpu::atualizar_tela(ui.ctx());
+        self.animar_abertura(ui, aparencia);
 
         // O painel vai na camada de fundo, antes de qualquer widget. A posição
         // do cursor vai junto: é ela que faz a beirada acender por onde a mão
@@ -341,6 +414,50 @@ impl eframe::App for App {
                 View::Error => self.error(ui, &state),
                 View::Hidden => {}
             });
+    }
+}
+
+impl App {
+    /// A tela entra crescendo de dentro do próprio centro, com uma mola curta.
+    ///
+    /// A escala vai numa transformação da camada de fundo, então ela pega tudo
+    /// de uma vez — vidro, texto e controles — em vez de cada peça se animar por
+    /// conta. Já a opacidade precisa de dois caminhos: o do egui não alcança os
+    /// callbacks de desenho, que é o que o vidro é.
+    fn animar_abertura(&mut self, ui: &mut egui::Ui, ap: crate::config::Appearance) {
+        let camada = LayerId::background();
+        let ctx = ui.ctx().clone();
+
+        let x = match self.abertura {
+            Some(inicio) if ap.animation && ap.animation_ms > 0 => {
+                inicio.elapsed().as_secs_f32() / (ap.animation_ms as f32 / 1000.0)
+            }
+            _ => 1.0,
+        };
+        if x >= 1.0 {
+            self.abertura = None;
+            ctx.set_transform_layer(camada, egui::emath::TSTransform::IDENTITY);
+            crate::glass_gpu::definir_opacidade(1.0);
+            return;
+        }
+
+        let t = glass::mola(x, ap.animation_bounce);
+        let escala = 1.0 - (1.0 - ap.animation_scale) * (1.0 - t);
+        // A opacidade fecha antes do movimento: o painel já está inteiro quando
+        // a mola ainda está assentando, e o que se vê é só o assentar.
+        let opacidade = (t * 1.6).clamp(0.02, 1.0);
+
+        // A âncora é o centro da janela, que é onde o painel está.
+        let centro = ui.max_rect().center();
+        ctx.set_transform_layer(
+            camada,
+            egui::emath::TSTransform::from_translation(centro.to_vec2())
+                * egui::emath::TSTransform::from_scaling(escala)
+                * egui::emath::TSTransform::from_translation(-centro.to_vec2()),
+        );
+        ui.multiply_opacity(opacidade);
+        crate::glass_gpu::definir_opacidade(opacidade);
+        ctx.request_repaint();
     }
 }
 
@@ -621,6 +738,10 @@ impl App {
         ui.label(RichText::new(&state.message).size(13.5));
         ui.add_space(14.0);
 
+        if self.modelo_faltando(ui, state) {
+            return;
+        }
+
         ui.horizontal(|ui| {
             if state.model == ModelState::Failed
                 && ui
@@ -636,6 +757,68 @@ impl App {
                 self.act(UiAction::Hide);
             }
         });
+    }
+
+    /// Instalação nova: o programa está inteiro, mas o modelo — que tem
+    /// centenas de megabytes e não cabe num pacote — ainda não foi baixado.
+    /// Em vez de mandar o usuário para o terminal, o botão resolve aqui.
+    ///
+    /// Devolve `true` quando assumiu a tela (aí o resto dos botões não sai).
+    fn modelo_faltando(&self, ui: &mut egui::Ui, state: &crate::state::Shared) -> bool {
+        if let Some(andamento) = &state.download {
+            let p = andamento.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if p.andando() {
+                let quanto = match (p.fracao(), p.total) {
+                    (Some(f), total) => format!(
+                        "{:.0} % de {}",
+                        f * 100.0,
+                        crate::modelo::tamanho_legivel(total)
+                    ),
+                    _ => format!("{} até agora", crate::modelo::tamanho_legivel(p.baixados)),
+                };
+                widgets::progresso(ui, p.fracao(), &format!("Baixando o modelo — {quanto}"));
+                return true;
+            }
+            if let Some(Err(erro)) = &p.fim {
+                ui.label(RichText::new(erro).size(11.5).color(REC));
+                ui.add_space(8.0);
+            }
+        }
+
+        if state.config.model_path.exists() {
+            return false;
+        }
+
+        ui.horizontal(|ui| {
+            let baixavel = crate::modelo::disponivel();
+            ui.add_enabled_ui(baixavel, |ui| {
+                if ui
+                    .add(Botao::new("Baixar o modelo (574 MB)").destaque(ACCENT))
+                    .on_hover_text(format!(
+                        "Baixa {} de huggingface.co para {}",
+                        crate::modelo::PADRAO,
+                        crate::modelo::caminho(crate::modelo::PADRAO).display()
+                    ))
+                    .clicked()
+                {
+                    self.act(UiAction::DownloadModel);
+                }
+            });
+            if widgets::botao(ui, "Configurações").clicked() {
+                self.act(UiAction::OpenSettings);
+            }
+            if widgets::botao(ui, "Fechar").clicked() {
+                self.act(UiAction::Hide);
+            }
+        });
+        ui.add_space(6.0);
+        ui.label(nota(if crate::modelo::disponivel() {
+            "É a única coisa que falta. Depois disso tudo roda na sua máquina, \
+             sem internet."
+        } else {
+            "Preciso do curl ou do wget para baixar: sudo apt install curl"
+        }));
+        true
     }
 
     // --------------------------------------------------------- configurações
@@ -658,9 +841,11 @@ impl App {
             .max_height(ui.available_height() - rodape)
             .show(ui, |ui| {
                 self.settings_atalho(ui, state);
+                self.settings_sistema(ui, state);
                 self.settings_transcricao(ui, state);
                 self.settings_area_transferencia(ui, state);
                 self.settings_desempenho(ui, state);
+                self.settings_aparencia(ui, state);
                 self.settings_avancado(ui, state);
                 ui.add_space(6.0);
             });
@@ -726,6 +911,38 @@ impl App {
                  outros programas. Prefira teclas sem função própria (Pause, F13…). \
                  Esc cancela a captura.",
             ));
+        });
+    }
+
+    /// Início automático. É a única chave da tela que vale na hora, sem passar
+    /// pelo Salvar: quem guarda o estado é o systemd (ou o autostart do XDG), e
+    /// não teria sentido a tela discordar do sistema até alguém salvar.
+    fn settings_sistema(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        widgets::secao(ui, "Sistema");
+        widgets::cartao(ui, |ui| {
+            let mut ligado = state.draft.start_with_session;
+            if widgets::interruptor(ui, &mut ligado, "Iniciar junto com a sessão").changed() {
+                match crate::autostart::definir(ligado) {
+                    Ok(()) => {
+                        state.draft.start_with_session = ligado;
+                        state.config.start_with_session = ligado;
+                        state.message.clear();
+                    }
+                    Err(e) => {
+                        state.message = format!("Não consegui mudar o início automático: {e:#}");
+                    }
+                }
+            }
+            ui.label(nota(match crate::autostart::metodo() {
+                crate::autostart::Metodo::Systemd => {
+                    "Pelo serviço de usuário do systemd. Vale na hora, sem precisar salvar. \
+                     Para ver o que está acontecendo: journalctl --user -u ditador -f"
+                }
+                crate::autostart::Metodo::Xdg => {
+                    "Por um atalho em ~/.config/autostart. Vale na hora, sem precisar salvar. \
+                     Instalando pelo pacote, passa a usar o serviço do systemd."
+                }
+            }));
         });
     }
 
@@ -850,11 +1067,69 @@ impl App {
                 RichText::new(if existe {
                     "Arquivo encontrado."
                 } else {
-                    "Arquivo não encontrado — rode ./baixar-modelo.sh"
+                    "Arquivo não encontrado — a tela inicial oferece baixá-lo"
                 })
                 .size(11.5)
                 .color(if existe { MUTED } else { REC }),
             );
+        });
+    }
+
+    /// Os controles do vidro. É um recorte: o `config.json` tem todos, e a
+    /// mudança aqui vale no quadro seguinte, então dá para ver o efeito
+    /// enquanto se arrasta o controle.
+    fn settings_aparencia(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        widgets::secao(ui, "Aparência");
+        widgets::cartao(ui, |ui| {
+            let ap = &mut state.draft.appearance;
+
+            widgets::interruptor(ui, &mut ap.wallpaper, "Papel de parede por baixo do vidro");
+            ui.add_enabled_ui(ap.wallpaper, |ui| {
+                porcentagem(ui, &mut ap.wallpaper_opacity, 0.0..=1.0, "Quanto aparece");
+                let mut nitidez = ap.wallpaper_detail as i32;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut nitidez, 60..=1200)
+                            .text("Detalhe (menor = mais borrado)"),
+                    )
+                    .changed()
+                {
+                    ap.wallpaper_detail = nitidez as u32;
+                }
+            });
+            ui.label(nota(
+                "O vidro precisa de algo para refratar, e nenhum compositor do \
+                 Linux entrega o que está atrás da janela. Desligue para deixar \
+                 o painel só com a tinta escura.",
+            ));
+
+            ui.add_space(4.0);
+            ui.add(
+                egui::Slider::new(&mut ap.refraction, 1.0..=2.0)
+                    .text("Refração")
+                    .fixed_decimals(2),
+            );
+            porcentagem(ui, &mut ap.edge, 0.0..=2.0, "Brilho das bordas");
+            porcentagem(ui, &mut ap.sheen, 0.0..=2.0, "Véu da superfície");
+            porcentagem(ui, &mut ap.shadow, 0.0..=1.0, "Sombra projetada");
+
+            ui.add_space(4.0);
+            widgets::interruptor(ui, &mut ap.animation, "Animação de mola ao abrir");
+            ui.add_enabled_ui(ap.animation, |ui| {
+                let mut ms = ap.animation_ms as i32;
+                if ui
+                    .add(egui::Slider::new(&mut ms, 0..=800).text("Duração (ms)"))
+                    .changed()
+                {
+                    ap.animation_ms = ms as u64;
+                }
+                porcentagem(ui, &mut ap.animation_bounce, 0.0..=1.0, "Ultrapassagem");
+            });
+
+            ui.add_space(6.0);
+            if widgets::botao(ui, "Voltar ao padrão").clicked() {
+                *ap = crate::config::Appearance::PADRAO;
+            }
         });
     }
 
@@ -933,6 +1208,28 @@ fn drag_area(ui: &mut egui::Ui, id: &str) {
     let response = ui.interact(rect, egui::Id::new(id), Sense::drag());
     if response.dragged() {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+    }
+}
+
+/// Controle deslizante de um fator, mostrado em porcentagem — que é como se lê
+/// "quanto disto", bem melhor do que 0,55.
+fn porcentagem(
+    ui: &mut egui::Ui,
+    valor: &mut f32,
+    faixa: std::ops::RangeInclusive<f32>,
+    rotulo: &str,
+) {
+    let mut pct = (*valor * 100.0).round();
+    let limites = (*faixa.start() * 100.0).round()..=(*faixa.end() * 100.0).round();
+    if ui
+        .add(
+            egui::Slider::new(&mut pct, limites)
+                .suffix(" %")
+                .text(rotulo),
+        )
+        .changed()
+    {
+        *valor = pct / 100.0;
     }
 }
 

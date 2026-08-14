@@ -80,7 +80,7 @@ fn run(rx: Receiver<SttCmd>, events: Sender<SttEvent>) {
 
         if !model_path.exists() {
             let _ = events.send(SttEvent::LoadFailed(format!(
-                "modelo não encontrado em {}. Rode ./baixar-modelo.sh",
+                "O modelo de transcrição ainda não está aqui ({}).",
                 model_path.display()
             )));
             continue;

@@ -76,7 +76,7 @@ pub fn combo_label(keys: &[String]) -> String {
 }
 
 /// Ordena a combinação com os modificadores primeiro, para exibir de forma previsível.
-pub fn sort_combo(keys: &mut Vec<String>) {
+pub fn sort_combo(keys: &mut [String]) {
     keys.sort_by_key(|k| {
         let code = parse(k);
         let is_mod = code.map(is_modifier).unwrap_or(false);

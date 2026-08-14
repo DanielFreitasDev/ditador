@@ -4,14 +4,17 @@
 //! aparece (e, se você quiser, já vai para a área de transferência).
 
 mod audio;
+mod autostart;
 mod clipboard;
 mod config;
 mod controller;
 mod glass;
+mod glass_gpu;
 mod hotkey;
 mod icones;
 mod ipc;
 mod keys;
+mod modelo;
 mod resample;
 mod state;
 mod stt;
@@ -48,6 +51,10 @@ fn main() -> Result<()> {
                 whisper_rs::WHISPER_CPP_VERSION
             );
             return Ok(());
+        }
+        Some("--baixar-modelo") => {
+            let nome = args.get(1).map_or(modelo::PADRAO, String::as_str);
+            return baixar_modelo(nome);
         }
         Some("--microfones") => {
             for nome in audio::list_input_devices() {
@@ -236,6 +243,13 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         multisampling: 0,
         persist_window: false,
         centered: false,
+        // Com `DITADOR_QUADROS` a interface roda solta, sem esperar o monitor, e
+        // relata quantos quadros por segundo consegue — é assim que se mede o
+        // custo real do vidro, que a sincronia vertical esconderia.
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: std::env::var_os("DITADOR_QUADROS").is_none(),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -267,6 +281,44 @@ fn sair_sem_desmontar() -> ! {
     unsafe { _exit(0) }
 }
 
+/// Baixa o modelo pelo terminal, com a mesma máquina que a interface usa.
+/// Existe para instalações sem tela (um servidor, uma sessão por SSH) e para
+/// quem prefere resolver tudo de uma vez antes de usar o programa.
+fn baixar_modelo(nome: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    let destino = modelo::caminho(nome);
+    if destino.exists() {
+        println!("O modelo já está aqui: {}", destino.display());
+        return Ok(());
+    }
+
+    println!("Baixando ggml-{nome}.bin para {}", destino.display());
+    let (andamento, _pronto) = modelo::baixar(nome, state::Sinal::default());
+    loop {
+        let p = andamento.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match &p.fim {
+            Some(Ok(caminho)) => {
+                println!("\rPronto: {}                    ", caminho.display());
+                return Ok(());
+            }
+            Some(Err(e)) => anyhow::bail!("{e}"),
+            None => {
+                match p.fracao() {
+                    Some(f) => print!(
+                        "\r{:>3.0} % de {}   ",
+                        f * 100.0,
+                        modelo::tamanho_legivel(p.total)
+                    ),
+                    None => print!("\r{}   ", modelo::tamanho_legivel(p.baixados)),
+                }
+                let _ = std::io::stdout().flush();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        }
+    }
+}
+
 fn ajuda() {
     println!(
         r#"Ditador — ditado por voz offline com Whisper
@@ -277,6 +329,7 @@ USO
   ditador --configuracoes    abre as configurações
   ditador --status           mostra o estado da instância em execução
   ditador --encerrar         fecha o aplicativo
+  ditador --baixar-modelo    baixa o modelo de transcrição (~574 MB)
   ditador --microfones       lista os microfones disponíveis
   ditador --versao           versão e backend
   ditador --ajuda            esta mensagem

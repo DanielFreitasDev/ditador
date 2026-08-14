@@ -190,10 +190,11 @@ impl Controller {
         };
 
         let mut copy_error = None;
-        if !text.is_empty() && (auto_copy || auto_paste) {
-            if let Err(e) = clipboard::copy(&text) {
-                copy_error = Some(format!("{e:#}"));
-            }
+        if !text.is_empty()
+            && (auto_copy || auto_paste)
+            && let Err(e) = clipboard::copy(&text)
+        {
+            copy_error = Some(format!("{e:#}"));
         }
 
         {
@@ -295,6 +296,8 @@ impl Controller {
             }
 
             UiAction::ReloadModel => self.load_model(),
+
+            UiAction::DownloadModel => self.download_model(),
 
             UiAction::Quit => {
                 let mut state = lock(&self.shared);
@@ -471,6 +474,56 @@ impl Controller {
             model_path,
             use_gpu,
         });
+    }
+
+    /// Baixa o modelo sugerido e, quando ele chegar, passa a usá-lo — inclusive
+    /// gravando o caminho na configuração, porque quem clicou no botão não
+    /// deveria precisar apontar o arquivo depois.
+    fn download_model(&self) {
+        {
+            let mut state = lock(&self.shared);
+            if state
+                .download
+                .as_ref()
+                .is_some_and(|d| d.lock().unwrap_or_else(|e| e.into_inner()).andando())
+            {
+                return;
+            }
+            state.message = "Leva alguns minutos, dependendo da conexão. Pode fechar esta \
+                             janela — o download continua."
+                .to_string();
+        }
+
+        let (andamento, pronto) = crate::modelo::baixar(crate::modelo::PADRAO, self.sinal.clone());
+        lock(&self.shared).download = Some(andamento);
+        self.sinal.mudou();
+
+        let shared = self.shared.clone();
+        let sinal = self.sinal.clone();
+        let stt = self.stt.clone();
+        let _ = std::thread::Builder::new()
+            .name("modelo-pronto".into())
+            .spawn(move || {
+                let Ok(model_path) = pronto.recv() else {
+                    return;
+                };
+                let use_gpu = {
+                    let mut state = lock(&shared);
+                    state.config.model_path = model_path.clone();
+                    state.draft.model_path = model_path.clone();
+                    state.model = ModelState::Loading;
+                    state.message = "Modelo baixado; carregando…".to_string();
+                    if let Err(e) = state.config.save() {
+                        log::warn!("modelo baixado, mas não consegui gravar a config: {e:#}");
+                    }
+                    state.config.use_gpu
+                };
+                sinal.mudou();
+                let _ = stt.send(SttCmd::Load {
+                    model_path,
+                    use_gpu,
+                });
+            });
     }
 
     fn set_view(&self, view: View) {

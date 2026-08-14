@@ -100,7 +100,7 @@ fn blackman(t: f64) -> f64 {
 /// fracos. O ganho é limitado para não transformar ruído de fundo em "voz".
 pub fn normalize(samples: &mut [f32]) {
     let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-    if peak < 1e-4 || peak >= 0.9 {
+    if !(1e-4..0.9).contains(&peak) {
         return;
     }
     let gain = (0.9 / peak).min(10.0);

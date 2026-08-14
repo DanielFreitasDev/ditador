@@ -30,7 +30,13 @@ eframe = { version = "0.36", features = ["glow"] }
 egui = "0.36"
 env_logger = "0.11"
 evdev = "0.13"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+# O PNG é para os ícones; JPEG e WebP, para ler o papel de parede do GNOME e
+# usá-lo como fundo refratado do vidro (ver glass_gpu.rs).
+image = { version = "0.25.10", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+] }
 # `blocking` é só a fachada síncrona; o ksni ainda exige um executor por
 # baixo. async-io (smol) é bem mais leve que o tokio, que é o padrão.
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }

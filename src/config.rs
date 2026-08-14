@@ -67,6 +67,102 @@ pub struct Config {
     pub force_x11: bool,
     /// Manter o texto do resultado editável antes de copiar.
     pub editable_result: bool,
+    /// Subir junto com a sessão gráfica (serviço de usuário do systemd).
+    /// Não é lido daqui: quem manda é o próprio systemd, e este campo só guarda
+    /// o que o usuário escolheu na última vez (ver `autostart.rs`).
+    pub start_with_session: bool,
+    /// Aparência do vidro.
+    pub appearance: Appearance,
+}
+
+/// Todos os parâmetros do vidro líquido. O que a interface expõe é um
+/// subconjunto; o resto vive aqui para quem quiser mexer no arquivo.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Appearance {
+    /// Deixar o papel de parede da área de trabalho entrar por baixo do vidro,
+    /// borrado, para o painel ter o que refratar. Nenhum compositor do Linux
+    /// entrega o que está mesmo atrás da janela; isto é o mais perto disso.
+    pub wallpaper: bool,
+    /// Quanto dele aparece por baixo da tinta, de 0 a 1. Não vai a 1 de
+    /// propósito: o resto do alfa é o que deixa o que está atrás aparecer.
+    pub wallpaper_opacity: f32,
+    /// Largura, em pixels, para a qual o papel de parede é reduzido — é o
+    /// controle do desfoque. Menor = mais borrado.
+    pub wallpaper_detail: u32,
+    /// Brilho e saturação aplicados a ele antes de entrar.
+    pub wallpaper_brightness: f32,
+    pub wallpaper_saturation: f32,
+    /// Índice de refração do material. 1,0 = nada entorta; vidro real ~1,5.
+    pub refraction: f32,
+    /// Multiplicador da espessura aparente: quanto a refração desloca.
+    pub thickness: f32,
+    /// Multiplicador da separação das cores na refração.
+    pub chromatic: f32,
+    /// Multiplicadores da luz: borda especular, reflexo, véu da face, oclusão.
+    pub edge: f32,
+    pub specular: f32,
+    pub sheen: f32,
+    pub occlusion: f32,
+    /// Intensidade da sombra projetada do painel, de 0 a 1.
+    pub shadow: f32,
+    /// Animação de mola ao abrir.
+    pub animation: bool,
+    /// Duração dela, em milissegundos.
+    pub animation_ms: u64,
+    /// Quanto ela ultrapassa o alvo antes de assentar, de 0 (nada) a 1.
+    pub animation_bounce: f32,
+    /// Tamanho de onde o painel parte, em fração do tamanho final.
+    pub animation_scale: f32,
+}
+
+impl Appearance {
+    pub const PADRAO: Self = Self {
+        wallpaper: true,
+        wallpaper_opacity: 0.55,
+        wallpaper_detail: 260,
+        wallpaper_brightness: 0.55,
+        wallpaper_saturation: 1.18,
+        refraction: 1.52,
+        thickness: 1.0,
+        chromatic: 1.0,
+        edge: 1.0,
+        specular: 1.0,
+        sheen: 1.0,
+        occlusion: 1.0,
+        shadow: 0.62,
+        animation: true,
+        animation_ms: 260,
+        animation_bounce: 0.6,
+        animation_scale: 0.94,
+    };
+
+    /// Apara os valores para faixas em que o desenho continua fazendo sentido.
+    /// O arquivo é editável à mão, e um índice de refração de 40 ou um papel de
+    /// parede de 1 pixel deixariam a janela ilegível.
+    pub fn sanear(&mut self) {
+        self.wallpaper_opacity = self.wallpaper_opacity.clamp(0.0, 1.0);
+        self.wallpaper_detail = self.wallpaper_detail.clamp(16, 3840);
+        self.wallpaper_brightness = self.wallpaper_brightness.clamp(0.05, 2.0);
+        self.wallpaper_saturation = self.wallpaper_saturation.clamp(0.0, 3.0);
+        self.refraction = self.refraction.clamp(1.0, 2.5);
+        self.thickness = self.thickness.clamp(0.0, 3.0);
+        self.chromatic = self.chromatic.clamp(0.0, 4.0);
+        self.edge = self.edge.clamp(0.0, 3.0);
+        self.specular = self.specular.clamp(0.0, 3.0);
+        self.sheen = self.sheen.clamp(0.0, 3.0);
+        self.occlusion = self.occlusion.clamp(0.0, 2.0);
+        self.shadow = self.shadow.clamp(0.0, 1.0);
+        self.animation_ms = self.animation_ms.clamp(0, 2000);
+        self.animation_bounce = self.animation_bounce.clamp(0.0, 1.0);
+        self.animation_scale = self.animation_scale.clamp(0.3, 1.0);
+    }
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self::PADRAO
+    }
 }
 
 impl Default for Config {
@@ -93,6 +189,8 @@ impl Default for Config {
             normalize_audio: true,
             force_x11: true,
             editable_result: true,
+            start_with_session: false,
+            appearance: Appearance::PADRAO,
         }
     }
 }
@@ -102,7 +200,10 @@ impl Config {
         let path = config_path();
         match std::fs::read_to_string(&path) {
             Ok(raw) => match serde_json::from_str::<Config>(&raw) {
-                Ok(cfg) => cfg,
+                Ok(mut cfg) => {
+                    cfg.appearance.sanear();
+                    cfg
+                }
                 Err(e) => {
                     log::warn!(
                         "config inválida em {}: {e}. Usando padrões.",
@@ -137,5 +238,40 @@ impl Config {
         } else {
             Some(self.language.as_str())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_antiga_ganha_a_aparencia_padrao() {
+        // Arquivos gravados antes desta versão não têm a seção de aparência, e
+        // precisam continuar abrindo.
+        let antiga = r#"{"language":"en","threads":4}"#;
+        let cfg: Config = serde_json::from_str(antiga).expect("config antiga");
+        assert_eq!(cfg.language, "en");
+        assert_eq!(cfg.appearance, Appearance::PADRAO);
+    }
+
+    #[test]
+    fn valores_absurdos_do_arquivo_sao_aparados() {
+        let mut a = Appearance {
+            refraction: 40.0,
+            wallpaper_detail: 1,
+            wallpaper_opacity: -3.0,
+            animation_scale: 0.0,
+            ..Appearance::PADRAO
+        };
+        a.sanear();
+        assert_eq!(a.refraction, 2.5);
+        assert_eq!(a.wallpaper_detail, 16);
+        assert_eq!(a.wallpaper_opacity, 0.0);
+        assert_eq!(a.animation_scale, 0.3);
+        // O padrão passa incólume.
+        let mut padrao = Appearance::PADRAO;
+        padrao.sanear();
+        assert_eq!(padrao, Appearance::PADRAO);
     }
 }

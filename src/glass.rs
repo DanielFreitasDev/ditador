@@ -1,8 +1,10 @@
 //! Vocabulário visual "vidro líquido" (Liquid Glass).
 //!
-//! Nenhum compositor do Linux expõe desfoque de fundo para um aplicativo comum,
-//! então o vidro não vem de borrar o que está atrás — vem de reproduzir, uma a
-//! uma, as pistas que o olho usa para reconhecer vidro grosso e polido:
+//! Aqui ficam a **geometria** das peças (a silhueta de squircle, as normais, os
+//! gradientes) e a **receita** de cada uma — o quanto ela é grossa, o quanto
+//! acende, que tinta tem. Quem desenha é `glass_gpu.rs`, um shader que faz a
+//! óptica pixel a pixel. Se a GPU não estiver disponível, o mesmo arquivo tem o
+//! desenho vetorial de reserva, que empilha as pistas em camadas:
 //!
 //!   * silhueta de **squircle**: os cantos são superelipses, não arcos de
 //!     círculo, então a curvatura entra cedo e se estica — a forma da Apple;
@@ -19,6 +21,7 @@
 //! peça serve tanto para o painel de fundo quanto para ser inserida atrás de um
 //! conteúdo já disposto (`Painter::set`), que é como os cartões funcionam.
 
+use crate::glass_gpu;
 use egui::epaint::{PathShape, PathStroke, RectShape, Shadow};
 use egui::{Color32, Mesh, Pos2, Rect, Shape, Vec2};
 
@@ -121,6 +124,25 @@ impl Vidro {
 /// Painel da janela: sombras projetadas e o vidro por cima. `foco` é onde está
 /// o cursor, se ele estiver sobre a janela.
 pub fn painel(rect: Rect, radius: f32, foco: Option<Pos2>) -> Shape {
+    let a = glass_gpu::aparencia();
+    let vidro = Vidro::painel().com_foco(foco);
+    let receita = glass_gpu::Peca {
+        // O papel de parede não é o que está atrás de verdade — é a cor da área
+        // de trabalho naquele ponto —, então entra com alfa parcial: o que
+        // estiver mesmo atrás continua aparecendo pelo canal alfa da janela, e o
+        // vidro ganha uma cor de ambiente para refratar.
+        parede: if a.wallpaper {
+            a.wallpaper_opacity
+        } else {
+            0.0
+        },
+        sombra: [SHADOW_PAD, a.shadow],
+        ..receita(rect, radius, &vidro)
+    };
+    if let Some(shape) = glass_gpu::shape(receita) {
+        return shape;
+    }
+
     Shape::Vec(vec![
         // Duas sombras: uma ampla e difusa (a luz do ambiente contornando a
         // peça) e uma curta e mais forte logo abaixo (o contato com o fundo).
@@ -142,12 +164,84 @@ pub fn painel(rect: Rect, radius: f32, foco: Option<Pos2>) -> Shape {
             }
             .as_shape(rect, radius),
         ),
-        peca(rect, radius, Vidro::painel().com_foco(foco)),
+        peca_vetorial(rect, radius, vidro),
     ])
 }
 
-/// Uma peça de vidro completa, na ordem em que a luz a constrói.
+/// Uma peça de vidro. Sai pela GPU quando ela estiver disponível.
 pub fn peca(rect: Rect, radius: f32, v: Vidro) -> Shape {
+    match glass_gpu::shape(receita(rect, radius, &v)) {
+        Some(shape) => shape,
+        None => peca_vetorial(rect, radius, v),
+    }
+}
+
+/// Traduz a receita de `Vidro` para os parâmetros que o shader entende.
+///
+/// A ideia é a mesma dos dois lados; o que muda é que o shader parte de uma
+/// superfície com altura de verdade, então "espessura" e "bisel" (a faixa em
+/// que a superfície sobe da borda) substituem as camadas empilhadas à mão.
+fn receita(rect: Rect, radius: f32, v: &Vidro) -> glass_gpu::Peca {
+    let ap = glass_gpu::aparencia();
+    let raio = radius_util(rect, radius);
+    let lado = (rect.width().min(rect.height()) / 2.0).max(0.5);
+    // A faixa de refração do desenho vetorial é a mesma coisa que o bisel: a
+    // largura em que o vidro deixa de ser plano e vira lente.
+    let bisel = (v.lente * 1.6).clamp(2.5, lado);
+    let [r, g, b, a] = v.corpo.to_srgba_unmultiplied();
+
+    glass_gpu::Peca {
+        rect,
+        raio,
+        n: expoente(rect, raio),
+        bisel,
+        espessura: bisel * 0.85 * ap.thickness,
+        ior: ap.refraction,
+        cromatica: (bisel * 0.09).clamp(0.3, 1.4) * ap.chromatic,
+        tinta: [
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        ],
+        ao: 0.15 * ap.occlusion,
+        ao_raio: bisel * 1.15,
+        rim: 1.55 * v.borda * ap.edge,
+        rim_larg: 1.3 + bisel * 0.24,
+        espec: 0.60 * v.brilho * ap.specular,
+        sheen: 0.30 * v.brilho * ap.sheen,
+        frio: [0.65 * v.base, 0.78 * v.base, v.base],
+        foco: v.foco,
+        foco_alcance: 95.0,
+        parede: 0.0,
+        sombra: [0.0, 0.0],
+        opacidade: glass_gpu::opacidade(),
+    }
+}
+
+// ------------------------------------------------------------------- animação
+
+/// Mola amortecida, de 0 (fechado) a 1 (assentado), com uma ultrapassagem curta
+/// no caminho — é o que separa "apareceu" de "chegou".
+///
+/// `x` vai de 0 a 1 ao longo da animação e `salto` de 0 (sem ultrapassar, uma
+/// desaceleração exponencial limpa) a 1 (a mola completa). A curva é
+/// `1 − e^(−5x)·cos(ωx)`: vale exatamente 0 no início e, com o decaimento
+/// escolhido, já chegou em 1 no fim.
+pub fn mola(x: f32, salto: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let omega = 4.6 * salto.clamp(0.0, 1.0);
+    1.0 - (-5.0 * x).exp() * (omega * x).cos()
+}
+
+/// Uma peça de vidro completa em vetores, na ordem em que a luz a constrói.
+/// É a reserva de quando não há GPU.
+fn peca_vetorial(rect: Rect, radius: f32, v: Vidro) -> Shape {
     let radius = radius_util(rect, radius);
     let mut camadas: Vec<Shape> = Vec::with_capacity(12);
 
@@ -538,6 +632,53 @@ mod tests {
         // No canto, a normal aponta na diagonal.
         let n_canto = normal(rect, 12.0, Pos2::new(3.5, 3.5));
         assert!(n_canto.x < -0.2 && n_canto.y < -0.2, "{n_canto:?}");
+    }
+
+    #[test]
+    fn a_receita_devolve_a_tinta_sem_premultiplicar() {
+        // O Color32 guarda a cor já multiplicada pelo alfa; o shader mistura em
+        // alfa reto, então a tinta precisa voltar à cor original.
+        let v = Vidro::painel();
+        let r = receita(ret(), 30.0, &v);
+        let [_, _, _, a] = r.tinta;
+        assert!((a - 182.0 / 255.0).abs() < 0.01, "alfa {a}");
+        // (15, 16, 23) sobre 255, e não escurecido pelo alfa.
+        assert!((r.tinta[2] - 23.0 / 255.0).abs() < 0.01, "{:?}", r.tinta);
+    }
+
+    #[test]
+    fn o_bisel_nunca_passa_da_metade_da_peca() {
+        // Numa cápsula baixa, a faixa de relevo pedida (lente × 1,6) é maior que
+        // a peça inteira; deixá-la passar viraria uma normal apontando para fora.
+        let capsula = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 8.0));
+        let r = receita(capsula, 4.0, &Vidro::painel());
+        assert!(r.bisel <= 4.0 + 1e-3, "bisel {}", r.bisel);
+        // E o canto totalmente redondo volta ao arco de círculo.
+        assert_eq!(r.n, 2.0);
+    }
+
+    #[test]
+    fn a_mola_sai_do_zero_e_assenta_em_um() {
+        for salto in [0.0, 0.5, 1.0] {
+            assert_eq!(mola(0.0, salto), 0.0);
+            assert_eq!(mola(1.0, salto), 1.0);
+            // Sem degrau na emenda com o fim da animação.
+            assert!((mola(0.999, salto) - 1.0).abs() < 0.01, "salto {salto}");
+        }
+    }
+
+    #[test]
+    fn a_mola_ultrapassa_o_alvo_so_quando_pedida() {
+        let maximo = |salto: f32| {
+            (0..=200)
+                .map(|i| mola(i as f32 / 200.0, salto))
+                .fold(f32::MIN, f32::max)
+        };
+        // Sem salto é uma desaceleração limpa: nunca passa de 1.
+        assert!(maximo(0.0) <= 1.0 + 1e-4);
+        // Com salto cheio ela passa, mas pouco — nada de gelatina.
+        let pico = maximo(1.0);
+        assert!(pico > 1.01 && pico < 1.10, "pico {pico}");
     }
 
     #[test]
