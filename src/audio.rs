@@ -7,7 +7,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::Duration;
 
 /// Quantas amostras de nível guardamos para desenhar a animação.
 pub const LEVEL_HISTORY: usize = 36;
@@ -24,15 +24,26 @@ pub struct AudioSettings {
 #[derive(Debug)]
 pub enum AudioCmd {
     Configure(AudioSettings),
-    Start,
+    /// `ditado` é o número que o controlador deu a esta gravação; ele volta nos
+    /// eventos para que uma gravação antiga não seja confundida com a atual.
+    Start {
+        ditado: u64,
+    },
     Stop,
 }
 
 #[derive(Debug)]
 pub enum AudioEvent {
     Started,
-    Captured { samples: Vec<f32>, duration_ms: u64 },
-    Failed(String),
+    Captured {
+        ditado: u64,
+        samples: Vec<f32>,
+        duration_ms: u64,
+    },
+    Failed {
+        ditado: u64,
+        message: String,
+    },
 }
 
 pub struct AudioHandle {
@@ -75,12 +86,24 @@ fn device_name(device: &cpal::Device) -> Option<String> {
     device.description().ok().map(|d| d.name().to_string())
 }
 
+/// De quanto em quanto tempo a thread acorda, enquanto grava, para conferir se
+/// a gravação já bateu o teto de duração.
+const RONDA: Duration = Duration::from_millis(200);
+
 struct Recording {
     // O stream precisa continuar vivo enquanto gravamos; ele nunca sai desta thread.
     _stream: cpal::Stream,
+    ditado: u64,
     buffer: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
-    started: Instant,
+    max_samples: usize,
+}
+
+impl Recording {
+    /// Bateu o teto de duração.
+    fn cheia(&self) -> bool {
+        lock(&self.buffer).len() >= self.max_samples
+    }
 }
 
 fn run(
@@ -91,52 +114,99 @@ fn run(
 ) {
     let mut recording: Option<Recording> = None;
 
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            AudioCmd::Configure(new) => settings = new,
+    loop {
+        // Parada só enquanto grava: o teto de duração precisa ser conferido de
+        // tempos em tempos, senão o buffer cheio pararia de aceitar amostras e
+        // a gravação seguiria de olhos abertos, sem gravar nada, até alguém
+        // soltar a tecla.
+        let cmd = if recording.is_some() {
+            match rx.recv_timeout(RONDA) {
+                Ok(cmd) => Some(cmd),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => None,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            match rx.recv() {
+                Ok(cmd) => Some(cmd),
+                Err(_) => return,
+            }
+        };
 
-            AudioCmd::Start => {
+        match cmd {
+            Some(AudioCmd::Configure(new)) => settings = new,
+
+            Some(AudioCmd::Start { ditado }) => {
                 if recording.is_some() {
                     continue;
                 }
                 clear(&levels);
-                match start(&settings, &levels) {
+                match start(ditado, &settings, &levels) {
                     Ok(rec) => {
                         recording = Some(rec);
                         let _ = events.send(AudioEvent::Started);
                     }
                     Err(e) => {
-                        let _ = events.send(AudioEvent::Failed(format!("{e:#}")));
+                        let _ = events.send(AudioEvent::Failed {
+                            ditado,
+                            message: format!("{e:#}"),
+                        });
                     }
                 }
             }
 
-            AudioCmd::Stop => {
-                let Some(rec) = recording.take() else {
-                    continue;
-                };
-                let duration_ms = rec.started.elapsed().as_millis() as u64;
-                let sample_rate = rec.sample_rate;
-                let buffer = rec.buffer.clone();
-                // Fecha o stream antes de ler: garante que nenhum callback ainda escreve.
-                drop(rec);
-                clear(&levels);
-
-                let raw = std::mem::take(&mut *lock(&buffer));
-                let mut samples = resample::resample(&raw, sample_rate, WHISPER_SAMPLE_RATE);
-                if settings.normalize {
-                    resample::normalize(&mut samples);
+            Some(AudioCmd::Stop) => {
+                if let Some(rec) = recording.take() {
+                    entregar(rec, &settings, &levels, &events);
                 }
-                let _ = events.send(AudioEvent::Captured {
-                    samples,
-                    duration_ms,
-                });
+            }
+
+            // A ronda: nada chegou pelo canal.
+            None => {
+                if recording.as_ref().is_some_and(Recording::cheia) {
+                    let rec = recording.take().expect("acabou de ser conferida");
+                    log::info!(
+                        "teto de {} s atingido; encerrando a gravação",
+                        settings.max_secs
+                    );
+                    entregar(rec, &settings, &levels, &events);
+                }
             }
         }
     }
 }
 
-fn start(settings: &AudioSettings, levels: &Levels) -> Result<Recording> {
+/// Fecha a gravação e manda o áudio, já em 16 kHz, para quem transcreve.
+fn entregar(
+    rec: Recording,
+    settings: &AudioSettings,
+    levels: &Levels,
+    events: &Sender<AudioEvent>,
+) {
+    let ditado = rec.ditado;
+    let sample_rate = rec.sample_rate;
+    let buffer = rec.buffer.clone();
+    // Fecha o stream antes de ler: garante que nenhum callback ainda escreve.
+    drop(rec);
+    clear(levels);
+
+    let raw = std::mem::take(&mut *lock(&buffer));
+    // A duração sai da contagem de amostras, e não do relógio: ao bater o teto
+    // a gravação termina antes de a tecla ser solta, e o relógio contaria um
+    // tempo de áudio que não existe.
+    let duration_ms = raw.len() as u64 * 1000 / sample_rate.max(1) as u64;
+
+    let mut samples = resample::resample(&raw, sample_rate, WHISPER_SAMPLE_RATE);
+    if settings.normalize {
+        resample::normalize(&mut samples);
+    }
+    let _ = events.send(AudioEvent::Captured {
+        ditado,
+        samples,
+        duration_ms,
+    });
+}
+
+fn start(ditado: u64, settings: &AudioSettings, levels: &Levels) -> Result<Recording> {
     let host = cpal::default_host();
 
     let device = match &settings.device {
@@ -192,9 +262,10 @@ fn start(settings: &AudioSettings, levels: &Levels) -> Result<Recording> {
 
     Ok(Recording {
         _stream: stream,
+        ditado,
         buffer,
         sample_rate,
-        started: Instant::now(),
+        max_samples,
     })
 }
 
@@ -258,6 +329,8 @@ where
             let mut peak = 0.0f32;
             {
                 let mut buf = lock(&buffer);
+                // Teto batido: para de acumular e deixa a ronda de `run`
+                // encerrar a gravação, o que acontece na volta seguinte dela.
                 if buf.len() >= max_samples {
                     return;
                 }

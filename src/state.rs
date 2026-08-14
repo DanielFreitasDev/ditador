@@ -71,7 +71,14 @@ pub struct Shared {
     pub status: String,
     pub capturing_hotkey: bool,
     pub copied_at: Option<Instant>,
+    /// Quando a gravação em curso começou. É ele, e não a tela, que diz se o
+    /// microfone está aberto — a janela de um resultado pode aparecer por cima
+    /// de um ditado em andamento.
     pub recording_since: Option<Instant>,
+    /// Número do ditado em curso. Cresce a cada gravação, e volta nos eventos
+    /// do áudio, para distinguir o que é do ditado de agora e o que é de um
+    /// anterior que ainda estava a caminho.
+    pub ditado_atual: u64,
     pub result_shown_at: Option<Instant>,
     pub devices: Vec<String>,
     /// Sinaliza para a interface que o rascunho mudou fora dela.
@@ -95,6 +102,7 @@ impl Shared {
             capturing_hotkey: false,
             copied_at: None,
             recording_since: None,
+            ditado_atual: 0,
             result_shown_at: None,
             devices,
             draft_revision: 0,

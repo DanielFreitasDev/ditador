@@ -98,8 +98,13 @@ impl Controller {
         match event {
             AudioEvent::Started => {}
 
-            AudioEvent::Failed(message) => {
+            AudioEvent::Failed { ditado, message } => {
                 let mut state = lock(&self.shared);
+                // Um ditado que já foi substituído por outro não tem mais tela
+                // para reclamar.
+                if ditado != state.ditado_atual {
+                    return;
+                }
                 state.recording_since = None;
                 state.message = format!("Não consegui acessar o microfone: {message}");
                 state.view = View::Error;
@@ -108,12 +113,26 @@ impl Controller {
             }
 
             AudioEvent::Captured {
+                ditado,
                 samples,
                 duration_ms,
             } => {
-                let (too_short, options) = {
-                    let state = lock(&self.shared);
+                let (atual, too_short, options) = {
+                    let mut state = lock(&self.shared);
+                    // Só o ditado mais novo manda na tela e no cronômetro. O
+                    // áudio de um anterior ainda é transcrito — ele existe e é
+                    // do usuário —, mas em silêncio, por baixo do que estiver
+                    // acontecendo agora.
+                    let atual = ditado == state.ditado_atual;
+                    if atual {
+                        // Também fecha a gravação encerrada pelo teto de
+                        // duração, que termina sem passar pelo atalho.
+                        state.recording_since = None;
+                        state.view = View::Processing;
+                        state.status = format!("{:.1} s de áudio", duration_ms as f64 / 1000.0);
+                    }
                     (
+                        atual,
                         duration_ms < state.config.min_recording_ms,
                         TranscribeOptions {
                             language: state.config.whisper_language().map(str::to_string),
@@ -126,17 +145,13 @@ impl Controller {
 
                 if too_short {
                     log::debug!("gravação de {duration_ms} ms descartada (curta demais)");
-                    self.set_view(View::Hidden);
+                    if atual {
+                        self.set_view(View::Hidden);
+                    }
                     return;
                 }
 
-                {
-                    let mut state = lock(&self.shared);
-                    state.view = View::Processing;
-                    state.status = format!("{:.1} s de áudio", duration_ms as f64 / 1000.0);
-                }
                 self.sinal.mudou();
-
                 let _ = self.stt.send(SttCmd::Transcribe(samples, options));
             }
         }
@@ -199,6 +214,18 @@ impl Controller {
         }
     }
 
+    /// Se o resultado pode tomar a janela agora.
+    ///
+    /// Falar de novo enquanto a frase anterior é transcrita é o uso normal do
+    /// programa, e quem está gravando é quem manda na tela: a janela do texto
+    /// anterior não pode aparecer por cima de um ditado em andamento. A exceção
+    /// é ela ser o único jeito de o texto não se perder — `tela_do_resultado`
+    /// devolvendo `Result` —, aí ela aparece assim mesmo, e o microfone segue
+    /// aberto por baixo.
+    fn resultado_pode_aparecer(tela: View, gravando: bool) -> bool {
+        !gravando || tela == View::Result
+    }
+
     fn on_transcription(&self, text: String, elapsed_ms: u128) {
         let (auto_copy, auto_paste, show_result) = {
             let state = lock(&self.shared);
@@ -230,16 +257,22 @@ impl Controller {
                 }
             );
 
+            let gravando = state.recording_since.is_some();
             if text.is_empty() {
                 state.text.clear();
                 state.message = "Não identifiquei fala no áudio.".to_string();
-                state.view = View::Error;
+                if !gravando {
+                    state.view = View::Error;
+                }
             } else {
                 state.text = text.clone();
                 state.message = copy_error.clone().unwrap_or_default();
                 let a_salvo = (auto_copy || auto_paste) && copy_error.is_none();
                 state.copied_at = a_salvo.then(Instant::now);
-                state.view = Self::tela_do_resultado(a_salvo, auto_paste, show_result);
+                let tela = Self::tela_do_resultado(a_salvo, auto_paste, show_result);
+                if Self::resultado_pode_aparecer(tela, gravando) {
+                    state.view = tela;
+                }
                 state.result_shown_at = Some(Instant::now());
             }
         }
@@ -322,7 +355,7 @@ impl Controller {
     fn on_ipc(&self, command: IpcCommand) {
         match command {
             IpcCommand::Toggle => {
-                let recording = lock(&self.shared).view == View::Recording;
+                let recording = lock(&self.shared).recording_since.is_some();
                 if recording {
                     self.stop_recording();
                 } else {
@@ -337,14 +370,18 @@ impl Controller {
     // ------------------------------------------------------------- gravação
 
     fn start_recording(&self) {
-        {
+        let ditado = {
             let mut state = lock(&self.shared);
 
             // Não atrapalha quem está mexendo nas configurações.
             if state.view == View::Settings || state.capturing_hotkey {
                 return;
             }
-            if state.view == View::Recording {
+            // Quem responde por "já estamos ouvindo" é o `recording_since`, e
+            // não a tela: a janela do ditado anterior pode ter aparecido por
+            // cima. Transcrever o anterior, por outro lado, não impede nada —
+            // isso acontece numa thread só dele.
+            if state.recording_since.is_some() {
                 return;
             }
 
@@ -370,15 +407,20 @@ impl Controller {
             state.copied_at = None;
             state.recording_since = Some(Instant::now());
             state.view = View::Recording;
-        }
-        self.audio.send(AudioCmd::Start);
+            state.ditado_atual += 1;
+            state.ditado_atual
+        };
+        self.audio.send(AudioCmd::Start { ditado });
         self.sinal.mudou();
     }
 
     fn stop_recording(&self) {
         {
             let mut state = lock(&self.shared);
-            if state.view != View::Recording {
+            // De novo o `recording_since` no lugar da tela: olhando a tela, um
+            // resultado que tivesse aparecido no meio do ditado faria este
+            // `return` acontecer e o microfone ficaria aberto para sempre.
+            if state.recording_since.is_none() {
                 return;
             }
             state.recording_since = None;
@@ -567,6 +609,18 @@ mod tests {
         // depois disso só atrapalharia.
         assert_eq!(tela(true, true, true), View::Hidden);
         assert_eq!(tela(true, true, false), View::Hidden);
+    }
+
+    #[test]
+    fn um_ditado_em_andamento_fica_com_a_tela() {
+        // Falar de novo enquanto a frase anterior é transcrita: a janela do
+        // texto anterior não pode aparecer por cima de quem está falando…
+        assert!(!Controller::resultado_pode_aparecer(View::Hidden, true));
+        // …a menos que ela seja o único jeito de o texto não se perder.
+        assert!(Controller::resultado_pode_aparecer(View::Result, true));
+        // Sem ninguém gravando, as duas telas valem como sempre.
+        assert!(Controller::resultado_pode_aparecer(View::Hidden, false));
+        assert!(Controller::resultado_pode_aparecer(View::Result, false));
     }
 
     #[test]
