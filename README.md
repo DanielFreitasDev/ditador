@@ -18,7 +18,7 @@
 **Com o pacote pronto** (Ubuntu 24.04 ou mais novo):
 
 ```bash
-sudo apt install ./ditador_0.2.0_amd64.deb      # ou ditador-cpu_… se a máquina não tem GPU
+sudo apt install ./ditador_0.3.0_amd64.deb      # ou ditador-cpu_… se a máquina não tem GPU
 sudo usermod -aG input $USER                    # para o atalho global ler o teclado
 ```
 
@@ -40,8 +40,8 @@ ditador --baixar-modelo
 **Gerando o pacote para outra máquina:**
 
 ```bash
-./empacotar.sh                # target/deb/ditador_0.2.0_amd64.deb  (Vulkan)
-./empacotar.sh cpu            # target/deb/ditador-cpu_0.2.0_amd64.deb
+./empacotar.sh                # target/deb/ditador_0.3.0_amd64.deb  (Vulkan)
+./empacotar.sh cpu            # target/deb/ditador-cpu_0.3.0_amd64.deb
 ```
 
 O pacote leva o programa, os ícones, o atalho do menu e o serviço de usuário do
@@ -181,15 +181,28 @@ mais rápido, não mais caro.
 Se a GPU não estiver disponível — ou com `DITADOR_SEM_GPU=1` — o mesmo
 vocabulário sai em vetores pelo `src/glass.rs`, empilhando as pistas em camadas.
 
-**O que o vidro refrata.** Nenhum compositor do Linux entrega para um
-aplicativo comum o que está atrás da janela dele, então o fundo vem de duas
-fontes. O painel refrata o **papel de parede** da área de trabalho: o caminho
-vem do GNOME (`picture-uri`, seguindo o tema claro/escuro), a imagem é reduzida,
-borrada e escurecida numa thread à parte e recortada na posição da janela. Não é
-o que está atrás de verdade — uma janela por baixo não aparece —, por isso ele
-entra com alfa parcial: o que estiver mesmo atrás continua aparecendo pelo canal
-alfa da janela. Desligue em *Configurações → Aparência* para deixar o painel só
-com a tinta escura.
+**O que o vidro refrata.** O painel refrata uma **captura da tela**, recortada
+na posição da janela. Ela vem do `org.freedesktop.portal.Screenshot`, que é a
+única porta aberta: o GNOME nega o `org.gnome.Shell.Screenshot` a aplicativos
+comuns desde a versão 41, e sob XWayland o `XGetImage` na raiz responde
+`BadMatch`.
+
+A foto só é tirada **com a janela escondida** — na abertura do programa e depois
+de cada vez que a janela some. Não é economia: uma foto tirada com a janela na
+tela conteria a própria janela, e o vidro passaria a refratar a si mesmo. O
+portal não deixa excluir a nossa janela do quadro. Daí a limitação que fica: a
+imagem é a de pouco antes de a janela abrir e não se mexe enquanto ela estiver
+aberta — um vídeo tocando atrás fica parado no vidro. Sem uma extensão rodando
+dentro do compositor, que é o caminho da extensão de GNOME de referência e que
+um aplicativo comum não tem, não há como fazer melhor.
+
+Sem portal de captura, o painel cai no **papel de parede** da área de trabalho:
+o caminho vem do GNOME (`picture-uri`, seguindo o tema claro/escuro) e a imagem é
+reduzida, borrada e escurecida numa thread à parte. Não é o que está atrás — uma
+janela por baixo não aparece —, é só a cor do desktop naquele ponto. As duas
+fontes entram com alfa parcial: o que estiver mesmo atrás continua aparecendo
+pelo canal alfa da janela. Desligue em *Configurações → Aparência* para deixar o
+painel só com a tinta escura.
 
 Já tudo que fica **dentro** do painel refrata uma cópia do próprio framebuffer,
 tirada logo antes de desenhar a peça — e esse fundo é exato: a beirada de um
@@ -227,8 +240,9 @@ enquanto se arrasta:
 
 | Campo | Padrão | O que faz |
 |---|---|---|
-| `wallpaper` / `wallpaper_opacity` | `true` / `0.55` | papel de parede por baixo do vidro, e quanto dele aparece |
-| `wallpaper_detail` | `260` | largura para a qual ele é reduzido — é o controle do desfoque |
+| `screen_capture` | `true` | refratar a captura da tela; desligado, usa o papel de parede |
+| `wallpaper` / `wallpaper_opacity` | `true` / `0.55` | imagem de fundo por baixo do vidro, e quanto dela aparece |
+| `wallpaper_detail` | `260` | largura para a qual o papel de parede é reduzido — é o controle do desfoque. Não vale para a captura da tela, que entra na resolução cheia |
 | `wallpaper_brightness` / `wallpaper_saturation` | `0.55` / `1.18` | escurecer e colorir antes de entrar |
 | `refraction` | `1.52` | índice de refração: 1,0 não entorta nada, vidro real ~1,5 |
 | `thickness` / `chromatic` | `1.0` / `1.0` | espessura aparente e separação das cores |
