@@ -3,6 +3,8 @@ name = "ditador"
 version = "0.1.0"
 edition = "2024"
 description = "Ditado por voz offline (speech-to-text) com Whisper, para Ubuntu/GNOME"
+license = "MIT"
+repository = "https://github.com/DanielFreitasDev/ditador"
 
 [features]
 # Vulkan é o padrão: usa a GPU NVIDIA/AMD/Intel sem precisar do CUDA Toolkit.

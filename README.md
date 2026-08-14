@@ -271,3 +271,8 @@ quando o tema do sistema ainda não tem os nossos.
   lentas isso pode cortar a primeira sílaba.
 - Trocar de modelo com o programa aberto libera o contexto anterior da GPU; se
   isso se mostrar instável no seu driver, reinicie o serviço depois de trocar.
+
+## Licença
+
+[MIT](LICENSE). Os modelos do Whisper têm licença própria (MIT também, da
+OpenAI) e são baixados à parte, não distribuídos aqui.

@@ -172,14 +172,20 @@ FIM
 
 chmod 755 "$RAIZ/DEBIAN/postinst" "$RAIZ/DEBIAN/prerm" "$RAIZ/DEBIAN/postrm"
 
-install -Dm644 /dev/stdin "$RAIZ/usr/share/doc/$PACOTE/copyright" <<FIM
-Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: ditador
-
-Files: *
-Copyright: Daniel Freitas
-License: MIT
-FIM
+# O texto da licença sai do LICENSE do repositório, para os dois não separarem.
+# O formato do Debian quer o texto recuado por um espaço, com as linhas em
+# branco viradas em ponto.
+{
+    echo "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/"
+    echo "Upstream-Name: ditador"
+    echo "Source: https://github.com/DanielFreitasDev/ditador"
+    echo
+    echo "Files: *"
+    echo "Copyright: 2026 Daniel Freitas"
+    echo "License: MIT"
+    sed 's/^$/./; s/^/ /' LICENSE
+} > "$RAIZ/usr/share/doc/$PACOTE/copyright"
+chmod 644 "$RAIZ/usr/share/doc/$PACOTE/copyright"
 
 printf '%s (%s) unstable; urgency=low\n\n  * Versão %s.\n\n -- Daniel Freitas <danielsfreitas97@gmail.com>  %s\n' \
     "$PACOTE" "$VERSAO" "$VERSAO" "$(date -R)" \
