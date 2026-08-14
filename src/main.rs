@@ -5,6 +5,7 @@
 
 mod audio;
 mod autostart;
+mod captura;
 mod clipboard;
 mod config;
 mod controller;

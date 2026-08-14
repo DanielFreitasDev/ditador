@@ -91,6 +91,13 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
+    /// Refratar a tela de verdade — o que está mesmo atrás da janela — em vez
+    /// do papel de parede. A captura vem do `xdg-desktop-portal` e só é tirada
+    /// com a janela escondida, senão o vidro refrataria a si mesmo; por isso a
+    /// imagem é a de pouco antes de a janela abrir e fica parada enquanto ela
+    /// estiver aberta. Ver `captura.rs`. Sem portal disponível, cai sozinho no
+    /// papel de parede.
+    pub screen_capture: bool,
     /// Deixar o papel de parede da área de trabalho entrar por baixo do vidro,
     /// borrado, para o painel ter o que refratar. Nenhum compositor do Linux
     /// entrega o que está mesmo atrás da janela; isto é o mais perto disso.
@@ -194,6 +201,7 @@ pub const FORCA_CLARA: f32 = 0.20;
 
 impl Appearance {
     pub const PADRAO: Self = Self {
+        screen_capture: true,
         wallpaper: true,
         // O papel de parede entra quase todo, mas por baixo de uma tinta densa:
         // é ele que dá à superfície a cor do ambiente (o "tint window

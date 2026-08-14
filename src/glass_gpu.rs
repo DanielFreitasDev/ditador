@@ -191,11 +191,26 @@ pub fn aplicar_aparencia(nova: Appearance) {
     }
     let releitura = atual.wallpaper_detail != nova.wallpaper_detail
         || atual.wallpaper_brightness != nova.wallpaper_brightness
-        || atual.wallpaper_saturation != nova.wallpaper_saturation;
+        || atual.wallpaper_saturation != nova.wallpaper_saturation
+        // Trocar a fonte da imagem troca a imagem inteira.
+        || atual.screen_capture != nova.screen_capture;
     *atual = nova;
     if releitura {
         RELER_PAREDE.store(true, Ordering::Relaxed);
     }
+}
+
+/// `file:///caminho%20com%20espaço` → `/caminho com espaço`. Mora aqui porque
+/// é do leitor do papel de parede; a captura de tela reaproveita.
+pub fn caminho_do_uri(uri: &str) -> Option<String> {
+    parede::do_uri(uri)
+}
+
+/// Manda reler o fundo do vidro no quadro seguinte. É o que a captura de tela
+/// chama quando chega uma imagem nova.
+pub fn reler_o_fundo() {
+    RELER_PAREDE.store(true, Ordering::Relaxed);
+    repintar();
 }
 
 /// A aparência em vigor, para quem monta as receitas das peças.
@@ -667,7 +682,12 @@ impl Gpu {
                     // reduzida (algumas centenas de pixels de largura), então
                     // guardá-la custa pouco e evita ler o framebuffer de volta.
                     log::info!(
-                        "papel de parede em {}×{} pronto para o vidro",
+                        "fundo do vidro pronto: {} em {}×{}",
+                        if aparencia().screen_capture && crate::captura::ultima().is_some() {
+                            "captura da tela"
+                        } else {
+                            "papel de parede"
+                        },
                         img.largura,
                         img.altura
                     );
@@ -1036,6 +1056,15 @@ mod parede {
     }
 
     fn carregar(a: Appearance) -> Option<Imagem> {
+        // A tela de verdade tem preferência: é o que está mesmo atrás da
+        // janela. O papel de parede fica de reserva para quando não há portal
+        // de captura (outro ambiente, ou o usuário desligou a opção).
+        if a.screen_capture
+            && let Some(tela) = crate::captura::ultima()
+        {
+            return Some(da_tela(&tela, a));
+        }
+
         let caminho = caminho()?;
         let bruta = match image::ImageReader::open(&caminho) {
             Ok(leitor) => match leitor.with_guessed_format().ok()?.decode() {
@@ -1081,6 +1110,40 @@ mod parede {
         })
     }
 
+    /// A captura da tela virando o fundo que o vidro refrata.
+    ///
+    /// Ao contrário do papel de parede, esta imagem **não** é reduzida a
+    /// algumas centenas de pixels. Ali a redução é proposital — o que se quer
+    /// do papel de parede é a cor do ambiente, não o desenho. Aqui é o
+    /// contrário: se o navegador atrás da janela virar um borrão cinza, some
+    /// justamente o que se queria mostrar. Fica na resolução da tela, com só o
+    /// amaciamento leve de sempre, e quem controla a maciez é o `blur_radius`
+    /// do shader.
+    fn da_tela(tela: &crate::captura::Tela, a: Appearance) -> Imagem {
+        let mut imagem = image::RgbaImage::from_raw(tela.largura, tela.altura, tela.pixels.clone())
+            .unwrap_or_else(|| image::RgbaImage::new(1, 1));
+
+        if DESFOQUE > 0.0 {
+            imagem = image::imageops::blur(&imagem, DESFOQUE);
+        }
+        for p in imagem.pixels_mut() {
+            let [r, g, b, _] = p.0;
+            let (r, g, b) = (r as f32, g as f32, b as f32);
+            let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            let ajusta = |c: f32| {
+                ((luma + (c - luma) * a.wallpaper_saturation) * a.wallpaper_brightness)
+                    .clamp(0.0, 255.0) as u8
+            };
+            p.0 = [ajusta(r), ajusta(g), ajusta(b), 255];
+        }
+
+        Imagem {
+            largura: imagem.width(),
+            altura: imagem.height(),
+            pixels: imagem.into_raw(),
+        }
+    }
+
     /// Caminho do papel de parede atual, pelo GNOME. Segue o tema claro/escuro,
     /// que é o que o usuário está de fato vendo.
     fn caminho() -> Option<String> {
@@ -1119,7 +1182,7 @@ mod parede {
     }
 
     /// `file:///caminho%20com%20espaço` → `/caminho com espaço`.
-    fn do_uri(uri: &str) -> Option<String> {
+    pub fn do_uri(uri: &str) -> Option<String> {
         let bruto = uri.strip_prefix("file://")?;
         let bytes = bruto.as_bytes();
         let mut saida = Vec::with_capacity(bytes.len());

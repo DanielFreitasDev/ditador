@@ -97,6 +97,9 @@ impl App {
         if let Some(gl) = cc.gl.clone() {
             crate::glass_gpu::iniciar(gl, &cc.egui_ctx);
         }
+        // A primeira captura sai agora, com a janela ainda escondida — é ela
+        // que o vidro refrata na primeira vez que alguém abrir alguma tela.
+        crate::captura::iniciar(crate::glass_gpu::reler_o_fundo);
         carregar_fontes(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.all_styles_mut(estilo_de_vidro);
@@ -361,6 +364,12 @@ impl eframe::App for App {
 
         if self.applied != Some(view) {
             apply_window(ctx, view);
+            // Acabou de esconder: é a única hora em que dá para fotografar a
+            // tela sem a nossa própria janela no quadro. A captura sai numa
+            // thread, com folga para o compositor terminar de fechar a janela.
+            if view == View::Hidden && self.applied.is_some() {
+                crate::captura::escondeu();
+            }
             self.applied = Some(view);
             // Cada tela entra com a sua própria mola. Trocar de tela também
             // redimensiona a janela, e a animação é o que costura as duas
@@ -1151,25 +1160,37 @@ impl App {
             }
 
             ui.add_space(6.0);
-            widgets::interruptor(ui, &mut ap.wallpaper, "Papel de parede por baixo do vidro");
+            widgets::interruptor(ui, &mut ap.wallpaper, "Imagem de fundo por baixo do vidro");
             ui.add_enabled_ui(ap.wallpaper, |ui| {
+                widgets::interruptor(ui, &mut ap.screen_capture, "Usar a tela de verdade");
                 porcentagem(ui, &mut ap.wallpaper_opacity, 0.0..=1.0, "Quanto aparece");
-                let mut nitidez = ap.wallpaper_detail as i32;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut nitidez, 60..=1200)
-                            .text("Detalhe (menor = mais borrado)"),
-                    )
-                    .changed()
-                {
-                    ap.wallpaper_detail = nitidez as u32;
-                }
+                // O detalhe é a redução aplicada ao papel de parede. A captura
+                // da tela não passa por ela: reduzi-la apagaria justamente o
+                // que se quer ver atrás do vidro.
+                ui.add_enabled_ui(!ap.screen_capture, |ui| {
+                    let mut nitidez = ap.wallpaper_detail as i32;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut nitidez, 60..=1200)
+                                .text("Detalhe (menor = mais borrado)"),
+                        )
+                        .changed()
+                    {
+                        ap.wallpaper_detail = nitidez as u32;
+                    }
+                });
             });
-            ui.label(nota(
-                "O vidro precisa de algo para refratar, e nenhum compositor do \
-                 Linux entrega o que está atrás da janela. Desligue para deixar \
-                 o painel só com a tinta.",
-            ));
+            ui.label(nota(if ap.screen_capture {
+                "O vidro refrata o que está mesmo atrás da janela. A foto é \
+                 tirada com a janela escondida — senão o vidro refrataria a si \
+                 mesmo —, então é a de pouco antes de a janela abrir e fica \
+                 parada enquanto ela estiver aberta. O detalhe só vale para o \
+                 papel de parede; a captura entra na resolução cheia."
+            } else {
+                "O papel de parede não é o que está atrás da janela, é só a cor \
+                 do desktop naquele ponto. Ligue o de cima para o vidro mostrar \
+                 as janelas de trás de verdade."
+            }));
 
             ui.add_space(4.0);
             porcentagem(ui, &mut ap.tint_strength, 0.0..=1.0, "Tinta do vidro");
