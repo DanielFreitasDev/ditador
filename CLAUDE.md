@@ -73,13 +73,19 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 
 ## Armadilhas — não "consertar"
 
-- **`_exit(0)` em `src/main.rs:279`** pula os destrutores de propósito: desmontar os buffers do ggml/Vulkan dá
+- **`_exit(0)` em `src/main.rs:280`** pula os destrutores de propósito: desmontar os buffers do ggml/Vulkan dá
   SIGSEGV no driver NVIDIA, e o systemd trataria isso como falha e reiniciaria o app.
-- **`clipboard::remember_environment()` é a primeira linha de `main()`** (`src/main.rs:34`). O modo X11
-  (`force_x11: true` por padrão) remove `WAYLAND_DISPLAY` do ambiente em `src/main.rs:129`; sem o snapshot
+- **`clipboard::remember_environment()` é a primeira linha de `main()`** (`src/main.rs:35`). O modo X11
+  (`force_x11: true` por padrão) remove `WAYLAND_DISPLAY` do ambiente em `src/main.rs:130`; sem o snapshot
   anterior o `wl-copy` para de funcionar. Não reordene.
-- **Renderer glow com `multisampling: 0`** (`src/main.rs:241`): o wgpu recusou transparência e nenhuma config do
+- **Renderer glow com `multisampling: 0`** (`src/main.rs:242`): o wgpu recusou transparência e nenhuma config do
   glutin combina alpha com MSAA. Mudar qualquer um dos dois quebra os cantos arredondados ou a criação da janela.
+- **Quem diz se o microfone está aberto é `recording_since`, nunca `state.view`** (`src/controller.rs`). Falar de
+  novo enquanto a frase anterior é transcrita é o uso normal do programa, e nesse intervalo a janela do resultado
+  anterior pode tomar a tela por cima de um ditado em andamento. Decidindo pela tela, o `stop_recording` desistia
+  e o microfone ficava aberto para sempre. Pelo mesmo motivo os eventos do áudio carregam o número do ditado
+  (`AudioCmd::Start { ditado }`): é ele que separa o que é da gravação de agora do que é de uma anterior que
+  ainda estava a caminho.
 - **Bandeja (`src/tray.rs`)**: o app sobe antes das extensões do GNOME Shell, então um StatusNotifierWatcher
   ausente significa "esperar", não "erro".
 - **`Config` usa `#[serde(default)]`** e há testes garantindo que configs antigas continuam carregando. Ao mexer
