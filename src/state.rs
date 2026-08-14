@@ -18,7 +18,7 @@ impl View {
     /// Tamanho da janela para cada tela, em pontos lógicos. Inclui a folga em
     /// volta do painel de vidro, onde a sombra é desenhada.
     pub fn size(self) -> [f32; 2] {
-        let pad = 2.0 * crate::glass::SHADOW_PAD;
+        let pad = 2.0 * crate::glass::shadow_pad();
         let [w, h] = match self {
             View::Hidden | View::Recording | View::Processing => [440.0, 152.0],
             View::Result => [620.0, 372.0],

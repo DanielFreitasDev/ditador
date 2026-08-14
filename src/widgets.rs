@@ -12,11 +12,48 @@ use egui::{
 };
 
 /// Cores compartilhadas com a interface.
-pub const TEXT: Color32 = Color32::from_rgb(242, 243, 248);
-pub const MUTED: Color32 = Color32::from_rgb(156, 159, 176);
 pub const REC: Color32 = Color32::from_rgb(255, 96, 108);
 pub const ACCENT: Color32 = Color32::from_rgb(122, 173, 255);
 pub const OK: Color32 = Color32::from_rgb(112, 224, 158);
+
+/// Texto sobre fundo escuro, e sobre fundo claro. O vidro do padrão é claro e
+/// quase transparente, então quem decide qual das duas vale é o papel de parede
+/// atrás da janela — a mesma ideia do `contrastSampler` da extensão.
+const TEXTO_CLARO: Color32 = Color32::from_rgb(242, 243, 248);
+const APAGADO_CLARO: Color32 = Color32::from_rgb(156, 159, 176);
+pub const TEXTO_ESCURO: Color32 = Color32::from_rgb(22, 23, 30);
+const APAGADO_ESCURO: Color32 = Color32::from_rgb(78, 80, 94);
+
+static TEXTO_ESCURECIDO: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Troca a paleta do texto. Devolve `true` quando ela de fato mudou — aí quem
+/// chamou precisa reaplicar o estilo do egui, que guarda a cor por cópia.
+pub fn definir_texto_escuro(escuro: bool) -> bool {
+    TEXTO_ESCURECIDO.swap(escuro, std::sync::atomic::Ordering::Relaxed) != escuro
+}
+
+fn texto_escuro() -> bool {
+    TEXTO_ESCURECIDO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Cor do texto normal.
+pub fn text() -> Color32 {
+    if texto_escuro() {
+        TEXTO_ESCURO
+    } else {
+        TEXTO_CLARO
+    }
+}
+
+/// Cor do texto secundário.
+pub fn muted() -> Color32 {
+    if texto_escuro() {
+        APAGADO_ESCURO
+    } else {
+        APAGADO_CLARO
+    }
+}
 
 /// Tempo das animações de realce. Curto o bastante para parecer resposta física.
 const ANIM: f32 = 0.14;
@@ -36,7 +73,7 @@ impl Botao {
     pub fn new(texto: impl Into<WidgetText>) -> Self {
         Self {
             texto: texto.into(),
-            cor: TEXT,
+            cor: text(),
             destaque: false,
             largura_minima: 0.0,
         }
@@ -98,12 +135,12 @@ impl egui::Widget for Botao {
             let alfa = (76.0 + 54.0 * energia) as u8;
             vidro = vidro.com_corpo(glass::tint(self.cor.r(), self.cor.g(), self.cor.b(), alfa));
             vidro.borda += 0.25;
-            cor_texto = TEXT;
+            cor_texto = text();
         }
 
         let painter = ui.painter();
         if sob_cursor > 0.0 {
-            let halo = if self.destaque { self.cor } else { TEXT };
+            let halo = if self.destaque { self.cor } else { text() };
             painter.add(glass::glow(
                 rect.expand(3.0),
                 raio,
@@ -159,7 +196,7 @@ pub fn botao_icone(ui: &mut Ui, icone: Icone, dica: &str) -> Response {
     ));
 
     let c = rect.center();
-    let cor_traco = cor(glass::mix(MUTED, TEXT, sob_cursor), ativo);
+    let cor_traco = cor(glass::mix(muted(), text(), sob_cursor), ativo);
     match icone {
         Icone::Fechar => {
             let d = 4.2;
@@ -238,7 +275,7 @@ pub fn progresso(ui: &mut Ui, fracao: Option<f32>, rotulo: &str) {
 
     if !rotulo.is_empty() {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(rotulo).size(11.5).color(MUTED));
+        ui.label(egui::RichText::new(rotulo).size(12.5).color(muted()));
     }
 }
 
@@ -278,7 +315,7 @@ pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<WidgetText>
     painter.galley(
         Pos2::new(rect.left(), rect.center().y - galley.size().y / 2.0).round(),
         galley,
-        cor(TEXT, ativo),
+        cor(text(), ativo),
     );
 
     let trilho = Rect::from_center_size(
@@ -364,8 +401,8 @@ pub fn secao(ui: &mut Ui, titulo: &str) {
     ui.add_space(14.0);
     ui.label(
         egui::RichText::new(titulo.to_uppercase())
-            .size(10.5)
-            .color(MUTED)
+            .size(11.5)
+            .color(muted())
             .family(egui::FontFamily::Name("forte".into())),
     );
     ui.add_space(5.0);
@@ -397,7 +434,7 @@ pub fn keycap(ui: &mut Ui, texto: &str) -> Response {
             },
         ));
         let pos = rect.center() - galley.size() / 2.0;
-        painter.galley(pos.round(), galley, TEXT);
+        painter.galley(pos.round(), galley, text());
     }
     resposta
 }

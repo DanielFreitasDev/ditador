@@ -47,8 +47,14 @@ pub struct Peca {
     pub n: f32,
     /// Largura da faixa em que a superfície sobe da borda até a altura cheia.
     pub bisel: f32,
-    /// Altura máxima do relevo. É ela que dita o quanto a refração desloca.
+    /// Expoente do perfil dessa subida (o `profile_shape_n` da extensão).
+    pub perfil: f32,
+    /// Altura máxima do relevo. Manda na inclinação da normal.
     pub espessura: f32,
+    /// Escala do deslocamento da refração, em pontos.
+    pub desloc: f32,
+    /// Raio do desfoque do que a peça refrata, em pontos.
+    pub desfoque: f32,
     /// Índice de refração do "material".
     pub ior: f32,
     /// Separação das componentes de cor na refração, em pontos.
@@ -58,14 +64,16 @@ pub struct Peca {
     /// Escurecimento junto da borda, por dentro (oclusão de ambiente).
     pub ao: f32,
     pub ao_raio: f32,
-    /// Intensidade e largura da borda especular.
+    /// Intensidade e largura da borda acesa, e os dois expoentes que dão a
+    /// forma dela: o de Fresnel e o de quanto ela segue a direção da luz.
     pub rim: f32,
     pub rim_larg: f32,
-    /// Brilho especular concentrado e véu amplo da superfície.
+    pub rim_pot: f32,
+    pub rim_dir_pot: f32,
+    /// Brilho especular concentrado (com o expoente que o fecha) e véu amplo.
     pub espec: f32,
+    pub espec_pot: f32,
     pub sheen: f32,
-    /// Cor do retorno frio pelo lado oposto ao da luz, já com a intensidade.
-    pub frio: [f32; 3],
     /// Cursor: a beirada mais próxima dele acende.
     pub foco: Option<Pos2>,
     pub foco_alcance: f32,
@@ -84,18 +92,23 @@ impl Default for Peca {
             rect: Rect::NOTHING,
             raio: 12.0,
             n: 4.2,
-            bisel: 8.0,
-            espessura: 5.0,
-            ior: 1.42,
-            cromatica: 0.8,
-            tinta: [1.0, 1.0, 1.0, 0.1],
-            ao: 0.14,
-            ao_raio: 8.0,
-            rim: 1.0,
-            rim_larg: 1.6,
-            espec: 0.4,
-            sheen: 0.14,
-            frio: [0.0, 0.0, 0.0],
+            bisel: 12.0,
+            perfil: 7.0,
+            espessura: 25.0,
+            desloc: 78.5,
+            desfoque: 5.0,
+            ior: 2.40,
+            cromatica: 0.006,
+            tinta: [1.0, 1.0, 1.0, 0.12],
+            ao: 0.25,
+            ao_raio: 7.5,
+            rim: 0.84,
+            rim_larg: 5.0,
+            rim_pot: 6.0,
+            rim_dir_pot: 2.7,
+            espec: 0.0,
+            espec_pot: 42.0,
+            sheen: 0.32,
             foco: None,
             foco_alcance: 95.0,
             parede: 0.0,
@@ -134,10 +147,15 @@ pub fn shape(peca: Peca) -> Option<egui::Shape> {
 /// Prepara a GPU. Sem isto (ou se algo falhar) tudo cai no caminho vetorial.
 /// `DITADOR_SEM_GPU=1` força o caminho vetorial — útil para comparar os dois e
 /// para escapar de um driver que engasgue com o shader.
-pub fn iniciar(gl: Arc<glow::Context>) {
+pub fn iniciar(gl: Arc<glow::Context>, ctx: &egui::Context) {
     if GPU.get().is_some() || std::env::var_os("DITADOR_SEM_GPU").is_some() {
         return;
     }
+    // A leitura do papel de parede acontece fora da thread da interface e pode
+    // demorar (um JPEG de 4K leva bem mais que um quadro). Sem uma repintura
+    // quando ela termina, uma tela que já assentou fica sem o papel de parede
+    // até o usuário mexer em alguma coisa — e o vidro sem ele é só a tinta.
+    let _ = CTX.set(ctx.clone());
     match Gpu::new(gl) {
         Ok(gpu) => {
             let _ = GPU.set(Arc::new(Mutex::new(gpu)));
@@ -196,7 +214,29 @@ pub fn opacidade() -> f32 {
     f32::from_bits(OPACIDADE.load(Ordering::Relaxed))
 }
 
+/// Brilho médio do papel de parede atrás da janela, de 0 (preto) a 1 (branco),
+/// e se ele já vale. `None` enquanto o papel de parede não chegou — aí quem
+/// pergunta fica com a paleta clara, que é a de antes.
+pub fn brilho_do_fundo() -> Option<f32> {
+    if !LUMA_VALIDA.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(f32::from_bits(LUMA.load(Ordering::Relaxed)))
+}
+
 static GPU: OnceLock<Arc<Mutex<Gpu>>> = OnceLock::new();
+/// Para acordar a interface quando algo assíncrono (o papel de parede) fica
+/// pronto depois que a tela já parou de repintar.
+static CTX: OnceLock<egui::Context> = OnceLock::new();
+
+fn repintar() {
+    if let Some(ctx) = CTX.get() {
+        ctx.request_repaint();
+    }
+}
+
+static LUMA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static LUMA_VALIDA: AtomicBool = AtomicBool::new(false);
 static APARENCIA: RwLock<Appearance> = RwLock::new(Appearance::PADRAO);
 static RELER_PAREDE: AtomicBool = AtomicBool::new(false);
 static OPACIDADE: std::sync::atomic::AtomicU32 =
@@ -215,6 +255,8 @@ struct Gpu {
     /// Papel de parede já borrado e escurecido.
     parede: Option<glow::Texture>,
     parede_tam: [f32; 2],
+    /// A mesma imagem, na CPU, para medir o brilho atrás da janela.
+    parede_cpu: Option<Imagem>,
     parede_chegando: Option<Receiver<Imagem>>,
     /// Mapeamento pixel-da-tela → uv do papel de parede.
     parede_uv: [f32; 4],
@@ -229,8 +271,9 @@ struct Locais {
     tinta: Option<glow::UniformLocation>,
     luzes: Option<glow::UniformLocation>,
     extra: Option<glow::UniformLocation>,
+    pot: Option<glow::UniformLocation>,
+    refracao: Option<glow::UniformLocation>,
     luz: Option<glow::UniformLocation>,
-    frio: Option<glow::UniformLocation>,
     foco: Option<glow::UniformLocation>,
     pared: Option<glow::UniformLocation>,
     opacidade: Option<glow::UniformLocation>,
@@ -266,8 +309,9 @@ impl Gpu {
                 tinta: gl.get_uniform_location(programa, "u_tinta"),
                 luzes: gl.get_uniform_location(programa, "u_luzes"),
                 extra: gl.get_uniform_location(programa, "u_extra"),
+                pot: gl.get_uniform_location(programa, "u_pot"),
+                refracao: gl.get_uniform_location(programa, "u_ref"),
                 luz: gl.get_uniform_location(programa, "u_luz"),
-                frio: gl.get_uniform_location(programa, "u_frio"),
                 foco: gl.get_uniform_location(programa, "u_foco"),
                 pared: gl.get_uniform_location(programa, "u_pared"),
                 opacidade: gl.get_uniform_location(programa, "u_opacidade"),
@@ -285,6 +329,7 @@ impl Gpu {
             fundo_tam: [0, 0],
             parede: None,
             parede_tam: [1.0, 1.0],
+            parede_cpu: None,
             parede_chegando: Some(parede::carregar_em_segundo_plano(aparencia())),
             parede_uv: [0.0, 0.0, 0.0, 0.0],
             parede_pronta: false,
@@ -317,6 +362,67 @@ impl Gpu {
             1.0 / alt,
         ];
         self.parede_pronta = true;
+
+        self.medir_brilho(janela, ppp, [larg, alt], [ox, oy]);
+    }
+
+    /// Brilho médio do papel de parede no pedaço que a janela cobre. É o que a
+    /// extensão faz no `contrastSampler` para escolher a cor do texto: com o
+    /// vidro claro, texto claro some sobre um papel de parede claro.
+    fn medir_brilho(&self, janela: Rect, ppp: f32, [larg, alt]: [f32; 2], [ox, oy]: [f32; 2]) {
+        let Some(img) = &self.parede_cpu else {
+            LUMA_VALIDA.store(false, Ordering::Relaxed);
+            return;
+        };
+
+        // Cantos da janela em pixels da imagem reduzida.
+        let em_imagem = |x: f32, y: f32| {
+            (
+                ((x * ppp - ox) / larg * img.largura as f32).clamp(0.0, img.largura as f32 - 1.0),
+                ((y * ppp - oy) / alt * img.altura as f32).clamp(0.0, img.altura as f32 - 1.0),
+            )
+        };
+        let (x0, y0) = em_imagem(janela.left(), janela.top());
+        let (x1, y1) = em_imagem(janela.right(), janela.bottom());
+        let (x0, y0, x1, y1) = (x0 as u32, y0 as u32, x1.ceil() as u32, y1.ceil() as u32);
+        if x1 <= x0 || y1 <= y0 {
+            LUMA_VALIDA.store(false, Ordering::Relaxed);
+            return;
+        }
+
+        // Uma amostra a cada poucos pixels basta: a imagem já é um passa-baixa
+        // do papel de parede, e o que se quer é a tendência, não o detalhe.
+        let passo = (((x1 - x0) / 16).max(1), ((y1 - y0) / 16).max(1));
+        let (mut soma, mut n) = (0.0f32, 0u32);
+        for y in (y0..y1.min(img.altura)).step_by(passo.1 as usize) {
+            for x in (x0..x1.min(img.largura)).step_by(passo.0 as usize) {
+                let i = ((y * img.largura + x) * 4) as usize;
+                let Some(p) = img.pixels.get(i..i + 3) else {
+                    continue;
+                };
+                // Pesos da Rec. 601, os mesmos que a extensão usa.
+                soma += (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) / 255.0;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            LUMA_VALIDA.store(false, Ordering::Relaxed);
+            return;
+        }
+
+        // O que o texto tem pela frente não é o papel de parede cru, e sim a
+        // superfície do vidro: o papel de parede já clareado pela tinta. É essa
+        // que a extensão amostra, e é sobre ela que a decisão precisa ser
+        // tomada — 12% de branco por cima já muda bastante um fundo médio.
+        let ap = aparencia();
+        let [tr, tg, tb] = ap.tint;
+        let luma_tinta =
+            (0.299 * tr as f32 + 0.587 * tg as f32 + 0.114 * tb as f32) / 255.0;
+        let papel = soma / n as f32;
+        let superficie = luma_tinta * ap.tint_strength + papel * (1.0 - ap.tint_strength);
+
+        LUMA.store(superficie.to_bits(), Ordering::Relaxed);
+        LUMA_VALIDA.store(true, Ordering::Relaxed);
     }
 
     fn desenhar(&mut self, info: &egui::PaintCallbackInfo, peca: &Peca) {
@@ -354,8 +460,11 @@ impl Gpu {
         let esc = escala * ppp;
 
         // A cópia só precisa cobrir o que a refração vai amostrar para fora do
-        // quadrilátero: o deslocamento máximo mais a separação das cores.
-        let margem = ((peca.bisel * 1.5 + peca.cromatica + 2.0) * esc).ceil() as i32;
+        // quadrilátero: o deslocamento máximo (o mesmo teto do shader — 30% do
+        // lado da peça), mais a separação das cores e o raio do desfoque.
+        let meio_lado = r.width().min(r.height()) * ppp * 0.5;
+        let alcance = (peca.desloc * esc).min(meio_lado * 0.60);
+        let margem = (alcance + (peca.cromatica + peca.desfoque + 2.0) * esc).ceil() as i32;
 
         unsafe {
             self.copiar_fundo(&gl, [fbw, fbh], &alvo, margem);
@@ -407,8 +516,20 @@ impl Gpu {
                 self.loc.opt.as_ref(),
                 peca.ior,
                 peca.cromatica * esc,
-                0.75 * ppp,
+                (aparencia().edge_smoothing * ppp).max(0.5),
                 parede,
+            );
+            gl.uniform_4_f32(
+                self.loc.pot.as_ref(),
+                peca.rim_pot,
+                peca.rim_dir_pot,
+                peca.espec_pot,
+                peca.perfil,
+            );
+            gl.uniform_2_f32(
+                self.loc.refracao.as_ref(),
+                peca.desloc * esc,
+                peca.desfoque * esc,
             );
             gl.uniform_4_f32(
                 self.loc.tinta.as_ref(),
@@ -432,14 +553,18 @@ impl Gpu {
                 peca.sombra[1] * peca.opacidade,
             );
 
-            // A luz vem de cima e um pouco da esquerda, na mesma direção que o
-            // caminho vetorial usa — as duas versões precisam combinar.
-            gl.uniform_3_f32(self.loc.luz.as_ref(), -0.34, 0.94, 0.55);
+            // Direção da luz. O ângulo é o mesmo da extensão, contado no
+            // sentido anti-horário a partir da direita; a componente z de 0,38
+            // é a inclinação dela para fora da tela, e vem de lá também. Aqui o
+            // y cresce para cima (é como o `gl_FragCoord` conta), então o seno
+            // entra com o sinal trocado em relação ao shader dela, que mede o y
+            // para baixo — a luz cai no mesmo canto nas duas.
+            let angulo = aparencia().light_angle.to_radians();
             gl.uniform_3_f32(
-                self.loc.frio.as_ref(),
-                peca.frio[0],
-                peca.frio[1],
-                peca.frio[2],
+                self.loc.luz.as_ref(),
+                angulo.cos(),
+                -angulo.sin(),
+                0.38,
             );
 
             match peca.foco.map(mapear) {
@@ -537,11 +662,21 @@ impl Gpu {
                     );
                     self.parede = Some(tex);
                     self.parede_tam = [img.largura as f32, img.altura as f32];
+                    // A imagem fica também na CPU: é dela que sai o brilho médio
+                    // atrás da janela, que decide a cor do texto. Ela já vem
+                    // reduzida (algumas centenas de pixels de largura), então
+                    // guardá-la custa pouco e evita ler o framebuffer de volta.
                     log::info!(
                         "papel de parede em {}×{} pronto para o vidro",
                         img.largura,
                         img.altura
                     );
+                    self.parede_cpu = Some(img);
+                    // Mais uma repintura: quem calcula o recorte é o
+                    // `posicionar`, que roda no começo do quadro — ou seja,
+                    // antes desta textura existir. Só no quadro seguinte é que
+                    // o papel de parede entra de fato.
+                    repintar();
                 }
                 Err(e) => log::warn!("não consegui criar a textura do papel de parede: {e}"),
             }
@@ -609,13 +744,14 @@ void main() {
 const FRAGMENT: &str = r#"
 uniform vec2 u_fb;      // tamanho do framebuffer, px
 uniform vec4 u_rect;    // x0, y0, x1, y1 da peça, px (y crescendo para cima)
-uniform vec4 u_geo;     // raio, expoente da superelipse, bisel, espessura
+uniform vec4 u_geo;     // raio, expoente da silhueta, bisel, altura do relevo
 uniform vec4 u_opt;     // ior, aberração cromática, suavização, papel de parede
 uniform vec4 u_tinta;   // cor do corpo, alfa não pré-multiplicado
-uniform vec4 u_luzes;   // borda, largura da borda, especular, véu
+uniform vec4 u_luzes;   // borda, largura da borda, reflexo, véu
 uniform vec4 u_extra;   // oclusão, raio da oclusão, raio da sombra, intensidade
+uniform vec4 u_pot;     // fresnel da borda, direção da borda, fecho do reflexo, perfil
+uniform vec2 u_ref;     // escala do deslocamento da refração, raio do desfoque
 uniform vec3 u_luz;     // direção da luz, em 3D
-uniform vec3 u_frio;    // cor do retorno pelo lado oposto ao da luz
 uniform vec3 u_foco;    // cursor em px e alcance (alcance < 0 = sem cursor)
 uniform vec4 u_pared;   // px da tela -> uv do papel de parede: (a.xy, b.zw)
 uniform float u_opacidade; // a peça inteira surgindo (animação de abertura)
@@ -623,10 +759,6 @@ uniform sampler2D u_fundo;
 uniform sampler2D u_parede;
 
 out vec4 cor_saida;
-
-/// Perfil da superfície: quanto mais alto o expoente, mais a peça fica com cara
-/// de almofada — sobe depressa junto da borda e achata cedo no meio.
-const float PERFIL = 2.4;
 
 /// Distância com sinal até a silhueta. Com expoente 2 é o retângulo de cantos
 /// redondos de sempre; acima disso os cantos viram superelipse (o "squircle" da
@@ -643,14 +775,20 @@ float sdf(vec2 p, vec2 b, float r, float n) {
 /// Altura da superfície no ponto. Fora da peça é zero, mas com uma descida
 /// suave: um degrau aqui viraria um pico no gradiente, e o pico apareceria como
 /// uma serrilha na refração.
+///
+/// O perfil é a superelipse da extensão: `h = (1 − (1 − t)^n)^(1/n)`, com t
+/// indo de 0 na borda a 1 no fim do bisel. Com n alto (o padrão são 7) a
+/// superfície salta quase reta junto da borda e achata logo em seguida — é
+/// essa curva, e não o desfoque, que dá o corpo de almofada do vidro.
 float altura(vec2 p, vec2 b) {
     float d = sdf(p, b, u_geo.x, u_geo.y);
     float zona = max(u_opt.z, 1.0);
     if (d > zona) return 0.0;
 
-    float t = clamp(-d / u_geo.z, 0.0, 1.0);
+    float n = max(u_pot.w, 1.01);
+    float t = clamp(-d / max(u_geo.z, 1.0), 0.0, 1.0);
     float inv = clamp(1.0 - t, 0.0, 1.0);
-    float h = pow(max(1.0 - pow(inv, PERFIL), 0.0), 1.0 / PERFIL);
+    float h = pow(max(1.0 - pow(inv, n), 0.0), 1.0 / n);
     return h * (1.0 - smoothstep(-zona, zona, d)) * u_geo.w;
 }
 
@@ -674,10 +812,32 @@ vec4 com_parede(vec4 fb, vec2 px) {
     return vec4(fb.rgb + papel * a, fb.a + a);
 }
 
+/// O framebuffer, desfocado. A extensão nunca refrata a imagem crua: ela monta
+/// uma pirâmide borrada do fundo e é dela que o vidro puxa. Aqui o mesmo sai em
+/// nove amostras — o pixel, um anel curto na diagonal e um anel no raio pedido
+/// —, que é o bastante porque o raio é pequeno (5 px no padrão) e o que se quer
+/// é tirar a nitidez, não construir uma gaussiana de verdade.
+vec4 fundo_bruto(vec2 px) {
+    vec2 uv = px / u_fb;
+    if (u_ref.y <= 0.25) return texture(u_fundo, uv);
+
+    vec2 e = vec2(u_ref.y) / u_fb;
+    vec4 s = texture(u_fundo, uv) * 0.2;
+    s += texture(u_fundo, uv + vec2( 0.5,  0.5) * e) * 0.1;
+    s += texture(u_fundo, uv + vec2(-0.5,  0.5) * e) * 0.1;
+    s += texture(u_fundo, uv + vec2( 0.5, -0.5) * e) * 0.1;
+    s += texture(u_fundo, uv + vec2(-0.5, -0.5) * e) * 0.1;
+    s += texture(u_fundo, uv + vec2( 1.0,  0.0) * e) * 0.1;
+    s += texture(u_fundo, uv + vec2(-1.0,  0.0) * e) * 0.1;
+    s += texture(u_fundo, uv + vec2( 0.0,  1.0) * e) * 0.1;
+    s += texture(u_fundo, uv + vec2( 0.0, -1.0) * e) * 0.1;
+    return s;
+}
+
 /// O que está atrás da peça, em pixels do framebuffer. Devolve cor
 /// pré-multiplicada.
 vec4 fundo_em(vec2 px) {
-    return com_parede(texture(u_fundo, px / u_fb), px);
+    return com_parede(fundo_bruto(px), px);
 }
 
 /// Sombra projetada, só do lado de fora: um núcleo curto e escuro (a umbra,
@@ -744,8 +904,14 @@ void main() {
     if (!plano) {
         vec3 raio = refract(vec3(0.0, 0.0, -1.0), n, 1.0 / max(u_opt.x, 1.001));
         if (dot(raio, raio) > 1e-8) {
-            desl = raio.xy / max(-raio.z, 0.15) * u_geo.w;
-            float limite = max(u_geo.z * 1.5, 2.0);
+            // O quanto o raio anda de lado é a escala de deslocamento; a altura
+            // do relevo já entrou aqui pela inclinação da normal. Separar as
+            // duas é o que a extensão faz (`max_z` × `displacement_scale`), e é
+            // o que deixa dar bastante refração sem deformar a superfície.
+            desl = raio.xy / max(-raio.z, 0.15) * u_ref.x;
+            // Mesmo teto da extensão: 30% do lado da peça, para uma curva
+            // extrema não esticar o fundo até virar risco.
+            float limite = max(min(b.x, b.y) * 0.60, 2.0);
             if (length(desl) > limite) desl = normalize(desl) * limite;
         }
         // Junto da borda o gradiente é abrupto; amansar ali evita serrilha.
@@ -754,8 +920,8 @@ void main() {
 
     float anda = length(desl);
     vec4 atras;
-    if (anda < 0.25) {
-        // Sem deslocamento que se veja, a amostra é o pixel de baixo, que já
+    if (anda < 0.25 && u_ref.y <= 0.25) {
+        // Sem deslocamento nem desfoque, a amostra é o pixel de baixo, que já
         // está na mão — nem uma busca a mais na textura.
         atras = com_parede(dest, px);
     } else if (u_opt.y < 0.05) {
@@ -786,35 +952,39 @@ void main() {
 
     vec3 luz = normalize(u_luz);
     vec3 vista = vec3(0.0, 0.0, 1.0);
+    float dentro = 1.0 - de_fora;
 
-    // A beirada tem duas escalas, e as duas importam: um fio quase sem largura
-    // bem em cima do contorno (o reflexo especular da quina, que é o que dá
-    // nitidez à peça) e um realce mais largo descendo pelo bisel (a espessura
-    // do vidro acendendo). Só o largo deixa a peça borrada; só o fino a deixa
-    // com cara de retângulo com contorno de 1 pixel.
-    float fina = 1.0 - smoothstep(0.0, max(1.25, pena * 1.6), abs(d));
-    float larga = 1.0 - smoothstep(0.0, u_luzes.y, abs(d));
-    float banda = max(fina, larga);
+    // Faixa da beirada, medida para os dois lados do contorno.
+    float banda = 1.0 - smoothstep(0.0, max(u_luzes.y, 0.001), abs(d));
 
-    // Borda especular: acende onde a normal encara a luz e, do lado oposto,
-    // devolve só o resto frio de quem atravessou a peça inteira.
-    float fresnel = pow(1.0 - clamp(n.z, 0.0, 1.0), 3.0);
-    float forma = 0.72 * fina + 0.62 * mix(pow(larga, 0.85), fresnel, 0.55) * larga;
-    float frente = max(dot(n, luz), 0.0);
-    float tras = max(-dot(n, luz), 0.0);
-    vec3 borda = (pow(frente, 1.2) * vec3(1.0, 0.99, 0.96)
-                + pow(tras, 1.6) * u_frio) * forma * u_luzes.x;
+    // Borda acesa. Duas coisas se multiplicam aqui:
+    //
+    //   * o Fresnel — quanto mais inclinada a superfície em relação a quem
+    //     olha, mais ela devolve luz —, que é o que concentra o brilho no
+    //     bisel e some no meio plano da peça;
+    //   * o quanto a normal se alinha com o eixo da luz. Em módulo, de
+    //     propósito: os dois lados acendem, e é isso que fecha o fio de luz em
+    //     volta da peça inteira em vez de deixar só a quina de cima brilhando.
+    float rimDot = 1.0 - max(dot(n, vista), 0.0);
+    float fresnel = pow(max(rimDot, 0.0), max(u_pot.x, 0.001));
+    float mascara_luz = pow(abs(dot(n, luz)), max(u_pot.y, 1.0));
+    float forma = mix(pow(banda, 0.85), fresnel, 0.55) * banda;
+    float borda = forma * mascara_luz * u_luzes.x;
 
-    // Reflexo concentrado. Pelo vetor médio (Blinn) em vez do raio refletido:
-    // com uma superfície tão pouco inclinada quanto esta, o raio refletido
-    // quase nunca cai no olho e o brilho simplesmente não aparece.
-    vec3 meio = normalize(luz + vista);
-    float espec = pow(max(dot(n, meio), 0.0), 18.0)
-                * u_luzes.z * (0.30 + 0.70 * banda);
+    // Reflexo concentrado, pelo raio refletido. Vem desligado no padrão: com o
+    // relevo baixo do vidro líquido ele vira um ponto branco fora de lugar, e a
+    // borda acesa acima já é o que dá a leitura de superfície.
+    vec3 refletido = reflect(-luz, n);
+    float espec = pow(max(dot(refletido, vista), 0.0), max(u_pot.z, 1.0)) * u_luzes.z;
+    espec *= mix(0.25, 1.0, dentro) * clamp(banda + dentro * 0.65, 0.0, 1.0);
 
-    // Véu amplo: a face inteira devolvendo um pouco de luz. Como cai com o
-    // ângulo, na prática ele acende o bisel de cima — a luz entrando pela quina.
-    float veu = pow(frente, 1.65) * u_luzes.w;
+    // Fio de repouso: a beirada nunca some por completo, nem sem luz nenhuma
+    // batendo nela.
+    float repouso = banda * 0.008;
+
+    // Véu amplo: a face inteira devolvendo um pouco de luz, mais fraco em cima
+    // da beirada para não somar duas vezes com a borda.
+    float veu = pow(max(dot(n, luz), 0.0), 1.65) * u_luzes.w * mix(1.0, 0.55, banda);
 
     // A beirada mais perto do cursor acende, como vidro polido sob a mão.
     float perto = 0.0;
@@ -823,7 +993,7 @@ void main() {
         perto = exp(-q * q) * banda;
     }
 
-    vec3 acrescimo = vec3(espec + veu + perto * 0.85) + borda;
+    vec3 acrescimo = vec3(espec + borda + repouso + veu + perto * 0.85);
 
     // Mistura "screen" em vez de soma: a luz satura em 1 em vez de estourar.
     vec3 acesa = cor + acrescimo - cor * acrescimo;
@@ -845,10 +1015,11 @@ mod parede {
     use crate::config::Appearance;
     use crossbeam_channel::Receiver;
 
-    /// Desfoque extra, em pixels da imagem já reduzida. A maior parte do borrão
-    /// vem da redução em si (`wallpaper_detail`), que é um passa-baixa de
-    /// verdade; isto só tira o quadriculado que sobra.
-    const DESFOQUE: f32 = 2.5;
+    /// Desfoque, em pixels da imagem já reduzida. Junto com o passa-baixa da
+    /// própria redução, é o que deve dar o desfoque que a extensão aplica ao
+    /// que o vidro refrata — uns 5 px na escala do monitor. Com a imagem perto
+    /// da resolução da tela, este número está quase nessa mesma escala.
+    const DESFOQUE: f32 = 3.0;
 
     pub fn carregar_em_segundo_plano(a: Appearance) -> Receiver<Imagem> {
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -857,6 +1028,8 @@ mod parede {
             .spawn(move || {
                 if let Some(img) = carregar(a) {
                     let _ = tx.send(img);
+                    // Sem isto a imagem fica na fila até alguém mexer na janela.
+                    super::repintar();
                 }
             });
         rx

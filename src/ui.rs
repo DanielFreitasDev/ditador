@@ -1,13 +1,14 @@
 //! Interface: sobreposição de gravação, caixa de resultado e configurações.
 //!
-//! O visual é de vidro escuro — ver `glass.rs` para como o efeito é construído e
-//! `widgets.rs` para os controles feitos com ele.
+//! O visual é o vidro líquido da extensão `ryohsuke1231/liquid-glass` — ver
+//! `glass.rs` para como o efeito é construído e `widgets.rs` para os controles
+//! feitos com ele.
 
 use crate::audio::Levels;
 use crate::glass::{self, Vidro};
 use crate::state::{ModelState, SharedState, Sinal, UiAction, View, lock};
 use crate::stt;
-use crate::widgets::{self, ACCENT, Botao, Icone, MUTED, OK, REC, TEXT};
+use crate::widgets::{self, ACCENT, Botao, Icone, OK, REC};
 use crate::{clipboard, keys};
 use crossbeam_channel::Sender;
 use egui::{
@@ -94,7 +95,7 @@ impl App {
     ) -> Self {
         sinal.ligar_interface(cc.egui_ctx.clone());
         if let Some(gl) = cc.gl.clone() {
-            crate::glass_gpu::iniciar(gl);
+            crate::glass_gpu::iniciar(gl, &cc.egui_ctx);
         }
         carregar_fontes(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -166,57 +167,52 @@ impl App {
     }
 }
 
-/// Tipografia: uma sans humanista do sistema, com um corte mais encorpado para
-/// títulos e botões. O egui traz só um peso embutido, e texto claro sobre vidro
-/// escuro fica anêmico quando tudo tem a mesma espessura.
+/// Tipografia: **Inter**, embutida no binário.
 ///
-/// Se nada disso existir na máquina, a fonte embutida continua valendo — daí a
-/// família `forte` ser sempre registrada, mesmo que aponte para o padrão.
+/// É a fonte de interface que o Rasmus Andersson desenhou para tela, e a
+/// alternativa de código aberto (SIL OFL 1.1) que mais se aproxima da SF Pro da
+/// Apple: altura de x alta, aberturas largas e formas que não se fecham quando
+/// o corpo é pequeno — que é a metade da tela aqui.
+///
+/// Vai embutida em vez de ser procurada no sistema porque a maioria das
+/// máquinas não a tem instalada, e o visual não pode depender disso; e nos dois
+/// pesos de baixo, não no Regular, porque texto claro sobre vidro escuro fica
+/// anêmico. O corpo é o **Medium** (500) e os títulos e botões, o **SemiBold**
+/// (600).
+///
+/// Os pesos vêm como instâncias estáticas, e não como a fonte variável: o
+/// rasterizador do egui não interpola eixos, então uma variável renderizaria
+/// sempre na instância padrão.
 fn carregar_fontes(ctx: &egui::Context) {
-    const CORPO: &[&str] = &[
-        "/usr/share/fonts/truetype/lato/Lato-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ];
-    const FORTE: &[&str] = &[
-        "/usr/share/fonts/truetype/lato/Lato-Semibold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ];
+    const CORPO: &[u8] = include_bytes!("../assets/fontes/Inter-Medium.ttf");
+    const FORTE: &[u8] = include_bytes!("../assets/fontes/Inter-SemiBold.ttf");
 
-    fn instalar(fontes: &mut egui::FontDefinitions, nome: &str, opcoes: &[&str]) -> bool {
-        for caminho in opcoes {
-            if let Ok(bytes) = std::fs::read(caminho) {
-                fontes.font_data.insert(
-                    nome.to_string(),
-                    std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-                );
-                return true;
-            }
-        }
-        false
+    fn instalar(fontes: &mut egui::FontDefinitions, nome: &str, bytes: &'static [u8]) {
+        fontes.font_data.insert(
+            nome.to_string(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
     }
 
     let mut fontes = egui::FontDefinitions::default();
-    let corpo = instalar(&mut fontes, "ditador-corpo", CORPO);
-    let forte = instalar(&mut fontes, "ditador-forte", FORTE);
+    instalar(&mut fontes, "ditador-corpo", CORPO);
+    instalar(&mut fontes, "ditador-forte", FORTE);
 
-    if corpo {
-        fontes
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .insert(0, "ditador-corpo".to_string());
-    }
-    // A família "forte" herda os mesmos reservas (emoji, símbolos) da normal.
+    // Entra na frente das embutidas do egui, que continuam atrás como reserva
+    // para o que a Inter não cobrir (emoji, símbolos).
+    fontes
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, "ditador-corpo".to_string());
+
+    // A família "forte" herda essas mesmas reservas.
     let mut lista = fontes
         .families
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    if forte {
-        lista.insert(0, "ditador-forte".to_string());
-    }
+    lista.insert(0, "ditador-forte".to_string());
     fontes
         .families
         .insert(FontFamily::Name("forte".into()), lista);
@@ -225,18 +221,38 @@ fn carregar_fontes(ctx: &egui::Context) {
 }
 
 /// Controles translúcidos, para que fiquem sobre o vidro em vez de tapá-lo.
+/// Escolhe a paleta do texto pelo brilho do que está atrás da janela. A faixa
+/// morta entre os dois limites é de propósito: sem ela, um papel de parede que
+/// pare bem em cima do limiar faria o texto piscar entre claro e escuro a cada
+/// pixel que a janela andasse.
+fn adaptar_texto(ctx: &egui::Context, ligado: bool) {
+    let escuro = match (ligado, crate::glass_gpu::brilho_do_fundo()) {
+        (true, Some(luma)) => {
+            let atual = widgets::text() == widgets::TEXTO_ESCURO;
+            if atual { luma > 0.52 } else { luma > 0.60 }
+        }
+        _ => false,
+    };
+    if widgets::definir_texto_escuro(escuro) {
+        ctx.all_styles_mut(estilo_de_vidro);
+    }
+}
+
 fn estilo_de_vidro(style: &mut egui::Style) {
+    // Um ponto e meio maior que antes, em toda a escala. A Inter tem a altura
+    // de x alta, então neste corpo ela ocupa mais linha do que a fonte anterior
+    // ocupava — o texto miúdo das notas é o que mais ganha com isso.
     style.text_styles = [
-        (egui::TextStyle::Heading, fonte_forte(19.0)),
-        (egui::TextStyle::Body, egui::FontId::proportional(14.5)),
-        (egui::TextStyle::Button, fonte_forte(14.0)),
-        (egui::TextStyle::Small, egui::FontId::proportional(11.5)),
-        (egui::TextStyle::Monospace, egui::FontId::monospace(13.0)),
+        (egui::TextStyle::Heading, fonte_forte(20.5)),
+        (egui::TextStyle::Body, egui::FontId::proportional(15.5)),
+        (egui::TextStyle::Button, fonte_forte(15.0)),
+        (egui::TextStyle::Small, egui::FontId::proportional(12.5)),
+        (egui::TextStyle::Monospace, egui::FontId::monospace(13.5)),
     ]
     .into();
 
     let v = &mut style.visuals;
-    v.override_text_color = Some(TEXT);
+    v.override_text_color = Some(widgets::text());
     v.panel_fill = Color32::TRANSPARENT;
     // Listas suspensas e menus saem numa camada própria, fora do vidro do
     // painel: precisam de fundo próprio ou ficariam ilegíveis sobre o desktop.
@@ -255,7 +271,7 @@ fn estilo_de_vidro(style: &mut egui::Style) {
     // Fundo dos campos de texto.
     v.extreme_bg_color = glass::white(14);
     v.selection.bg_fill = glass::tint(122, 173, 255, 92);
-    v.selection.stroke = Stroke::new(1.0, TEXT);
+    v.selection.stroke = Stroke::new(1.0, widgets::text());
     v.slider_trailing_fill = true;
     v.handle_shape = egui::style::HandleShape::Circle;
 
@@ -263,7 +279,7 @@ fn estilo_de_vidro(style: &mut egui::Style) {
         w.bg_fill = glass::white(fill);
         w.weak_bg_fill = glass::white(fill);
         w.bg_stroke = Stroke::new(1.0, glass::white(borda));
-        w.fg_stroke = Stroke::new(1.0, TEXT);
+        w.fg_stroke = Stroke::new(1.0, widgets::text());
         w.corner_radius = CornerRadius::same(13);
         w.expansion = 0.0;
     };
@@ -307,7 +323,7 @@ fn forte(texto: impl Into<String>, tamanho: f32) -> RichText {
 
 /// Texto de apoio: pequeno e apagado.
 fn nota(texto: impl Into<String>) -> RichText {
-    RichText::new(texto).size(11.5).color(MUTED)
+    RichText::new(texto).size(12.5).color(widgets::muted())
 }
 
 impl eframe::App for App {
@@ -392,18 +408,20 @@ impl eframe::App for App {
         aparencia.sanear();
         crate::glass_gpu::aplicar_aparencia(aparencia);
         crate::glass_gpu::atualizar_tela(ui.ctx());
+        adaptar_texto(ui.ctx(), aparencia.adaptive_text);
         self.animar_abertura(ui, aparencia);
 
         // O painel vai na camada de fundo, antes de qualquer widget. A posição
         // do cursor vai junto: é ela que faz a beirada acender por onde a mão
         // passa (`None` quando o ponteiro está fora da janela).
-        let card = ui.max_rect().shrink(glass::SHADOW_PAD);
+        let folga = glass::shadow_pad();
+        let card = ui.max_rect().shrink(folga);
         let foco = ui.ctx().input(|i| i.pointer.hover_pos());
         ui.ctx()
             .layer_painter(LayerId::background())
-            .add(glass::painel(card, glass::RADIUS, foco));
+            .add(glass::painel(card, aparencia.corner_radius, foco));
 
-        let margem = glass::SHADOW_PAD as i8 + 16;
+        let margem = folga as i8 + 16;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(Margin::same(margem)))
             .show(ui, |ui| match view {
@@ -513,8 +531,8 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!("{:.0}:{:02.0}", decorrido / 60.0, decorrido % 60.0))
-                        .size(14.0)
-                        .color(MUTED)
+                        .size(15.0)
+                        .color(widgets::muted())
                         .monospace(),
                 );
             });
@@ -668,7 +686,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(altura_texto - 24.0)
                     .show(ui, |ui| {
-                        ui.label(RichText::new(&state.text).size(14.5));
+                        ui.label(RichText::new(&state.text).size(15.5));
                     });
             }
         });
@@ -695,7 +713,7 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !state.message.is_empty() {
-                    ui.label(RichText::new(&state.message).size(11.5).color(REC));
+                    ui.label(RichText::new(&state.message).size(12.5).color(REC));
                 } else if state.config.auto_copy {
                     ui.label(nota("cópia automática ligada"));
                 }
@@ -735,7 +753,7 @@ impl App {
         });
 
         ui.add_space(12.0);
-        ui.label(RichText::new(&state.message).size(13.5));
+        ui.label(RichText::new(&state.message).size(14.5));
         ui.add_space(14.0);
 
         if self.modelo_faltando(ui, state) {
@@ -780,7 +798,7 @@ impl App {
                 return true;
             }
             if let Some(Err(erro)) = &p.fim {
-                ui.label(RichText::new(erro).size(11.5).color(REC));
+                ui.label(RichText::new(erro).size(12.5).color(REC));
                 ui.add_space(8.0);
             }
         }
@@ -1092,8 +1110,8 @@ impl App {
                 } else {
                     "Arquivo não encontrado — a tela inicial oferece baixá-lo"
                 })
-                .size(11.5)
-                .color(if existe { MUTED } else { REC }),
+                .size(12.5)
+                .color(if existe { widgets::muted() } else { REC }),
             );
         });
     }
@@ -1102,10 +1120,37 @@ impl App {
     /// mudança aqui vale no quadro seguinte, então dá para ver o efeito
     /// enquanto se arrasta o controle.
     fn settings_aparencia(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        use crate::config::Tema;
+
         widgets::secao(ui, "Aparência");
         widgets::cartao(ui, |ui| {
             let ap = &mut state.draft.appearance;
 
+            // O tema não é guardado: ele *é* o conjunto de valores abaixo. Daí
+            // o seletor descobrir qual está valendo comparando, em vez de ler
+            // um campo — assim mexer num controle à mão simplesmente sai de
+            // qualquer tema, sem ficar mentindo que ainda está num deles.
+            let atual = Tema::atual(ap);
+            ui.horizontal(|ui| {
+                ui.label("Tema:");
+                egui::ComboBox::from_id_salt("tema")
+                    .selected_text(atual.map_or("Personalizado", Tema::nome))
+                    .show_ui(ui, |ui| {
+                        for tema in Tema::TODOS {
+                            let resposta = ui
+                                .selectable_label(atual == Some(tema), tema.nome())
+                                .on_hover_text(tema.descricao());
+                            if resposta.clicked() {
+                                tema.aplicar(ap);
+                            }
+                        }
+                    });
+            });
+            if let Some(tema) = atual {
+                ui.label(nota(tema.descricao()));
+            }
+
+            ui.add_space(6.0);
             widgets::interruptor(ui, &mut ap.wallpaper, "Papel de parede por baixo do vidro");
             ui.add_enabled_ui(ap.wallpaper, |ui| {
                 porcentagem(ui, &mut ap.wallpaper_opacity, 0.0..=1.0, "Quanto aparece");
@@ -1123,18 +1168,47 @@ impl App {
             ui.label(nota(
                 "O vidro precisa de algo para refratar, e nenhum compositor do \
                  Linux entrega o que está atrás da janela. Desligue para deixar \
-                 o painel só com a tinta escura.",
+                 o painel só com a tinta.",
             ));
 
             ui.add_space(4.0);
+            porcentagem(ui, &mut ap.tint_strength, 0.0..=1.0, "Tinta do vidro");
             ui.add(
-                egui::Slider::new(&mut ap.refraction, 1.0..=2.0)
-                    .text("Refração")
+                egui::Slider::new(&mut ap.ior, 1.0..=3.0)
+                    .text("Índice de refração")
                     .fixed_decimals(2),
             );
-            porcentagem(ui, &mut ap.edge, 0.0..=2.0, "Brilho das bordas");
+            ui.add(
+                egui::Slider::new(&mut ap.displacement, 0.0..=200.0)
+                    .text("Força da refração")
+                    .fixed_decimals(0),
+            );
+            ui.add(
+                egui::Slider::new(&mut ap.blur_radius, 0.0..=20.0)
+                    .text("Desfoque do fundo")
+                    .fixed_decimals(1),
+            );
+            porcentagem(ui, &mut ap.rim_intensity, 0.0..=2.0, "Brilho das bordas");
             porcentagem(ui, &mut ap.sheen, 0.0..=2.0, "Véu da superfície");
-            porcentagem(ui, &mut ap.shadow, 0.0..=1.0, "Sombra projetada");
+            porcentagem(ui, &mut ap.specular, 0.0..=2.0, "Reflexo concentrado");
+            porcentagem(ui, &mut ap.shadow_intensity, 0.0..=1.0, "Sombra projetada");
+            ui.add(
+                egui::Slider::new(&mut ap.light_angle, 0.0..=360.0)
+                    .text("Ângulo da luz (graus)")
+                    .fixed_decimals(0),
+            );
+
+            ui.add_space(4.0);
+            widgets::interruptor(
+                ui,
+                &mut ap.adaptive_text,
+                "Cor do texto pelo brilho do fundo",
+            );
+            ui.label(nota(
+                "Com o vidro claro do padrão, o texto precisa escurecer sobre um \
+                 papel de parede claro para continuar legível. Desligue para \
+                 fixar o texto claro.",
+            ));
 
             ui.add_space(4.0);
             widgets::interruptor(ui, &mut ap.animation, "Animação de mola ao abrir");

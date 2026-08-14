@@ -3,12 +3,19 @@
 //! Aqui ficam a **geometria** das peças (a silhueta de squircle, as normais, os
 //! gradientes) e a **receita** de cada uma — o quanto ela é grossa, o quanto
 //! acende, que tinta tem. Quem desenha é `glass_gpu.rs`, um shader que faz a
-//! óptica pixel a pixel. Se a GPU não estiver disponível, o mesmo arquivo tem o
-//! desenho vetorial de reserva, que empilha as pistas em camadas:
+//! óptica pixel a pixel.
+//!
+//! Os números do padrão são os da extensão de GNOME `ryohsuke1231/liquid-glass`
+//! (ver `config::Appearance`): vidro claro e quase transparente, refração forte
+//! e borda acesa em volta inteira. O que dá forma à peça ali não é a tinta — é
+//! o fundo refratado por ela. Por isso, quando a GPU não está disponível, o
+//! desenho vetorial de reserva volta ao vidro escuro e denso de antes do
+//! shader: sem óptica, a tinta clara sozinha não desenharia nada. Ele empilha
+//! as pistas em camadas:
 //!
 //!   * silhueta de **squircle**: os cantos são superelipses, não arcos de
 //!     círculo, então a curvatura entra cedo e se estica — a forma da Apple;
-//!   * tinta escura translúcida, deixando o fundo aparecer só como um tom;
+//!   * tinta translúcida, deixando o fundo aparecer só como um tom;
 //!   * gradiente de brilho descendo do topo, como luz entrando pela quina;
 //!   * **faixa de refração**: junto da borda o vidro funciona como lente e
 //!     concentra luz, então há um degradê claro que morre para dentro;
@@ -25,10 +32,12 @@ use crate::glass_gpu;
 use egui::epaint::{PathShape, PathStroke, RectShape, Shadow};
 use egui::{Color32, Mesh, Pos2, Rect, Shape, Vec2};
 
-/// Raio dos cantos do painel principal.
-pub const RADIUS: f32 = 30.0;
-/// Espaço reservado em volta do painel para a sombra projetada.
-pub const SHADOW_PAD: f32 = 20.0;
+/// Espaço reservado em volta do painel para a sombra projetada. Acompanha o
+/// raio da sombra configurado, senão um raio grande sairia cortado no limite da
+/// janela.
+pub fn shadow_pad() -> f32 {
+    glass_gpu::aparencia().shadow_radius.max(8.0)
+}
 /// Raio dos cartões que agrupam controles dentro do painel.
 pub const RAIO_CARTAO: f32 = 18.0;
 
@@ -70,11 +79,14 @@ pub struct Vidro {
 }
 
 impl Vidro {
-    /// O painel da janela: peça grossa, escura o bastante para o texto continuar
-    /// legível sobre qualquer papel de parede.
+    /// O painel da janela. É ele que usa a tinta configurada: no padrão, branco
+    /// a 12% — o vidro claro e quase transparente da extensão, em que quem
+    /// desenha a peça é o fundo refratado, não a tinta.
     pub fn painel() -> Self {
+        let ap = glass_gpu::aparencia();
+        let [r, g, b] = ap.tint;
         Self {
-            corpo: tint(15, 16, 23, 182),
+            corpo: tint(r, g, b, (ap.tint_strength * 255.0).round() as u8),
             brilho: 1.0,
             borda: 1.0,
             lente: 11.0,
@@ -83,12 +95,13 @@ impl Vidro {
         }
     }
 
-    /// Cartão interno: uma lâmina fina apoiada sobre o painel.
+    /// Cartão interno: uma lâmina fina apoiada sobre o painel. Um pouco mais
+    /// densa que ele, senão some — o que está por baixo já é vidro.
     pub fn cartao() -> Self {
         Self {
-            corpo: white(13),
+            corpo: white(28),
             brilho: 0.5,
-            borda: 0.42,
+            borda: 0.55,
             lente: 5.0,
             base: 0.35,
             foco: None,
@@ -99,9 +112,9 @@ impl Vidro {
     /// 1 (pressionado), passando por ~0,45 sob o cursor.
     pub fn controle(realce: f32) -> Self {
         Self {
-            corpo: white((26.0 + 44.0 * realce) as u8),
+            corpo: white((38.0 + 52.0 * realce) as u8),
             brilho: 0.62 + 0.35 * realce,
-            borda: 0.66 + 0.5 * realce,
+            borda: 0.8 + 0.5 * realce,
             lente: 3.5,
             base: 0.3,
             foco: None,
@@ -136,7 +149,7 @@ pub fn painel(rect: Rect, radius: f32, foco: Option<Pos2>) -> Shape {
         } else {
             0.0
         },
-        sombra: [SHADOW_PAD, a.shadow],
+        sombra: [a.shadow_radius, a.shadow_intensity],
         ..receita(rect, radius, &vidro)
     };
     if let Some(shape) = glass_gpu::shape(receita) {
@@ -164,7 +177,11 @@ pub fn painel(rect: Rect, radius: f32, foco: Option<Pos2>) -> Shape {
             }
             .as_shape(rect, radius),
         ),
-        peca_vetorial(rect, radius, vidro),
+        // Sem GPU não há fundo refratado, e é ele que dá forma ao painel no
+        // padrão da extensão — a tinta sozinha, a 12% de branco, deixaria a
+        // janela quase invisível. Aqui o corpo volta a ser o vidro escuro e
+        // denso de antes do shader: não é o padrão, é o que sobra sem óptica.
+        peca_vetorial(rect, radius, vidro.com_corpo(tint(15, 16, 23, 182))),
     ])
 }
 
@@ -185,9 +202,15 @@ fn receita(rect: Rect, radius: f32, v: &Vidro) -> glass_gpu::Peca {
     let ap = glass_gpu::aparencia();
     let raio = radius_util(rect, radius);
     let lado = (rect.width().min(rect.height()) / 2.0).max(0.5);
-    // A faixa de refração do desenho vetorial é a mesma coisa que o bisel: a
-    // largura em que o vidro deixa de ser plano e vira lente.
-    let bisel = (v.lente * 1.6).clamp(2.5, lado);
+    // Na extensão a altura da superfície é normalizada pelo próprio raio do
+    // canto — a faixa em que o vidro sobe da borda *é* o raio. Aqui vale o
+    // mesmo, com o teto do meio-lado para peças achatadas não virarem cúpula.
+    let bisel = raio.clamp(2.5, lado);
+    // Toda medida óptica em pixels (deslocamento, altura, desfoque) foi afinada
+    // para uma peça do tamanho do painel. Numa peça menor ela entra reduzida na
+    // mesma proporção, senão um botão de 24 pt receberia o deslocamento de 78
+    // pt do painel inteiro e o fundo dele viraria um borrão esticado.
+    let escala = (raio / ap.corner_radius.max(1.0)).clamp(0.12, 1.0);
     let [r, g, b, a] = v.corpo.to_srgba_unmultiplied();
 
     glass_gpu::Peca {
@@ -195,22 +218,29 @@ fn receita(rect: Rect, radius: f32, v: &Vidro) -> glass_gpu::Peca {
         raio,
         n: expoente(rect, raio),
         bisel,
-        espessura: bisel * 0.85 * ap.thickness,
-        ior: ap.refraction,
-        cromatica: (bisel * 0.09).clamp(0.3, 1.4) * ap.chromatic,
+        perfil: ap.profile_n,
+        espessura: ap.max_z * escala,
+        desloc: ap.displacement * escala,
+        desfoque: ap.blur_radius,
+        ior: ap.ior,
+        cromatica: ap.chroma,
         tinta: [
             r as f32 / 255.0,
             g as f32 / 255.0,
             b as f32 / 255.0,
             a as f32 / 255.0,
         ],
-        ao: 0.15 * ap.occlusion,
-        ao_raio: bisel * 1.15,
-        rim: 1.55 * v.borda * ap.edge,
-        rim_larg: 1.3 + bisel * 0.24,
-        espec: 0.60 * v.brilho * ap.specular,
-        sheen: 0.30 * v.brilho * ap.sheen,
-        frio: [0.65 * v.base, 0.78 * v.base, v.base],
+        ao: ap.ao,
+        ao_raio: (ap.ao_radius * escala).max(1.0),
+        // O ganho de cor da borda é um multiplicador à parte na extensão; aqui
+        // ele já entra junto com a intensidade, que é como o shader usa.
+        rim: ap.rim_intensity * ap.rim_color_intensity * v.borda,
+        rim_larg: (ap.rim_width * escala).max(1.0),
+        rim_pot: ap.rim_power,
+        rim_dir_pot: ap.rim_directional_power,
+        espec: ap.specular * v.brilho,
+        espec_pot: ap.shininess,
+        sheen: ap.sheen * v.brilho,
         foco: v.foco,
         foco_alcance: 95.0,
         parede: 0.0,
@@ -640,16 +670,18 @@ mod tests {
         // alfa reto, então a tinta precisa voltar à cor original.
         let v = Vidro::painel();
         let r = receita(ret(), 30.0, &v);
+        let padrao = crate::config::Appearance::PADRAO;
         let [_, _, _, a] = r.tinta;
-        assert!((a - 182.0 / 255.0).abs() < 0.01, "alfa {a}");
-        // (15, 16, 23) sobre 255, e não escurecido pelo alfa.
-        assert!((r.tinta[2] - 23.0 / 255.0).abs() < 0.01, "{:?}", r.tinta);
+        assert!((a - padrao.tint_strength).abs() < 0.01, "alfa {a}");
+        // A cor sai como foi configurada, e não já multiplicada pelo alfa.
+        let azul = padrao.tint[2] as f32 / 255.0;
+        assert!((r.tinta[2] - azul).abs() < 0.01, "{:?}", r.tinta);
     }
 
     #[test]
     fn o_bisel_nunca_passa_da_metade_da_peca() {
-        // Numa cápsula baixa, a faixa de relevo pedida (lente × 1,6) é maior que
-        // a peça inteira; deixá-la passar viraria uma normal apontando para fora.
+        // Numa cápsula baixa, a faixa de relevo (que é o raio do canto) é maior
+        // que a peça inteira; deixá-la passar viraria uma normal para fora.
         let capsula = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 8.0));
         let r = receita(capsula, 4.0, &Vidro::painel());
         assert!(r.bisel <= 4.0 + 1e-3, "bisel {}", r.bisel);
