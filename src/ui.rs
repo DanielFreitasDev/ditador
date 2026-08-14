@@ -1,13 +1,14 @@
 //! Interface: sobreposição de gravação, caixa de resultado e configurações.
 //!
-//! O visual é de vidro escuro — ver `glass.rs` para como o efeito é construído e
-//! `widgets.rs` para os controles feitos com ele.
+//! O visual é o vidro líquido da extensão `ryohsuke1231/liquid-glass` — ver
+//! `glass.rs` para como o efeito é construído e `widgets.rs` para os controles
+//! feitos com ele.
 
 use crate::audio::Levels;
 use crate::glass::{self, Vidro};
 use crate::state::{ModelState, SharedState, Sinal, UiAction, View, lock};
 use crate::stt;
-use crate::widgets::{self, ACCENT, Botao, Icone, MUTED, OK, REC, TEXT};
+use crate::widgets::{self, ACCENT, Botao, Icone, OK, REC};
 use crate::{clipboard, keys};
 use crossbeam_channel::Sender;
 use egui::{
@@ -94,7 +95,7 @@ impl App {
     ) -> Self {
         sinal.ligar_interface(cc.egui_ctx.clone());
         if let Some(gl) = cc.gl.clone() {
-            crate::glass_gpu::iniciar(gl);
+            crate::glass_gpu::iniciar(gl, &cc.egui_ctx);
         }
         carregar_fontes(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -225,6 +226,23 @@ fn carregar_fontes(ctx: &egui::Context) {
 }
 
 /// Controles translúcidos, para que fiquem sobre o vidro em vez de tapá-lo.
+/// Escolhe a paleta do texto pelo brilho do que está atrás da janela. A faixa
+/// morta entre os dois limites é de propósito: sem ela, um papel de parede que
+/// pare bem em cima do limiar faria o texto piscar entre claro e escuro a cada
+/// pixel que a janela andasse.
+fn adaptar_texto(ctx: &egui::Context, ligado: bool) {
+    let escuro = match (ligado, crate::glass_gpu::brilho_do_fundo()) {
+        (true, Some(luma)) => {
+            let atual = widgets::text() == widgets::TEXTO_ESCURO;
+            if atual { luma > 0.52 } else { luma > 0.60 }
+        }
+        _ => false,
+    };
+    if widgets::definir_texto_escuro(escuro) {
+        ctx.all_styles_mut(estilo_de_vidro);
+    }
+}
+
 fn estilo_de_vidro(style: &mut egui::Style) {
     style.text_styles = [
         (egui::TextStyle::Heading, fonte_forte(19.0)),
@@ -236,7 +254,7 @@ fn estilo_de_vidro(style: &mut egui::Style) {
     .into();
 
     let v = &mut style.visuals;
-    v.override_text_color = Some(TEXT);
+    v.override_text_color = Some(widgets::text());
     v.panel_fill = Color32::TRANSPARENT;
     // Listas suspensas e menus saem numa camada própria, fora do vidro do
     // painel: precisam de fundo próprio ou ficariam ilegíveis sobre o desktop.
@@ -255,7 +273,7 @@ fn estilo_de_vidro(style: &mut egui::Style) {
     // Fundo dos campos de texto.
     v.extreme_bg_color = glass::white(14);
     v.selection.bg_fill = glass::tint(122, 173, 255, 92);
-    v.selection.stroke = Stroke::new(1.0, TEXT);
+    v.selection.stroke = Stroke::new(1.0, widgets::text());
     v.slider_trailing_fill = true;
     v.handle_shape = egui::style::HandleShape::Circle;
 
@@ -263,7 +281,7 @@ fn estilo_de_vidro(style: &mut egui::Style) {
         w.bg_fill = glass::white(fill);
         w.weak_bg_fill = glass::white(fill);
         w.bg_stroke = Stroke::new(1.0, glass::white(borda));
-        w.fg_stroke = Stroke::new(1.0, TEXT);
+        w.fg_stroke = Stroke::new(1.0, widgets::text());
         w.corner_radius = CornerRadius::same(13);
         w.expansion = 0.0;
     };
@@ -307,7 +325,7 @@ fn forte(texto: impl Into<String>, tamanho: f32) -> RichText {
 
 /// Texto de apoio: pequeno e apagado.
 fn nota(texto: impl Into<String>) -> RichText {
-    RichText::new(texto).size(11.5).color(MUTED)
+    RichText::new(texto).size(11.5).color(widgets::muted())
 }
 
 impl eframe::App for App {
@@ -392,18 +410,20 @@ impl eframe::App for App {
         aparencia.sanear();
         crate::glass_gpu::aplicar_aparencia(aparencia);
         crate::glass_gpu::atualizar_tela(ui.ctx());
+        adaptar_texto(ui.ctx(), aparencia.adaptive_text);
         self.animar_abertura(ui, aparencia);
 
         // O painel vai na camada de fundo, antes de qualquer widget. A posição
         // do cursor vai junto: é ela que faz a beirada acender por onde a mão
         // passa (`None` quando o ponteiro está fora da janela).
-        let card = ui.max_rect().shrink(glass::SHADOW_PAD);
+        let folga = glass::shadow_pad();
+        let card = ui.max_rect().shrink(folga);
         let foco = ui.ctx().input(|i| i.pointer.hover_pos());
         ui.ctx()
             .layer_painter(LayerId::background())
-            .add(glass::painel(card, glass::RADIUS, foco));
+            .add(glass::painel(card, aparencia.corner_radius, foco));
 
-        let margem = glass::SHADOW_PAD as i8 + 16;
+        let margem = folga as i8 + 16;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(Margin::same(margem)))
             .show(ui, |ui| match view {
@@ -514,7 +534,7 @@ impl App {
                 ui.label(
                     RichText::new(format!("{:.0}:{:02.0}", decorrido / 60.0, decorrido % 60.0))
                         .size(14.0)
-                        .color(MUTED)
+                        .color(widgets::muted())
                         .monospace(),
                 );
             });
@@ -1093,7 +1113,7 @@ impl App {
                     "Arquivo não encontrado — a tela inicial oferece baixá-lo"
                 })
                 .size(11.5)
-                .color(if existe { MUTED } else { REC }),
+                .color(if existe { widgets::muted() } else { REC }),
             );
         });
     }
@@ -1123,18 +1143,47 @@ impl App {
             ui.label(nota(
                 "O vidro precisa de algo para refratar, e nenhum compositor do \
                  Linux entrega o que está atrás da janela. Desligue para deixar \
-                 o painel só com a tinta escura.",
+                 o painel só com a tinta.",
             ));
 
             ui.add_space(4.0);
+            porcentagem(ui, &mut ap.tint_strength, 0.0..=0.6, "Tinta do vidro");
             ui.add(
-                egui::Slider::new(&mut ap.refraction, 1.0..=2.0)
-                    .text("Refração")
+                egui::Slider::new(&mut ap.ior, 1.0..=3.0)
+                    .text("Índice de refração")
                     .fixed_decimals(2),
             );
-            porcentagem(ui, &mut ap.edge, 0.0..=2.0, "Brilho das bordas");
+            ui.add(
+                egui::Slider::new(&mut ap.displacement, 0.0..=200.0)
+                    .text("Força da refração")
+                    .fixed_decimals(0),
+            );
+            ui.add(
+                egui::Slider::new(&mut ap.blur_radius, 0.0..=20.0)
+                    .text("Desfoque do fundo")
+                    .fixed_decimals(1),
+            );
+            porcentagem(ui, &mut ap.rim_intensity, 0.0..=2.0, "Brilho das bordas");
             porcentagem(ui, &mut ap.sheen, 0.0..=2.0, "Véu da superfície");
-            porcentagem(ui, &mut ap.shadow, 0.0..=1.0, "Sombra projetada");
+            porcentagem(ui, &mut ap.specular, 0.0..=2.0, "Reflexo concentrado");
+            porcentagem(ui, &mut ap.shadow_intensity, 0.0..=1.0, "Sombra projetada");
+            ui.add(
+                egui::Slider::new(&mut ap.light_angle, 0.0..=360.0)
+                    .text("Ângulo da luz (graus)")
+                    .fixed_decimals(0),
+            );
+
+            ui.add_space(4.0);
+            widgets::interruptor(
+                ui,
+                &mut ap.adaptive_text,
+                "Cor do texto pelo brilho do fundo",
+            );
+            ui.label(nota(
+                "Com o vidro claro do padrão, o texto precisa escurecer sobre um \
+                 papel de parede claro para continuar legível. Desligue para \
+                 fixar o texto claro.",
+            ));
 
             ui.add_space(4.0);
             widgets::interruptor(ui, &mut ap.animation, "Animação de mola ao abrir");

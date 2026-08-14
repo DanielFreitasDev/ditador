@@ -82,6 +82,12 @@ pub struct Config {
 
 /// Todos os parâmetros do vidro líquido. O que a interface expõe é um
 /// subconjunto; o resto vive aqui para quem quiser mexer no arquivo.
+///
+/// Os padrões são os da extensão de GNOME `ryohsuke1231/liquid-glass` (o
+/// `gschema.xml` dela), que é a referência visual deste vidro: vidro claro e
+/// quase transparente, refração forte, borda acesa em volta inteira e sem
+/// reflexo concentrado. Os nomes seguem os de lá para dar para comparar valor
+/// a valor.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
@@ -95,22 +101,70 @@ pub struct Appearance {
     /// Largura, em pixels, para a qual o papel de parede é reduzido — é o
     /// controle do desfoque. Menor = mais borrado.
     pub wallpaper_detail: u32,
-    /// Brilho e saturação aplicados a ele antes de entrar.
+    /// Brilho e saturação aplicados a ele antes de entrar. A extensão não mexe
+    /// em nenhum dos dois (`dock-brightness`/`-saturation` = 1,0).
     pub wallpaper_brightness: f32,
     pub wallpaper_saturation: f32,
-    /// Índice de refração do material. 1,0 = nada entorta; vidro real ~1,5.
-    pub refraction: f32,
-    /// Multiplicador da espessura aparente: quanto a refração desloca.
-    pub thickness: f32,
-    /// Multiplicador da separação das cores na refração.
-    pub chromatic: f32,
-    /// Multiplicadores da luz: borda especular, reflexo, véu da face, oclusão.
-    pub edge: f32,
+    /// Raio, em pixels, do desfoque aplicado ao que o vidro refrata. Na
+    /// extensão é `dock-blur-radius`: ela sempre refrata um fundo já borrado.
+    pub blur_radius: f32,
+
+    /// Tinta do corpo (`dock-tint-color`) e o quanto dela entra
+    /// (`dock-tint-strength`). Branco a 12% é o que dá o vidro claro.
+    pub tint: [u8; 3],
+    pub tint_strength: f32,
+    /// Raio dos cantos do painel (`dock-corner-radius`). É ele também que dita
+    /// a largura da faixa em que a superfície sobe da borda — na extensão a
+    /// altura é normalizada justamente pelo raio.
+    pub corner_radius: f32,
+    /// Expoente do perfil da superfície (`glass-profile-shape-n`). Quanto
+    /// maior, mais depressa o vidro sobe junto da borda e mais cedo achata no
+    /// meio — é o que dá a cara de almofada.
+    pub profile_n: f32,
+    /// Altura máxima do relevo (`glass-max-z`), em pixels. Manda na inclinação
+    /// da normal, ou seja, em para onde a luz entorta.
+    pub max_z: f32,
+    /// Escala do deslocamento da refração (`glass-displacement-scale`), em
+    /// pixels. É o quanto o fundo anda de lado ao ser visto pelo bisel.
+    pub displacement: f32,
+    /// Largura, em pixels, do amaciamento da silhueta (`glass-edge-smoothing`).
+    pub edge_smoothing: f32,
+    /// Índice de refração (`glass-ior`). 1,0 = nada entorta; vidro real ~1,5;
+    /// o padrão da extensão, 2,4, é bem mais duro do que vidro de verdade.
+    pub ior: f32,
+    /// Separação das componentes de cor na refração (`glass-chroma-strength`),
+    /// em pixels.
+    pub chroma: f32,
+
+    /// Ângulo da luz, em graus (`glass-light-angle-deg`).
+    pub light_angle: f32,
+    /// Reflexo concentrado (`glass-specular-intensity`) e o quanto ele fecha
+    /// (`glass-shininess`). A extensão vem com o reflexo desligado.
     pub specular: f32,
+    pub shininess: f32,
+    /// A borda acesa: largura, intensidade, o quanto ela segue a direção da luz,
+    /// o expoente de Fresnel e o ganho de cor — `glass-rim-*`.
+    pub rim_width: f32,
+    pub rim_intensity: f32,
+    pub rim_directional_power: f32,
+    pub rim_power: f32,
+    pub rim_color_intensity: f32,
+    /// Véu amplo da face (`glass-sheen-intensity`).
     pub sheen: f32,
-    pub occlusion: f32,
-    /// Intensidade da sombra projetada do painel, de 0 a 1.
-    pub shadow: f32,
+    /// Escurecimento por dentro, junto da borda: intensidade e alcance em
+    /// pixels (`glass-ao-intensity`, `glass-ao-radius`).
+    pub ao: f32,
+    pub ao_radius: f32,
+    /// Sombra projetada: raio em pixels e intensidade (`shadow-radius`,
+    /// `shadow-intensity`).
+    pub shadow_radius: f32,
+    pub shadow_intensity: f32,
+
+    /// Escolher a cor do texto pelo brilho do que está atrás, como o
+    /// `enable-adaptive-text-color` da extensão. Com o vidro claro do padrão é
+    /// o que mantém o texto legível sobre um papel de parede claro.
+    pub adaptive_text: bool,
+
     /// Animação de mola ao abrir.
     pub animation: bool,
     /// Duração dela, em milissegundos.
@@ -124,18 +178,50 @@ pub struct Appearance {
 impl Appearance {
     pub const PADRAO: Self = Self {
         wallpaper: true,
-        wallpaper_opacity: 0.55,
-        wallpaper_detail: 260,
-        wallpaper_brightness: 0.55,
-        wallpaper_saturation: 1.18,
-        refraction: 1.52,
-        thickness: 1.0,
-        chromatic: 1.0,
-        edge: 1.0,
-        specular: 1.0,
-        sheen: 1.0,
-        occlusion: 1.0,
-        shadow: 0.62,
+        // Mais fundo do que a versão anterior deste vidro deixava passar: com a
+        // tinta clara da extensão, é o papel de parede refratado que faz o
+        // desenho. Com pouco, sobra um leitoso sem forma.
+        wallpaper_opacity: 0.82,
+        // Perto da resolução do monitor de propósito. Na extensão o vidro
+        // refrata o quadro da tela com um desfoque de 5 px, e o papel de parede
+        // continua reconhecível através dele — é justamente o desenho dele,
+        // entortado pela beirada, que faz a peça parecer vidro. Reduzir muito a
+        // imagem borra bem mais do que isso e devolve um leitoso sem forma.
+        wallpaper_detail: 1280,
+        wallpaper_brightness: 1.0,
+        wallpaper_saturation: 1.0,
+        blur_radius: 5.0,
+
+        tint: [255, 255, 255],
+        // A extensão tem uma força de tinta por superfície: 0,08 nas
+        // notificações, 0,12 no dock, 0,20 nos menus. A janela daqui é o caso
+        // dos menus — a superfície com mais texto por cima, e a única em que
+        // 12% deixaria o papel de parede competir com o que está escrito.
+        tint_strength: 0.20,
+        corner_radius: 30.0,
+        profile_n: 7.0,
+        max_z: 25.0,
+        displacement: 78.5,
+        edge_smoothing: 2.0,
+        ior: 2.40,
+        chroma: 0.006,
+
+        light_angle: 50.0,
+        specular: 0.0,
+        shininess: 42.0,
+        rim_width: 5.0,
+        rim_intensity: 0.6,
+        rim_directional_power: 2.7,
+        rim_power: 6.0,
+        rim_color_intensity: 1.4,
+        sheen: 0.32,
+        ao: 0.25,
+        ao_radius: 7.5,
+        shadow_radius: 30.0,
+        shadow_intensity: 0.55,
+
+        adaptive_text: true,
+
         animation: true,
         animation_ms: 260,
         animation_bounce: 0.6,
@@ -144,20 +230,38 @@ impl Appearance {
 
     /// Apara os valores para faixas em que o desenho continua fazendo sentido.
     /// O arquivo é editável à mão, e um índice de refração de 40 ou um papel de
-    /// parede de 1 pixel deixariam a janela ilegível.
+    /// parede de 1 pixel deixariam a janela ilegível. As faixas são as do
+    /// `gschema.xml` da extensão onde ele declara alguma.
     pub fn sanear(&mut self) {
         self.wallpaper_opacity = self.wallpaper_opacity.clamp(0.0, 1.0);
         self.wallpaper_detail = self.wallpaper_detail.clamp(16, 3840);
         self.wallpaper_brightness = self.wallpaper_brightness.clamp(0.05, 2.0);
         self.wallpaper_saturation = self.wallpaper_saturation.clamp(0.0, 3.0);
-        self.refraction = self.refraction.clamp(1.0, 2.5);
-        self.thickness = self.thickness.clamp(0.0, 3.0);
-        self.chromatic = self.chromatic.clamp(0.0, 4.0);
-        self.edge = self.edge.clamp(0.0, 3.0);
-        self.specular = self.specular.clamp(0.0, 3.0);
+        self.blur_radius = self.blur_radius.clamp(0.0, 40.0);
+
+        self.tint_strength = self.tint_strength.clamp(0.0, 1.0);
+        self.corner_radius = self.corner_radius.clamp(0.0, 80.0);
+        self.profile_n = self.profile_n.clamp(1.01, 20.0);
+        self.max_z = self.max_z.clamp(0.0, 200.0);
+        self.displacement = self.displacement.clamp(0.0, 400.0);
+        self.edge_smoothing = self.edge_smoothing.clamp(0.0, 10.0);
+        self.ior = self.ior.clamp(1.0, 3.0);
+        self.chroma = self.chroma.clamp(0.0, 20.0);
+
+        self.light_angle = self.light_angle.rem_euclid(360.0);
+        self.specular = self.specular.clamp(0.0, 5.0);
+        self.shininess = self.shininess.clamp(1.0, 200.0);
+        self.rim_width = self.rim_width.clamp(0.0, 40.0);
+        self.rim_intensity = self.rim_intensity.clamp(0.0, 5.0);
+        self.rim_directional_power = self.rim_directional_power.clamp(1.0, 20.0);
+        self.rim_power = self.rim_power.clamp(0.001, 20.0);
+        self.rim_color_intensity = self.rim_color_intensity.clamp(0.0, 5.0);
         self.sheen = self.sheen.clamp(0.0, 3.0);
-        self.occlusion = self.occlusion.clamp(0.0, 2.0);
-        self.shadow = self.shadow.clamp(0.0, 1.0);
+        self.ao = self.ao.clamp(0.0, 1.0);
+        self.ao_radius = self.ao_radius.clamp(0.0, 50.0);
+        self.shadow_radius = self.shadow_radius.clamp(0.0, 100.0);
+        self.shadow_intensity = self.shadow_intensity.clamp(0.0, 1.0);
+
         self.animation_ms = self.animation_ms.clamp(0, 2000);
         self.animation_bounce = self.animation_bounce.clamp(0.0, 1.0);
         self.animation_scale = self.animation_scale.clamp(0.3, 1.0);
@@ -264,14 +368,14 @@ mod tests {
     #[test]
     fn valores_absurdos_do_arquivo_sao_aparados() {
         let mut a = Appearance {
-            refraction: 40.0,
+            ior: 40.0,
             wallpaper_detail: 1,
             wallpaper_opacity: -3.0,
             animation_scale: 0.0,
             ..Appearance::PADRAO
         };
         a.sanear();
-        assert_eq!(a.refraction, 2.5);
+        assert_eq!(a.ior, 3.0);
         assert_eq!(a.wallpaper_detail, 16);
         assert_eq!(a.wallpaper_opacity, 0.0);
         assert_eq!(a.animation_scale, 0.3);
