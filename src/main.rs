@@ -16,6 +16,7 @@ mod state;
 mod stt;
 mod tray;
 mod ui;
+mod widgets;
 
 use crate::audio::AudioSettings;
 use crate::config::Config;
@@ -211,8 +212,8 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_app_id("ditador")
             .with_title("Ditador")
-            .with_inner_size([400.0, 130.0])
-            .with_min_inner_size([300.0, 100.0])
+            .with_inner_size([440.0, 152.0])
+            .with_min_inner_size([320.0, 110.0])
             .with_decorations(false)
             .with_transparent(true)
             .with_resizable(false)
@@ -225,6 +226,12 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         // alfa o painel de vidro vira um retângulo preto. O glow entrega a
         // janela ARGB que o efeito precisa.
         renderer: eframe::Renderer::Glow,
+        // Sem multiamostragem: nenhuma configuração do glutin nesta máquina
+        // junta canal alfa com MSAA, e o pedido derruba a criação da janela. As
+        // silhuetas de vidro saem suaves mesmo assim — o egui aplica a própria
+        // suavização (feathering) em tudo que ele tesselia, e os degradês em
+        // malha ficam recuados meio ponto, sob a borda especular.
+        multisampling: 0,
         persist_window: false,
         centered: false,
         ..Default::default()

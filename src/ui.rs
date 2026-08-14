@@ -1,23 +1,20 @@
 //! Interface: sobreposição de gravação, caixa de resultado e configurações.
 //!
-//! O visual é de vidro escuro — ver `glass.rs` para como o efeito é construído.
+//! O visual é de vidro escuro — ver `glass.rs` para como o efeito é construído e
+//! `widgets.rs` para os controles feitos com ele.
 
 use crate::audio::Levels;
-use crate::glass;
-use crate::state::{ModelState, Sinal, SharedState, UiAction, View, lock};
+use crate::glass::{self, Vidro};
+use crate::state::{ModelState, SharedState, Sinal, UiAction, View, lock};
 use crate::stt;
+use crate::widgets::{self, ACCENT, Botao, Icone, MUTED, OK, REC, TEXT};
 use crate::{clipboard, keys};
 use crossbeam_channel::Sender;
 use egui::{
-    Color32, CornerRadius, LayerId, Margin, Pos2, Rect, RichText, Stroke, Vec2, ViewportCommand,
+    Color32, CornerRadius, FontFamily, LayerId, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
+    ViewportCommand,
 };
 use std::time::Duration;
-
-const TEXT: Color32 = Color32::from_rgb(240, 241, 246);
-const MUTED: Color32 = Color32::from_rgb(154, 156, 172);
-const REC: Color32 = Color32::from_rgb(255, 92, 104);
-const ACCENT: Color32 = Color32::from_rgb(126, 176, 255);
-const OK: Color32 = Color32::from_rgb(118, 222, 158);
 
 const IDIOMAS: &[(&str, &str)] = &[
     ("pt", "Português"),
@@ -60,6 +57,7 @@ impl App {
         sinal: Sinal,
     ) -> Self {
         sinal.ligar_interface(cc.egui_ctx.clone());
+        carregar_fontes(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.all_styles_mut(estilo_de_vidro);
 
@@ -127,35 +125,148 @@ impl App {
     }
 }
 
+/// Tipografia: uma sans humanista do sistema, com um corte mais encorpado para
+/// títulos e botões. O egui traz só um peso embutido, e texto claro sobre vidro
+/// escuro fica anêmico quando tudo tem a mesma espessura.
+///
+/// Se nada disso existir na máquina, a fonte embutida continua valendo — daí a
+/// família `forte` ser sempre registrada, mesmo que aponte para o padrão.
+fn carregar_fontes(ctx: &egui::Context) {
+    const CORPO: &[&str] = &[
+        "/usr/share/fonts/truetype/lato/Lato-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ];
+    const FORTE: &[&str] = &[
+        "/usr/share/fonts/truetype/lato/Lato-Semibold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ];
+
+    fn instalar(fontes: &mut egui::FontDefinitions, nome: &str, opcoes: &[&str]) -> bool {
+        for caminho in opcoes {
+            if let Ok(bytes) = std::fs::read(caminho) {
+                fontes.font_data.insert(
+                    nome.to_string(),
+                    std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    let mut fontes = egui::FontDefinitions::default();
+    let corpo = instalar(&mut fontes, "ditador-corpo", CORPO);
+    let forte = instalar(&mut fontes, "ditador-forte", FORTE);
+
+    if corpo {
+        fontes
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, "ditador-corpo".to_string());
+    }
+    // A família "forte" herda os mesmos reservas (emoji, símbolos) da normal.
+    let mut lista = fontes
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    if forte {
+        lista.insert(0, "ditador-forte".to_string());
+    }
+    fontes
+        .families
+        .insert(FontFamily::Name("forte".into()), lista);
+
+    ctx.set_fonts(fontes);
+}
+
 /// Controles translúcidos, para que fiquem sobre o vidro em vez de tapá-lo.
 fn estilo_de_vidro(style: &mut egui::Style) {
+    style.text_styles = [
+        (egui::TextStyle::Heading, fonte_forte(19.0)),
+        (egui::TextStyle::Body, egui::FontId::proportional(14.5)),
+        (egui::TextStyle::Button, fonte_forte(14.0)),
+        (egui::TextStyle::Small, egui::FontId::proportional(11.5)),
+        (egui::TextStyle::Monospace, egui::FontId::monospace(13.0)),
+    ]
+    .into();
+
     let v = &mut style.visuals;
     v.override_text_color = Some(TEXT);
     v.panel_fill = Color32::TRANSPARENT;
-    v.window_fill = Color32::TRANSPARENT;
+    // Listas suspensas e menus saem numa camada própria, fora do vidro do
+    // painel: precisam de fundo próprio ou ficariam ilegíveis sobre o desktop.
+    v.window_fill = glass::tint(19, 20, 28, 244);
+    v.window_stroke = Stroke::new(1.0, glass::white(40));
+    v.window_corner_radius = CornerRadius::same(16);
+    v.menu_corner_radius = CornerRadius::same(16);
+    v.window_shadow = egui::epaint::Shadow {
+        offset: [0, 10],
+        blur: 30,
+        spread: 0,
+        color: Color32::from_black_alpha(120),
+    };
+    v.popup_shadow = v.window_shadow;
     v.faint_bg_color = glass::white(10);
     // Fundo dos campos de texto.
-    v.extreme_bg_color = glass::white(16);
-    v.selection.bg_fill = glass::tint(126, 176, 255, 90);
+    v.extreme_bg_color = glass::white(14);
+    v.selection.bg_fill = glass::tint(122, 173, 255, 92);
     v.selection.stroke = Stroke::new(1.0, TEXT);
+    v.slider_trailing_fill = true;
+    v.handle_shape = egui::style::HandleShape::Circle;
 
     let vidro = |w: &mut egui::style::WidgetVisuals, fill: u8, borda: u8| {
         w.bg_fill = glass::white(fill);
         w.weak_bg_fill = glass::white(fill);
         w.bg_stroke = Stroke::new(1.0, glass::white(borda));
         w.fg_stroke = Stroke::new(1.0, TEXT);
-        w.corner_radius = CornerRadius::same(11);
+        w.corner_radius = CornerRadius::same(13);
         w.expansion = 0.0;
     };
-    vidro(&mut v.widgets.inactive, 32, 58);
-    vidro(&mut v.widgets.hovered, 52, 92);
-    vidro(&mut v.widgets.active, 66, 120);
+    vidro(&mut v.widgets.inactive, 28, 54);
+    vidro(&mut v.widgets.hovered, 48, 92);
+    vidro(&mut v.widgets.active, 64, 124);
     vidro(&mut v.widgets.open, 30, 56);
-    vidro(&mut v.widgets.noninteractive, 0, 26);
+    vidro(&mut v.widgets.noninteractive, 0, 24);
 
-    style.spacing.item_spacing = Vec2::new(8.0, 8.0);
-    style.spacing.button_padding = Vec2::new(14.0, 7.0);
+    style.spacing.item_spacing = Vec2::new(9.0, 9.0);
+    style.spacing.button_padding = Vec2::new(14.0, 8.0);
     style.spacing.slider_width = 190.0;
+    style.spacing.combo_height = 260.0;
+    // Barra de rolagem flutuante: some quase por completo quando ninguém a
+    // está usando, para não cortar o vidro com um trilho opaco. A margem à
+    // direita é o corredor onde ela aparece, longe da borda dos cartões.
+    style.spacing.scroll = egui::style::ScrollStyle::floating();
+    let barra = &mut style.spacing.scroll;
+    barra.bar_width = 8.0;
+    barra.floating_width = 4.0;
+    barra.handle_min_length = 28.0;
+    barra.content_margin = Margin {
+        right: 10,
+        ..Margin::ZERO
+    };
+    barra.dormant_handle_opacity = 0.22;
+    barra.active_handle_opacity = 0.45;
+    barra.interact_handle_opacity = 0.75;
+}
+
+fn fonte_forte(tamanho: f32) -> egui::FontId {
+    egui::FontId::new(tamanho, FontFamily::Name("forte".into()))
+}
+
+/// Texto de título/rótulo com o corte mais encorpado.
+fn forte(texto: impl Into<String>, tamanho: f32) -> RichText {
+    RichText::new(texto)
+        .size(tamanho)
+        .family(FontFamily::Name("forte".into()))
+}
+
+/// Texto de apoio: pequeno e apagado.
+fn nota(texto: impl Into<String>) -> RichText {
+    RichText::new(texto).size(11.5).color(MUTED)
 }
 
 impl eframe::App for App {
@@ -210,15 +321,16 @@ impl eframe::App for App {
             return;
         }
 
-        // O painel vai na camada de fundo, antes de qualquer widget.
+        // O painel vai na camada de fundo, antes de qualquer widget. A posição
+        // do cursor vai junto: é ela que faz a beirada acender por onde a mão
+        // passa (`None` quando o ponteiro está fora da janela).
         let card = ui.max_rect().shrink(glass::SHADOW_PAD);
-        glass::panel(
-            &ui.ctx().layer_painter(LayerId::background()),
-            card,
-            glass::RADIUS,
-        );
+        let foco = ui.ctx().input(|i| i.pointer.hover_pos());
+        ui.ctx()
+            .layer_painter(LayerId::background())
+            .add(glass::painel(card, glass::RADIUS, foco));
 
-        let margem = glass::SHADOW_PAD as i8 + 14;
+        let margem = glass::SHADOW_PAD as i8 + 16;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(Margin::same(margem)))
             .show(ui, |ui| match view {
@@ -266,47 +378,47 @@ impl App {
         let tempo = ui.input(|i| i.time) as f32;
 
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
             let pulso = 0.5 + 0.5 * (tempo * 3.4).sin();
-            glass::glow_dot(
-                ui.painter(),
+            let painter = ui.painter();
+            painter.add(glass::glow_dot(
                 rect.center(),
-                9.0 + 4.0 * pulso,
-                REC.gamma_multiply(0.20 + 0.30 * pulso),
-            );
-            ui.painter().circle_filled(rect.center(), 5.0, REC);
+                9.5 + 4.5 * pulso,
+                REC.gamma_multiply(0.20 + 0.32 * pulso),
+            ));
+            painter.circle_filled(rect.center(), 5.5, REC);
+            // Reflexo no alto da bolinha: até ela é uma conta de vidro.
+            painter.circle_filled(rect.center() - Vec2::new(1.4, 1.8), 1.9, glass::white(120));
 
-            ui.add_space(2.0);
-            ui.label(RichText::new("Ouvindo").size(17.0).strong());
+            ui.add_space(3.0);
+            ui.label(forte("Ouvindo", 17.0));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!("{:.0}:{:02.0}", decorrido / 60.0, decorrido % 60.0))
-                        .size(15.0)
+                        .size(14.0)
                         .color(MUTED)
                         .monospace(),
                 );
             });
         });
 
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         self.waveform(ui, tempo);
-        ui.add_space(8.0);
+        ui.add_space(12.0);
 
-        ui.label(
-            RichText::new(format!(
-                "Solte {} para transcrever",
-                keys::combo_label(&state.config.hotkey)
-            ))
-            .size(12.0)
-            .color(MUTED),
-        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(nota("Solte"));
+            widgets::keycap(ui, &keys::combo_label(&state.config.hotkey));
+            ui.label(nota("para transcrever"));
+        });
     }
 
     fn waveform(&mut self, ui: &mut egui::Ui, tempo: f32) {
-        let altura = 48.0;
+        let altura = 54.0;
         let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), altura), egui::Sense::hover());
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), altura), Sense::hover());
 
         let leituras: Vec<f32> = {
             let guard = self.levels.lock().unwrap_or_else(|e| e.into_inner());
@@ -334,16 +446,15 @@ impl App {
 
         // Halo geral acompanhando o volume: o vidro "acende" quando você fala.
         if pico > 0.04 {
-            glass::glow(
-                painter,
+            painter.add(glass::glow(
                 rect.shrink2(Vec2::new(rect.width() * 0.12, altura * 0.28)),
                 altura,
                 REC.gamma_multiply(0.10 + 0.16 * pico),
-                46.0,
-            );
+                48.0,
+            ));
         }
 
-        let vao = 4.0;
+        let vao = 4.5;
         let largura = ((rect.width() - vao * (total as f32 - 1.0)) / total as f32).max(1.0);
         let meio = rect.center().y;
 
@@ -354,28 +465,48 @@ impl App {
             let onda = 0.5 + 0.5 * (tempo * 1.7 + i as f32 * 0.42).sin();
             let repouso = 4.0 + 11.0 * onda;
             let h = (valor * altura * 0.94).max(repouso);
-            let barra =
-                Rect::from_min_size(Pos2::new(x, meio - h / 2.0), Vec2::new(largura, h));
+            let barra = Rect::from_min_size(Pos2::new(x, meio - h / 2.0), Vec2::new(largura, h));
 
             // Frio no silêncio, quente na voz.
-            let cor = glass::mix(glass::tint(150, 178, 235, 120), REC, valor.min(1.0));
-            glass::pill(painter, barra, cor);
+            let cor = glass::mix(glass::tint(150, 178, 235, 122), REC, valor.min(1.0));
+            painter.add(glass::pastilha(barra, cor));
         }
     }
 
     // ----------------------------------------------------------- processando
 
     fn processing(&self, ui: &mut egui::Ui, state: &crate::state::Shared) {
+        let tempo = ui.input(|i| i.time) as f32;
         ui.vertical_centered(|ui| {
-            ui.add_space(12.0);
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(34.0), egui::Sense::hover());
-            glass::glow_dot(ui.painter(), rect.center(), 24.0, ACCENT.gamma_multiply(0.22));
-            ui.put(rect, egui::Spinner::new().size(28.0).color(ACCENT));
+            ui.add_space(10.0);
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+            let painter = ui.painter();
+            painter.add(glass::glow_dot(
+                rect.center(),
+                21.0,
+                ACCENT.gamma_multiply(0.20),
+            ));
 
-            ui.add_space(8.0);
-            ui.label(RichText::new("Transcrevendo…").size(15.0));
+            // Contas de luz girando: cada uma acende e apaga com um atraso, o
+            // que dá a impressão de uma única gota correndo pelo anel.
+            const CONTAS: usize = 10;
+            for i in 0..CONTAS {
+                let fase = (tempo * 1.15 - i as f32 / CONTAS as f32).rem_euclid(1.0);
+                let brilho = (1.0 - fase).powf(2.2);
+                let angulo =
+                    std::f32::consts::TAU * i as f32 / CONTAS as f32 - std::f32::consts::FRAC_PI_2;
+                let centro = rect.center() + Vec2::angled(angulo) * 14.5;
+                painter.circle_filled(
+                    centro,
+                    1.8 + 1.5 * brilho,
+                    ACCENT.gamma_multiply(0.16 + 0.84 * brilho),
+                );
+            }
+
+            ui.add_space(10.0);
+            ui.label(forte("Transcrevendo…", 15.0));
             if !state.status.is_empty() {
-                ui.label(RichText::new(&state.status).size(12.0).color(MUTED));
+                ui.label(nota(&state.status));
             }
         });
     }
@@ -386,68 +517,70 @@ impl App {
         drag_area(ui, "resultado");
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Texto transcrito").size(16.0).strong());
+            ui.label(forte("Texto transcrito", 16.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("×").on_hover_text("Fechar").clicked() {
+                if widgets::botao_icone(ui, Icone::Fechar, "Fechar").clicked() {
                     self.act(UiAction::Hide);
                 }
-                if ui.button("⚙").on_hover_text("Configurações").clicked() {
+                if widgets::botao_icone(ui, Icone::Ajustes, "Configurações").clicked() {
                     self.act(UiAction::OpenSettings);
                 }
                 if !state.status.is_empty() {
-                    ui.label(RichText::new(&state.status).size(11.0).color(MUTED));
+                    ui.add_space(4.0);
+                    ui.label(nota(&state.status));
                 }
             });
         });
 
-        ui.add_space(8.0);
+        ui.add_space(10.0);
 
-        let altura_texto = ui.available_height() - 50.0;
-        if state.config.editable_result {
-            ui.add_sized(
-                [ui.available_width(), altura_texto],
-                egui::TextEdit::multiline(&mut state.text)
-                    .desired_width(f32::INFINITY)
-                    .margin(Margin::same(10))
-                    .font(egui::TextStyle::Body),
-            );
-        } else {
-            egui::ScrollArea::vertical()
-                .max_height(altura_texto)
-                .show(ui, |ui| {
-                    ui.label(RichText::new(&state.text).size(14.0));
-                });
-        }
+        let altura_texto = ui.available_height() - 60.0;
+        widgets::cartao(ui, |ui| {
+            ui.set_min_height(altura_texto - 24.0);
+            if state.config.editable_result {
+                ui.add_sized(
+                    [ui.available_width(), altura_texto - 24.0],
+                    egui::TextEdit::multiline(&mut state.text)
+                        .desired_width(f32::INFINITY)
+                        // O cartão já é a moldura; o campo entra sem a dele.
+                        .frame(egui::Frame::NONE)
+                        .margin(Margin::ZERO)
+                        .font(egui::TextStyle::Body),
+                );
+            } else {
+                egui::ScrollArea::vertical()
+                    .max_height(altura_texto - 24.0)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(&state.text).size(14.5));
+                    });
+            }
+        });
 
-        ui.add_space(8.0);
+        ui.add_space(10.0);
 
         ui.horizontal(|ui| {
             let copiado = state
                 .copied_at
                 .is_some_and(|t| t.elapsed() < Duration::from_secs(3));
 
-            let rotulo = if copiado {
-                RichText::new("✔ Copiado").color(OK)
+            let botao = if copiado {
+                Botao::new("✔  Copiado").destaque(OK)
             } else {
-                RichText::new("Copiar")
+                Botao::new("Copiar").destaque(ACCENT)
             };
-            if ui.button(rotulo).clicked() {
+            if ui.add(botao.largura_minima(126.0)).clicked() {
                 self.act(UiAction::Copy);
             }
 
-            if clipboard::paste_available() && ui.button("Copiar e colar").clicked() {
+            if clipboard::paste_available() && widgets::botao(ui, "Copiar e colar").clicked() {
                 self.act(UiAction::Paste);
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !state.message.is_empty() {
-                    ui.label(RichText::new(&state.message).size(11.0).color(REC));
+                    ui.label(RichText::new(&state.message).size(11.5).color(REC));
                 } else if state.config.auto_copy {
-                    ui.label(
-                        RichText::new("cópia automática ligada")
-                            .size(11.0)
-                            .color(MUTED),
-                    );
+                    ui.label(nota("cópia automática ligada"));
                 }
             });
         });
@@ -459,34 +592,48 @@ impl App {
         drag_area(ui, "erro");
 
         let carregando = state.model == ModelState::Loading;
+        let cor = if carregando { ACCENT } else { REC };
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::hover());
-            let cor = if carregando { ACCENT } else { REC };
-            glass::glow_dot(ui.painter(), rect.center(), 15.0, cor.gamma_multiply(0.22));
-            ui.painter().text(
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+            let painter = ui.painter();
+            painter.add(glass::glow_dot(
+                rect.center(),
+                16.0,
+                cor.gamma_multiply(0.22),
+            ));
+            painter.add(glass::peca(
+                rect,
+                13.0,
+                Vidro::controle(0.0).com_corpo(glass::tint(cor.r(), cor.g(), cor.b(), 60)),
+            ));
+            painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                if carregando { "⏳" } else { "⚠" },
-                egui::FontId::proportional(15.0),
+                if carregando { "⏳" } else { "!" },
+                fonte_forte(14.0),
                 cor,
             );
-            ui.add_space(2.0);
-            ui.label(RichText::new("Ditador").size(16.0).strong());
+            ui.add_space(4.0);
+            ui.label(forte("Ditador", 16.5));
         });
 
-        ui.add_space(10.0);
-        ui.label(RichText::new(&state.message).size(13.0));
         ui.add_space(12.0);
+        ui.label(RichText::new(&state.message).size(13.5));
+        ui.add_space(14.0);
 
         ui.horizontal(|ui| {
-            if ui.button("Fechar").clicked() {
-                self.act(UiAction::Hide);
-            }
-            if state.model == ModelState::Failed && ui.button("Tentar de novo").clicked() {
+            if state.model == ModelState::Failed
+                && ui
+                    .add(Botao::new("Tentar de novo").destaque(ACCENT))
+                    .clicked()
+            {
                 self.act(UiAction::ReloadModel);
             }
-            if ui.button("Configurações").clicked() {
+            if widgets::botao(ui, "Configurações").clicked() {
                 self.act(UiAction::OpenSettings);
+            }
+            if widgets::botao(ui, "Fechar").clicked() {
+                self.act(UiAction::Hide);
             }
         });
     }
@@ -497,21 +644,17 @@ impl App {
         drag_area(ui, "config");
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Configurações").size(17.0).strong());
+            ui.label(forte("Configurações", 19.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("v{} · {}", env!("CARGO_PKG_VERSION"), stt::BACKEND))
-                        .size(11.0)
-                        .color(MUTED),
+                widgets::keycap(
+                    ui,
+                    &format!("v{} · {}", env!("CARGO_PKG_VERSION"), stt::BACKEND),
                 );
             });
         });
 
-        ui.add_space(6.0);
-        ui.separator();
-
-        let rodape = 48.0;
-        egui::ScrollArea::vertical()
+        let rodape = 56.0;
+        let area = egui::ScrollArea::vertical()
             .max_height(ui.available_height() - rodape)
             .show(ui, |ui| {
                 self.settings_atalho(ui, state);
@@ -519,19 +662,33 @@ impl App {
                 self.settings_area_transferencia(ui, state);
                 self.settings_desempenho(ui, state);
                 self.settings_avancado(ui, state);
+                ui.add_space(6.0);
             });
 
-        ui.separator();
+        // O conteúdo não termina no corte: ele some por baixo do vidro.
+        let faixa = Rect::from_min_max(
+            Pos2::new(area.inner_rect.left(), area.inner_rect.bottom() - 26.0),
+            area.inner_rect.max,
+        );
+        ui.painter()
+            .add(glass::gradiente_da_base(faixa, 0.0, 1.0, |t| {
+                glass::tint(15, 16, 23, (196.0 * (1.0 - t).powf(1.5)) as u8)
+            }));
+
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.button("Salvar").clicked() {
+            if ui
+                .add(Botao::new("Salvar").destaque(ACCENT).largura_minima(112.0))
+                .clicked()
+            {
                 self.act(UiAction::ApplyDraft);
             }
-            if ui.button("Cancelar").clicked() {
+            if widgets::botao(ui, "Cancelar").clicked() {
                 self.act(UiAction::CloseSettings);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button(RichText::new("Encerrar o Ditador").color(REC))
+                    .add(Botao::new("Encerrar o Ditador").cor(REC))
                     .on_hover_text("Fecha o aplicativo por completo")
                     .clicked()
                 {
@@ -542,245 +699,230 @@ impl App {
     }
 
     fn settings_atalho(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
-        secao(ui, "Atalho");
-        ui.horizontal(|ui| {
-            ui.label("Segure para falar:");
+        widgets::secao(ui, "Atalho");
+        widgets::cartao(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Segure para falar:");
 
-            if state.capturing_hotkey {
-                ui.label(
-                    RichText::new("pressione a combinação…")
-                        .color(ACCENT)
-                        .strong(),
-                );
-                if ui.button("Cancelar").clicked() {
-                    self.act(UiAction::CancelHotkeyCapture);
+                if state.capturing_hotkey {
+                    ui.label(forte("pressione a combinação…", 14.0).color(ACCENT));
+                    if widgets::botao(ui, "Cancelar").clicked() {
+                        self.act(UiAction::CancelHotkeyCapture);
+                    }
+                } else {
+                    let atual = keys::combo_label(&state.draft.hotkey);
+                    if ui
+                        .add(Botao::new(RichText::new(atual).monospace()))
+                        .on_hover_text("Clique e pressione a nova tecla ou combinação")
+                        .clicked()
+                    {
+                        self.act(UiAction::StartHotkeyCapture);
+                    }
                 }
-            } else {
-                let atual = keys::combo_label(&state.draft.hotkey);
-                if ui
-                    .button(RichText::new(atual).monospace())
-                    .on_hover_text("Clique e pressione a nova tecla ou combinação")
-                    .clicked()
-                {
-                    self.act(UiAction::StartHotkeyCapture);
-                }
-            }
-        });
-        ui.label(
-            RichText::new(
+            });
+            ui.add_space(4.0);
+            ui.label(nota(
                 "A leitura é passiva: a tecla continua funcionando normalmente nos \
                  outros programas. Prefira teclas sem função própria (Pause, F13…). \
                  Esc cancela a captura.",
-            )
-            .size(11.0)
-            .color(MUTED),
-        );
+            ));
+        });
     }
 
     fn settings_transcricao(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
-        secao(ui, "Transcrição");
+        widgets::secao(ui, "Transcrição");
+        widgets::cartao(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Idioma:");
+                let atual = IDIOMAS
+                    .iter()
+                    .find(|(code, _)| *code == state.draft.language)
+                    .map(|(_, nome)| *nome)
+                    .unwrap_or("Personalizado");
+                egui::ComboBox::from_id_salt("idioma")
+                    .selected_text(atual)
+                    .show_ui(ui, |ui| {
+                        for (code, nome) in IDIOMAS {
+                            ui.selectable_value(&mut state.draft.language, code.to_string(), *nome);
+                        }
+                    });
+            });
 
-        ui.horizontal(|ui| {
-            ui.label("Idioma:");
-            let atual = IDIOMAS
-                .iter()
-                .find(|(code, _)| *code == state.draft.language)
-                .map(|(_, nome)| *nome)
-                .unwrap_or("Personalizado");
-            egui::ComboBox::from_id_salt("idioma")
-                .selected_text(atual)
-                .show_ui(ui, |ui| {
-                    for (code, nome) in IDIOMAS {
-                        ui.selectable_value(&mut state.draft.language, code.to_string(), *nome);
-                    }
-                });
-        });
+            widgets::interruptor(ui, &mut state.draft.translate, "Traduzir para inglês");
 
-        ui.checkbox(&mut state.draft.translate, "Traduzir para inglês");
-
-        ui.horizontal(|ui| {
-            ui.label("Microfone:");
-            let atual = state
-                .draft
-                .input_device
-                .clone()
-                .unwrap_or_else(|| "Padrão do sistema".to_string());
-            let dispositivos = state.devices.clone();
-            egui::ComboBox::from_id_salt("microfone")
-                .selected_text(encurtar(&atual, 40))
-                .width(320.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut state.draft.input_device, None, "Padrão do sistema");
-                    for nome in &dispositivos {
+            ui.horizontal(|ui| {
+                ui.label("Microfone:");
+                let atual = state
+                    .draft
+                    .input_device
+                    .clone()
+                    .unwrap_or_else(|| "Padrão do sistema".to_string());
+                let dispositivos = state.devices.clone();
+                egui::ComboBox::from_id_salt("microfone")
+                    .selected_text(encurtar(&atual, 34))
+                    .width(300.0)
+                    .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut state.draft.input_device,
-                            Some(nome.clone()),
-                            encurtar(nome, 46),
+                            None,
+                            "Padrão do sistema",
                         );
-                    }
-                });
+                        for nome in &dispositivos {
+                            ui.selectable_value(
+                                &mut state.draft.input_device,
+                                Some(nome.clone()),
+                                encurtar(nome, 46),
+                            );
+                        }
+                    });
+            });
         });
     }
 
     fn settings_area_transferencia(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
-        secao(ui, "Área de transferência");
-
-        ui.checkbox(
-            &mut state.draft.auto_copy,
-            "Copiar o texto automaticamente ao terminar",
-        );
-
-        let ydotool = clipboard::paste_available();
-        ui.add_enabled_ui(ydotool, |ui| {
-            ui.checkbox(
-                &mut state.draft.auto_paste,
-                "Colar automaticamente na janela em foco (Ctrl+V)",
+        widgets::secao(ui, "Área de transferência");
+        widgets::cartao(ui, |ui| {
+            widgets::interruptor(
+                ui,
+                &mut state.draft.auto_copy,
+                "Copiar o texto automaticamente ao terminar",
             );
-        });
-        if !ydotool {
-            ui.label(
-                RichText::new("Colagem automática requer o ydotool: sudo apt install ydotool")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-        } else if state.draft.auto_paste {
-            ui.label(
-                RichText::new(
+
+            let ydotool = clipboard::paste_available();
+            ui.add_enabled_ui(ydotool, |ui| {
+                widgets::interruptor(
+                    ui,
+                    &mut state.draft.auto_paste,
+                    "Colar na janela em foco (Ctrl+V)",
+                );
+            });
+            if !ydotool {
+                ui.label(nota(
+                    "Colagem automática requer o ydotool: sudo apt install ydotool",
+                ));
+            } else if state.draft.auto_paste {
+                ui.label(nota(
                     "Com a colagem automática a janela de resultado não aparece — \
                      o texto vai direto para onde você estava escrevendo.",
-                )
-                .size(11.0)
-                .color(MUTED),
-            );
-        }
+                ));
+            }
 
-        if !clipboard::wl_copy_available() {
-            ui.label(
-                RichText::new("wl-copy não encontrado; usando a área de transferência do X11.")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-        }
+            if !clipboard::wl_copy_available() {
+                ui.label(nota(
+                    "wl-copy não encontrado; usando a área de transferência do X11.",
+                ));
+            }
+        });
     }
 
     fn settings_desempenho(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
-        secao(ui, "Desempenho");
+        widgets::secao(ui, "Desempenho");
+        widgets::cartao(ui, |ui| {
+            ui.add_enabled_ui(stt::GPU_CAPABLE, |ui| {
+                widgets::interruptor(
+                    ui,
+                    &mut state.draft.use_gpu,
+                    format!("Usar a GPU ({})", stt::BACKEND),
+                );
+            });
+            if !stt::GPU_CAPABLE {
+                ui.label(nota("Este binário foi compilado só para CPU."));
+            }
 
-        ui.add_enabled_ui(stt::GPU_CAPABLE, |ui| {
-            ui.checkbox(
-                &mut state.draft.use_gpu,
-                format!("Usar a GPU ({})", stt::BACKEND),
-            );
-        });
-        if !stt::GPU_CAPABLE {
-            ui.label(
-                RichText::new("Este binário foi compilado só para CPU.")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-        }
+            ui.add(egui::Slider::new(&mut state.draft.threads, 1..=16).text("Threads de CPU"));
 
-        ui.add(egui::Slider::new(&mut state.draft.threads, 1..=16).text("Threads de CPU"));
-
-        ui.horizontal(|ui| {
+            ui.add_space(2.0);
             ui.label("Modelo:");
             let mut caminho = state.draft.model_path.display().to_string();
             if ui
-                .add(egui::TextEdit::singleline(&mut caminho).desired_width(350.0))
+                .add(
+                    egui::TextEdit::singleline(&mut caminho)
+                        .desired_width(f32::INFINITY)
+                        .margin(Margin::symmetric(10, 7)),
+                )
                 .changed()
             {
                 state.draft.model_path = caminho.into();
             }
-        });
 
-        let existe = state.draft.model_path.exists();
-        ui.label(
-            RichText::new(if existe {
-                "Arquivo encontrado."
-            } else {
-                "Arquivo não encontrado — rode ./baixar-modelo.sh"
-            })
-            .size(11.0)
-            .color(if existe { MUTED } else { REC }),
-        );
+            let existe = state.draft.model_path.exists();
+            ui.label(
+                RichText::new(if existe {
+                    "Arquivo encontrado."
+                } else {
+                    "Arquivo não encontrado — rode ./baixar-modelo.sh"
+                })
+                .size(11.5)
+                .color(if existe { MUTED } else { REC }),
+            );
+        });
     }
 
     fn settings_avancado(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
-        egui::CollapsingHeader::new("Avançado")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new(
-                        "Contexto passado ao modelo (jargão, nomes próprios, estilo de pontuação):",
-                    )
-                    .size(11.0)
-                    .color(MUTED),
-                );
-                ui.add(
-                    egui::TextEdit::multiline(&mut state.draft.initial_prompt)
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY),
-                );
+        widgets::secao(ui, "Avançado");
+        widgets::cartao(ui, |ui| {
+            ui.label(nota(
+                "Contexto passado ao modelo (jargão, nomes próprios, estilo de pontuação):",
+            ));
+            ui.add(
+                egui::TextEdit::multiline(&mut state.draft.initial_prompt)
+                    .desired_rows(2)
+                    .margin(Margin::symmetric(10, 7))
+                    .desired_width(f32::INFINITY),
+            );
 
-                ui.checkbox(
-                    &mut state.draft.normalize_audio,
-                    "Normalizar o volume antes de transcrever",
-                );
-                ui.checkbox(
-                    &mut state.draft.editable_result,
-                    "Permitir editar o texto no resultado",
-                );
+            widgets::interruptor(
+                ui,
+                &mut state.draft.normalize_audio,
+                "Normalizar o volume antes de transcrever",
+            );
+            widgets::interruptor(
+                ui,
+                &mut state.draft.editable_result,
+                "Permitir editar o texto no resultado",
+            );
 
-                let mut minimo = state.draft.min_recording_ms as i32;
-                if ui
-                    .add(egui::Slider::new(&mut minimo, 0..=2000).text("Gravação mínima (ms)"))
-                    .changed()
-                {
-                    state.draft.min_recording_ms = minimo as u64;
-                }
+            let mut minimo = state.draft.min_recording_ms as i32;
+            if ui
+                .add(egui::Slider::new(&mut minimo, 0..=2000).text("Gravação mínima (ms)"))
+                .changed()
+            {
+                state.draft.min_recording_ms = minimo as u64;
+            }
 
-                let mut maximo = state.draft.max_recording_secs as i32;
-                if ui
-                    .add(egui::Slider::new(&mut maximo, 10..=600).text("Gravação máxima (s)"))
-                    .changed()
-                {
-                    state.draft.max_recording_secs = maximo as u64;
-                }
+            let mut maximo = state.draft.max_recording_secs as i32;
+            if ui
+                .add(egui::Slider::new(&mut maximo, 10..=600).text("Gravação máxima (s)"))
+                .changed()
+            {
+                state.draft.max_recording_secs = maximo as u64;
+            }
 
-                let mut fechar = state.draft.result_timeout_secs as i32;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut fechar, 0..=120)
-                            .text("Fechar o resultado após (s, 0 = nunca)"),
-                    )
-                    .changed()
-                {
-                    state.draft.result_timeout_secs = fechar as u64;
-                }
+            let mut fechar = state.draft.result_timeout_secs as i32;
+            if ui
+                .add(
+                    egui::Slider::new(&mut fechar, 0..=120)
+                        .text("Fechar o resultado após (s, 0 = nunca)"),
+                )
+                .changed()
+            {
+                state.draft.result_timeout_secs = fechar as u64;
+            }
 
-                ui.checkbox(
-                    &mut state.draft.force_x11,
-                    "Desenhar a janela via XWayland (recomendado no GNOME)",
-                );
-                ui.label(
-                    RichText::new(
-                        "Sem isso o GNOME decide onde a janela aparece e ela pode ficar \
-                         atrás das outras. Mudança exige reiniciar o Ditador.",
-                    )
-                    .size(11.0)
-                    .color(MUTED),
-                );
-            });
+            widgets::interruptor(
+                ui,
+                &mut state.draft.force_x11,
+                "Desenhar a janela via XWayland (recomendado no GNOME)",
+            );
+            ui.label(nota(
+                "Sem isso o GNOME decide onde a janela aparece e ela pode ficar \
+                 atrás das outras. Mudança exige reiniciar o Ditador.",
+            ));
+        });
     }
 }
 
 // --------------------------------------------------------------------- apoio
-
-fn secao(ui: &mut egui::Ui, titulo: &str) {
-    ui.add_space(12.0);
-    ui.label(RichText::new(titulo).size(12.0).strong().color(ACCENT));
-    ui.add_space(2.0);
-}
 
 /// Faixa invisível no topo que permite arrastar a janela sem decoração.
 fn drag_area(ui: &mut egui::Ui, id: &str) {
@@ -788,7 +930,7 @@ fn drag_area(ui: &mut egui::Ui, id: &str) {
         ui.max_rect().left_top(),
         Vec2::new(ui.available_width(), 28.0),
     );
-    let response = ui.interact(rect, egui::Id::new(id), egui::Sense::drag());
+    let response = ui.interact(rect, egui::Id::new(id), Sense::drag());
     if response.dragged() {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
     }

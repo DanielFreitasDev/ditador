@@ -20,10 +20,10 @@ impl View {
     pub fn size(self) -> [f32; 2] {
         let pad = 2.0 * crate::glass::SHADOW_PAD;
         let [w, h] = match self {
-            View::Hidden | View::Recording | View::Processing => [400.0, 138.0],
-            View::Result => [560.0, 330.0],
-            View::Settings => [600.0, 570.0],
-            View::Error => [460.0, 186.0],
+            View::Hidden | View::Recording | View::Processing => [440.0, 152.0],
+            View::Result => [620.0, 372.0],
+            View::Settings => [660.0, 660.0],
+            View::Error => [500.0, 200.0],
         };
         [w + pad, h + pad]
     }

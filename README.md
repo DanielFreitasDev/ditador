@@ -106,10 +106,25 @@ coisas que uma sobreposição de ditado precisa. Pelo X11 funciona. Desligue em
 *Configurações → Avançado* se preferir Wayland nativo.
 
 **Por que o vidro não borra o fundo.** Nenhum compositor do Linux expõe desfoque
-de fundo para aplicativos. O efeito é construído com o que dá: tinta
-translúcida, gradiente de brilho no topo, borda especular que acende em cima e
-apaga embaixo, e duas bordas separadas por 2 pt para sugerir espessura. Veja
-`src/glass.rs`.
+de fundo para aplicativos. Então o vidro vem das outras pistas que o olho usa
+para reconhecê-lo, todas em `src/glass.rs`:
+
+* silhueta de **squircle** — os cantos são quartos de superelipse
+  (`|x/r|⁴·² + |y/r|⁴·² = 1`), não arcos de círculo, que é o que dá a curva
+  contínua dos cantos da Apple. Cápsulas e círculos voltam ao arco;
+* **borda especular com direção**: a normal da silhueta é calculada ponto a
+  ponto e comparada com a direção da luz, então a beirada acende no topo/à
+  esquerda, esfria e azula embaixo — e ganha um brilho extra por onde o cursor
+  passa, como vidro polido sob a mão;
+* **faixa de refração**: quatro linhas concêntricas cada vez mais fracas
+  imitando a luz que a borda concentra;
+* brilho de topo e retorno de base em malha, com as linhas de corte adensadas
+  na altura dos cantos para o degradê não cortar a curva;
+* duas bordas separadas por 2 pt, para sugerir espessura.
+
+Os controles (`src/widgets.rs`) são feitos das mesmas peças: botões em cápsula,
+interruptores que deslizam, cartões agrupando as configurações — todos acendem
+sob o cursor e afundam ao serem pressionados.
 
 **Por que o programa sai com `_exit`.** Liberar os buffers da GPU enquanto a
 thread principal desmonta o contexto gráfico derruba o driver da NVIDIA
