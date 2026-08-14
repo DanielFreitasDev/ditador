@@ -58,7 +58,8 @@ MODELO="${XDG_DATA_HOME:-$HOME/.local/share}/ditador/models/ggml-large-v3-turbo-
 if [ ! -f "$MODELO" ]; then
     echo
     echo "!! O modelo ainda não foi baixado. Rode:"
-    echo "   ./baixar-modelo.sh"
+    echo "   ditador --baixar-modelo"
+    echo "   (ou abra o programa: a primeira tela oferece baixá-lo)"
 fi
 
 if ! id -nG "$USER" | tr ' ' '\n' | grep -qx input; then
