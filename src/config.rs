@@ -175,29 +175,43 @@ pub struct Appearance {
     pub animation_scale: f32,
 }
 
+/// As duas tintas do vidro, que são as mesmas duas que o macOS 26.1 passou a
+/// oferecer no botão **Clear / Tinted** da Aparência depois das reclamações de
+/// legibilidade.
+///
+/// A escura é o padrão daqui pelo mesmo motivo que é o da Apple numa janela: no
+/// System Settings do macOS a área de conteúdo é praticamente opaca, e o vidro
+/// translúcido de verdade fica só na moldura — barra lateral, barra de
+/// ferramentas, dock, Central de Controle. A óptica (refração, borda acesa,
+/// véu, sombra) é a mesma nas duas; o que muda é a densidade do corpo.
+pub const TINTA_ESCURA: [u8; 3] = [20, 21, 28];
+pub const FORCA_ESCURA: f32 = 0.78;
+/// A clara é o padrão da extensão de GNOME (branco a 20%, o valor que ela usa
+/// nos menus). Deixa o papel de parede aparecer; sobre um papel de parede
+/// movimentado, custa legibilidade.
+pub const TINTA_CLARA: [u8; 3] = [255, 255, 255];
+pub const FORCA_CLARA: f32 = 0.20;
+
 impl Appearance {
     pub const PADRAO: Self = Self {
         wallpaper: true,
-        // Mais fundo do que a versão anterior deste vidro deixava passar: com a
-        // tinta clara da extensão, é o papel de parede refratado que faz o
-        // desenho. Com pouco, sobra um leitoso sem forma.
-        wallpaper_opacity: 0.82,
-        // Perto da resolução do monitor de propósito. Na extensão o vidro
-        // refrata o quadro da tela com um desfoque de 5 px, e o papel de parede
-        // continua reconhecível através dele — é justamente o desenho dele,
-        // entortado pela beirada, que faz a peça parecer vidro. Reduzir muito a
-        // imagem borra bem mais do que isso e devolve um leitoso sem forma.
-        wallpaper_detail: 1280,
+        // O papel de parede entra quase todo, mas por baixo de uma tinta densa:
+        // é ele que dá à superfície a cor do ambiente (o "tint window
+        // background with wallpaper colour" do macOS), não o desenho.
+        wallpaper_opacity: 0.90,
+        // Borrado com força, de propósito. Numa janela cheia de texto a Apple
+        // não deixa o papel de parede legível por trás — no macOS a área de
+        // conteúdo é praticamente opaca, e no iOS 26 beta 2 a Central de
+        // Controle ganhou justamente mais desfoque e mais escuro por causa da
+        // ilegibilidade. Reduzir a imagem a esta largura é o passa-baixa que
+        // faz isso.
+        wallpaper_detail: 420,
         wallpaper_brightness: 1.0,
         wallpaper_saturation: 1.0,
         blur_radius: 5.0,
 
-        tint: [255, 255, 255],
-        // A extensão tem uma força de tinta por superfície: 0,08 nas
-        // notificações, 0,12 no dock, 0,20 nos menus. A janela daqui é o caso
-        // dos menus — a superfície com mais texto por cima, e a única em que
-        // 12% deixaria o papel de parede competir com o que está escrito.
-        tint_strength: 0.20,
+        tint: TINTA_ESCURA,
+        tint_strength: FORCA_ESCURA,
         corner_radius: 30.0,
         profile_n: 7.0,
         max_z: 25.0,
@@ -227,6 +241,23 @@ impl Appearance {
         animation_bounce: 0.6,
         animation_scale: 0.94,
     };
+
+    /// O corpo do vidro está no ajuste escuro (denso)?
+    pub fn escuro(&self) -> bool {
+        let [r, g, b] = self.tint;
+        (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) < 128.0
+    }
+
+    /// Troca só a densidade do corpo, sem tocar em nada da óptica.
+    pub fn com_vidro_escuro(&mut self, escuro: bool) {
+        if escuro {
+            self.tint = TINTA_ESCURA;
+            self.tint_strength = FORCA_ESCURA;
+        } else {
+            self.tint = TINTA_CLARA;
+            self.tint_strength = FORCA_CLARA;
+        }
+    }
 
     /// Apara os valores para faixas em que o desenho continua fazendo sentido.
     /// O arquivo é editável à mão, e um índice de refração de 40 ou um papel de

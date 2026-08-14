@@ -1147,7 +1147,14 @@ impl App {
             ));
 
             ui.add_space(4.0);
-            porcentagem(ui, &mut ap.tint_strength, 0.0..=0.6, "Tinta do vidro");
+            // Os mesmos dois ajustes que o macOS 26.1 passou a oferecer na
+            // Aparência: o corpo denso, em que o texto manda, e o corpo claro,
+            // em que o papel de parede aparece. A óptica é a mesma nos dois.
+            let mut escuro = ap.escuro();
+            if widgets::interruptor(ui, &mut escuro, "Vidro denso (mais legível)").changed() {
+                ap.com_vidro_escuro(escuro);
+            }
+            porcentagem(ui, &mut ap.tint_strength, 0.0..=1.0, "Tinta do vidro");
             ui.add(
                 egui::Slider::new(&mut ap.ior, 1.0..=3.0)
                     .text("Índice de refração")

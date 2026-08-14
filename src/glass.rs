@@ -673,8 +673,9 @@ mod tests {
         let padrao = crate::config::Appearance::PADRAO;
         let [_, _, _, a] = r.tinta;
         assert!((a - padrao.tint_strength).abs() < 0.01, "alfa {a}");
-        // Branco cheio, e não escurecido pelo alfa de 12%.
-        assert!((r.tinta[2] - 1.0).abs() < 0.01, "{:?}", r.tinta);
+        // A cor sai como foi configurada, e não já multiplicada pelo alfa.
+        let azul = padrao.tint[2] as f32 / 255.0;
+        assert!((r.tinta[2] - azul).abs() < 0.01, "{:?}", r.tinta);
     }
 
     #[test]
