@@ -275,7 +275,7 @@ pub fn progresso(ui: &mut Ui, fracao: Option<f32>, rotulo: &str) {
 
     if !rotulo.is_empty() {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(rotulo).size(11.5).color(muted()));
+        ui.label(egui::RichText::new(rotulo).size(12.5).color(muted()));
     }
 }
 
@@ -401,7 +401,7 @@ pub fn secao(ui: &mut Ui, titulo: &str) {
     ui.add_space(14.0);
     ui.label(
         egui::RichText::new(titulo.to_uppercase())
-            .size(10.5)
+            .size(11.5)
             .color(muted())
             .family(egui::FontFamily::Name("forte".into())),
     );

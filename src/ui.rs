@@ -167,57 +167,52 @@ impl App {
     }
 }
 
-/// Tipografia: uma sans humanista do sistema, com um corte mais encorpado para
-/// títulos e botões. O egui traz só um peso embutido, e texto claro sobre vidro
-/// escuro fica anêmico quando tudo tem a mesma espessura.
+/// Tipografia: **Inter**, embutida no binário.
 ///
-/// Se nada disso existir na máquina, a fonte embutida continua valendo — daí a
-/// família `forte` ser sempre registrada, mesmo que aponte para o padrão.
+/// É a fonte de interface que o Rasmus Andersson desenhou para tela, e a
+/// alternativa de código aberto (SIL OFL 1.1) que mais se aproxima da SF Pro da
+/// Apple: altura de x alta, aberturas largas e formas que não se fecham quando
+/// o corpo é pequeno — que é a metade da tela aqui.
+///
+/// Vai embutida em vez de ser procurada no sistema porque a maioria das
+/// máquinas não a tem instalada, e o visual não pode depender disso; e nos dois
+/// pesos de baixo, não no Regular, porque texto claro sobre vidro escuro fica
+/// anêmico. O corpo é o **Medium** (500) e os títulos e botões, o **SemiBold**
+/// (600).
+///
+/// Os pesos vêm como instâncias estáticas, e não como a fonte variável: o
+/// rasterizador do egui não interpola eixos, então uma variável renderizaria
+/// sempre na instância padrão.
 fn carregar_fontes(ctx: &egui::Context) {
-    const CORPO: &[&str] = &[
-        "/usr/share/fonts/truetype/lato/Lato-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ];
-    const FORTE: &[&str] = &[
-        "/usr/share/fonts/truetype/lato/Lato-Semibold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ];
+    const CORPO: &[u8] = include_bytes!("../assets/fontes/Inter-Medium.ttf");
+    const FORTE: &[u8] = include_bytes!("../assets/fontes/Inter-SemiBold.ttf");
 
-    fn instalar(fontes: &mut egui::FontDefinitions, nome: &str, opcoes: &[&str]) -> bool {
-        for caminho in opcoes {
-            if let Ok(bytes) = std::fs::read(caminho) {
-                fontes.font_data.insert(
-                    nome.to_string(),
-                    std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-                );
-                return true;
-            }
-        }
-        false
+    fn instalar(fontes: &mut egui::FontDefinitions, nome: &str, bytes: &'static [u8]) {
+        fontes.font_data.insert(
+            nome.to_string(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
     }
 
     let mut fontes = egui::FontDefinitions::default();
-    let corpo = instalar(&mut fontes, "ditador-corpo", CORPO);
-    let forte = instalar(&mut fontes, "ditador-forte", FORTE);
+    instalar(&mut fontes, "ditador-corpo", CORPO);
+    instalar(&mut fontes, "ditador-forte", FORTE);
 
-    if corpo {
-        fontes
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .insert(0, "ditador-corpo".to_string());
-    }
-    // A família "forte" herda os mesmos reservas (emoji, símbolos) da normal.
+    // Entra na frente das embutidas do egui, que continuam atrás como reserva
+    // para o que a Inter não cobrir (emoji, símbolos).
+    fontes
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, "ditador-corpo".to_string());
+
+    // A família "forte" herda essas mesmas reservas.
     let mut lista = fontes
         .families
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    if forte {
-        lista.insert(0, "ditador-forte".to_string());
-    }
+    lista.insert(0, "ditador-forte".to_string());
     fontes
         .families
         .insert(FontFamily::Name("forte".into()), lista);
@@ -244,12 +239,15 @@ fn adaptar_texto(ctx: &egui::Context, ligado: bool) {
 }
 
 fn estilo_de_vidro(style: &mut egui::Style) {
+    // Um ponto e meio maior que antes, em toda a escala. A Inter tem a altura
+    // de x alta, então neste corpo ela ocupa mais linha do que a fonte anterior
+    // ocupava — o texto miúdo das notas é o que mais ganha com isso.
     style.text_styles = [
-        (egui::TextStyle::Heading, fonte_forte(19.0)),
-        (egui::TextStyle::Body, egui::FontId::proportional(14.5)),
-        (egui::TextStyle::Button, fonte_forte(14.0)),
-        (egui::TextStyle::Small, egui::FontId::proportional(11.5)),
-        (egui::TextStyle::Monospace, egui::FontId::monospace(13.0)),
+        (egui::TextStyle::Heading, fonte_forte(20.5)),
+        (egui::TextStyle::Body, egui::FontId::proportional(15.5)),
+        (egui::TextStyle::Button, fonte_forte(15.0)),
+        (egui::TextStyle::Small, egui::FontId::proportional(12.5)),
+        (egui::TextStyle::Monospace, egui::FontId::monospace(13.5)),
     ]
     .into();
 
@@ -325,7 +323,7 @@ fn forte(texto: impl Into<String>, tamanho: f32) -> RichText {
 
 /// Texto de apoio: pequeno e apagado.
 fn nota(texto: impl Into<String>) -> RichText {
-    RichText::new(texto).size(11.5).color(widgets::muted())
+    RichText::new(texto).size(12.5).color(widgets::muted())
 }
 
 impl eframe::App for App {
@@ -533,7 +531,7 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!("{:.0}:{:02.0}", decorrido / 60.0, decorrido % 60.0))
-                        .size(14.0)
+                        .size(15.0)
                         .color(widgets::muted())
                         .monospace(),
                 );
@@ -688,7 +686,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(altura_texto - 24.0)
                     .show(ui, |ui| {
-                        ui.label(RichText::new(&state.text).size(14.5));
+                        ui.label(RichText::new(&state.text).size(15.5));
                     });
             }
         });
@@ -715,7 +713,7 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !state.message.is_empty() {
-                    ui.label(RichText::new(&state.message).size(11.5).color(REC));
+                    ui.label(RichText::new(&state.message).size(12.5).color(REC));
                 } else if state.config.auto_copy {
                     ui.label(nota("cópia automática ligada"));
                 }
@@ -755,7 +753,7 @@ impl App {
         });
 
         ui.add_space(12.0);
-        ui.label(RichText::new(&state.message).size(13.5));
+        ui.label(RichText::new(&state.message).size(14.5));
         ui.add_space(14.0);
 
         if self.modelo_faltando(ui, state) {
@@ -800,7 +798,7 @@ impl App {
                 return true;
             }
             if let Some(Err(erro)) = &p.fim {
-                ui.label(RichText::new(erro).size(11.5).color(REC));
+                ui.label(RichText::new(erro).size(12.5).color(REC));
                 ui.add_space(8.0);
             }
         }
@@ -1112,7 +1110,7 @@ impl App {
                 } else {
                     "Arquivo não encontrado — a tela inicial oferece baixá-lo"
                 })
-                .size(11.5)
+                .size(12.5)
                 .color(if existe { widgets::muted() } else { REC }),
             );
         });
@@ -1122,10 +1120,37 @@ impl App {
     /// mudança aqui vale no quadro seguinte, então dá para ver o efeito
     /// enquanto se arrasta o controle.
     fn settings_aparencia(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        use crate::config::Tema;
+
         widgets::secao(ui, "Aparência");
         widgets::cartao(ui, |ui| {
             let ap = &mut state.draft.appearance;
 
+            // O tema não é guardado: ele *é* o conjunto de valores abaixo. Daí
+            // o seletor descobrir qual está valendo comparando, em vez de ler
+            // um campo — assim mexer num controle à mão simplesmente sai de
+            // qualquer tema, sem ficar mentindo que ainda está num deles.
+            let atual = Tema::atual(ap);
+            ui.horizontal(|ui| {
+                ui.label("Tema:");
+                egui::ComboBox::from_id_salt("tema")
+                    .selected_text(atual.map_or("Personalizado", Tema::nome))
+                    .show_ui(ui, |ui| {
+                        for tema in Tema::TODOS {
+                            let resposta = ui
+                                .selectable_label(atual == Some(tema), tema.nome())
+                                .on_hover_text(tema.descricao());
+                            if resposta.clicked() {
+                                tema.aplicar(ap);
+                            }
+                        }
+                    });
+            });
+            if let Some(tema) = atual {
+                ui.label(nota(tema.descricao()));
+            }
+
+            ui.add_space(6.0);
             widgets::interruptor(ui, &mut ap.wallpaper, "Papel de parede por baixo do vidro");
             ui.add_enabled_ui(ap.wallpaper, |ui| {
                 porcentagem(ui, &mut ap.wallpaper_opacity, 0.0..=1.0, "Quanto aparece");
@@ -1147,13 +1172,6 @@ impl App {
             ));
 
             ui.add_space(4.0);
-            // Os mesmos dois ajustes que o macOS 26.1 passou a oferecer na
-            // Aparência: o corpo denso, em que o texto manda, e o corpo claro,
-            // em que o papel de parede aparece. A óptica é a mesma nos dois.
-            let mut escuro = ap.escuro();
-            if widgets::interruptor(ui, &mut escuro, "Vidro denso (mais legível)").changed() {
-                ap.com_vidro_escuro(escuro);
-            }
             porcentagem(ui, &mut ap.tint_strength, 0.0..=1.0, "Tinta do vidro");
             ui.add(
                 egui::Slider::new(&mut ap.ior, 1.0..=3.0)

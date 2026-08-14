@@ -185,7 +185,7 @@ pub struct Appearance {
 /// ferramentas, dock, Central de Controle. A óptica (refração, borda acesa,
 /// véu, sombra) é a mesma nas duas; o que muda é a densidade do corpo.
 pub const TINTA_ESCURA: [u8; 3] = [20, 21, 28];
-pub const FORCA_ESCURA: f32 = 0.78;
+pub const FORCA_ESCURA: f32 = 0.68;
 /// A clara é o padrão da extensão de GNOME (branco a 20%, o valor que ela usa
 /// nos menus). Deixa o papel de parede aparecer; sobre um papel de parede
 /// movimentado, custa legibilidade.
@@ -198,14 +198,15 @@ impl Appearance {
         // O papel de parede entra quase todo, mas por baixo de uma tinta densa:
         // é ele que dá à superfície a cor do ambiente (o "tint window
         // background with wallpaper colour" do macOS), não o desenho.
-        wallpaper_opacity: 0.90,
+        wallpaper_opacity: 0.92,
         // Borrado com força, de propósito. Numa janela cheia de texto a Apple
         // não deixa o papel de parede legível por trás — no macOS a área de
         // conteúdo é praticamente opaca, e no iOS 26 beta 2 a Central de
         // Controle ganhou justamente mais desfoque e mais escuro por causa da
         // ilegibilidade. Reduzir a imagem a esta largura é o passa-baixa que
-        // faz isso.
-        wallpaper_detail: 420,
+        // faz isso: o que atravessa o vidro é a luz e a cor do papel de parede,
+        // distorcidas pela beirada, não o desenho dele.
+        wallpaper_detail: 300,
         wallpaper_brightness: 1.0,
         wallpaper_saturation: 1.0,
         blur_radius: 5.0,
@@ -241,23 +242,6 @@ impl Appearance {
         animation_bounce: 0.6,
         animation_scale: 0.94,
     };
-
-    /// O corpo do vidro está no ajuste escuro (denso)?
-    pub fn escuro(&self) -> bool {
-        let [r, g, b] = self.tint;
-        (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) < 128.0
-    }
-
-    /// Troca só a densidade do corpo, sem tocar em nada da óptica.
-    pub fn com_vidro_escuro(&mut self, escuro: bool) {
-        if escuro {
-            self.tint = TINTA_ESCURA;
-            self.tint_strength = FORCA_ESCURA;
-        } else {
-            self.tint = TINTA_CLARA;
-            self.tint_strength = FORCA_CLARA;
-        }
-    }
 
     /// Apara os valores para faixas em que o desenho continua fazendo sentido.
     /// O arquivo é editável à mão, e um índice de refração de 40 ou um papel de
@@ -302,6 +286,117 @@ impl Appearance {
 impl Default for Appearance {
     fn default() -> Self {
         Self::PADRAO
+    }
+}
+
+/// Temas prontos. Mexem só no que define o *material* — densidade do corpo,
+/// quanto do papel de parede entra, força da óptica. Preferências que não são
+/// do tema (animação de abertura, atalho, tudo o mais) ficam como estão.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tema {
+    /// O padrão: corpo denso, como a área de conteúdo de uma janela do macOS.
+    Denso,
+    /// O padrão da extensão de GNOME: branco a 20%, o papel de parede aparece.
+    Claro,
+    /// Sem papel de parede nenhum e corpo quase opaco. É o de máximo contraste,
+    /// e o mais barato de desenhar — serve para tela pequena, monitor fraco ou
+    /// quem simplesmente não quer o desktop competindo com o texto.
+    Fosco,
+    /// O oposto: vidro fino, refração forte, beirada acesa. É bonito e é o que
+    /// mostra a óptica; sobre um papel de parede movimentado, custa leitura.
+    Cristal,
+}
+
+impl Tema {
+    pub const TODOS: [Tema; 4] = [Tema::Denso, Tema::Claro, Tema::Fosco, Tema::Cristal];
+
+    pub fn nome(self) -> &'static str {
+        match self {
+            Tema::Denso => "Denso",
+            Tema::Claro => "Claro",
+            Tema::Fosco => "Fosco",
+            Tema::Cristal => "Cristal",
+        }
+    }
+
+    pub fn descricao(self) -> &'static str {
+        match self {
+            Tema::Denso => "O padrão. Corpo escuro, papel de parede só como cor de ambiente.",
+            Tema::Claro => "Vidro claro, com o papel de parede aparecendo através dele.",
+            Tema::Fosco => "Sem papel de parede e quase opaco: contraste máximo.",
+            Tema::Cristal => "Vidro fino e refração forte. O mais bonito, o menos legível.",
+        }
+    }
+
+    /// Escreve o tema por cima da aparência, deixando o resto intacto.
+    pub fn aplicar(self, a: &mut Appearance) {
+        let p = Appearance::PADRAO;
+        match self {
+            Tema::Denso => {
+                a.tint = TINTA_ESCURA;
+                a.tint_strength = FORCA_ESCURA;
+                a.wallpaper = true;
+                a.wallpaper_opacity = p.wallpaper_opacity;
+                a.wallpaper_detail = p.wallpaper_detail;
+                a.blur_radius = p.blur_radius;
+                a.ior = p.ior;
+                a.displacement = p.displacement;
+                a.rim_intensity = p.rim_intensity;
+                a.sheen = p.sheen;
+            }
+            Tema::Claro => {
+                a.tint = TINTA_CLARA;
+                a.tint_strength = FORCA_CLARA;
+                a.wallpaper = true;
+                a.wallpaper_opacity = 0.82;
+                // Bem menos borrado: no vidro claro é o desenho do papel de
+                // parede, entortado pela beirada, que faz a peça parecer vidro.
+                a.wallpaper_detail = 1280;
+                a.blur_radius = p.blur_radius;
+                a.ior = p.ior;
+                a.displacement = p.displacement;
+                a.rim_intensity = p.rim_intensity;
+                a.sheen = p.sheen;
+            }
+            Tema::Fosco => {
+                a.tint = [18, 19, 26];
+                a.tint_strength = 0.94;
+                a.wallpaper = false;
+                a.blur_radius = 0.0;
+                // A refração continua existindo nos cartões e nos botões, que
+                // refratam o painel; no painel em si, sem fundo, ela não teria
+                // o que entortar.
+                a.displacement = 40.0;
+                a.ior = 1.9;
+                a.rim_intensity = 0.7;
+                a.sheen = 0.26;
+            }
+            Tema::Cristal => {
+                a.tint = TINTA_CLARA;
+                a.tint_strength = 0.08;
+                a.wallpaper = true;
+                a.wallpaper_opacity = 0.92;
+                a.wallpaper_detail = 1600;
+                a.blur_radius = 3.0;
+                a.ior = 2.6;
+                a.displacement = 120.0;
+                a.rim_intensity = 0.9;
+                a.sheen = 0.45;
+            }
+        }
+        // Com corpo claro, texto claro some sobre papel de parede claro.
+        a.adaptive_text = true;
+        a.sanear();
+    }
+
+    /// Qual tema a aparência atual representa, se for algum deles — é o que
+    /// deixa o seletor mostrar o que está valendo depois de reabrir a janela.
+    pub fn atual(a: &Appearance) -> Option<Tema> {
+        Tema::TODOS.into_iter().find(|t| {
+            let mut candidato = *a;
+            t.aplicar(&mut candidato);
+            candidato == *a
+        })
     }
 }
 
@@ -394,6 +489,25 @@ mod tests {
         let cfg: Config = serde_json::from_str(antiga).expect("config antiga");
         assert_eq!(cfg.language, "en");
         assert_eq!(cfg.appearance, Appearance::PADRAO);
+    }
+
+    #[test]
+    fn o_padrao_e_o_tema_denso_e_cada_tema_se_reconhece() {
+        // O seletor descobre o tema comparando, então um tema que não voltasse
+        // igual a si mesmo apareceria para sempre como "Personalizado".
+        assert_eq!(Tema::atual(&Appearance::PADRAO), Some(Tema::Denso));
+        for tema in Tema::TODOS {
+            let mut a = Appearance::PADRAO;
+            tema.aplicar(&mut a);
+            assert_eq!(Tema::atual(&a), Some(tema), "{}", tema.nome());
+        }
+    }
+
+    #[test]
+    fn mexer_num_controle_sai_do_tema() {
+        let mut a = Appearance::PADRAO;
+        a.tint_strength += 0.1;
+        assert_eq!(Tema::atual(&a), None);
     }
 
     #[test]
