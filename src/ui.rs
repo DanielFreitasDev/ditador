@@ -1,18 +1,21 @@
 //! Interface: sobreposição de gravação, caixa de resultado e configurações.
 //!
-//! O visual é o vidro líquido da extensão `ryohsuke1231/liquid-glass` — ver
-//! `glass.rs` para como o efeito é construído e `widgets.rs` para os controles
-//! feitos com ele.
+//! O visual é sólido — ver `tema.rs` para a paleta e `widgets.rs` para os
+//! controles. Cada tela é uma janela sem decoração: um retângulo arredondado
+//! preenchido com a cor de fundo do tema, uma borda de um pixel e uma sombra por
+//! baixo. O resto da janela é transparente, e é só por isso que ela precisa de
+//! canal alfa.
 
 use crate::audio::Levels;
-use crate::glass::{self, Vidro};
+use crate::config::Tema;
 use crate::state::{ModelState, SharedState, Sinal, UiAction, View, lock};
 use crate::stt;
-use crate::widgets::{self, ACCENT, Botao, Icone, OK, REC};
+use crate::tema::{self, medio, nota, paleta, titulo};
+use crate::widgets::{self, Botao, Icone};
 use crate::{clipboard, keys};
 use crossbeam_channel::Sender;
 use egui::{
-    Color32, CornerRadius, FontFamily, LayerId, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
+    CornerRadius, LayerId, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2,
     ViewportCommand,
 };
 use std::time::Duration;
@@ -39,8 +42,27 @@ pub struct App {
     captura: Captura,
     /// Medição de quadros por segundo (ver `Medidor`).
     medidor: Option<Medidor>,
-    /// Quando a tela atual começou a aparecer, para a animação de mola.
+    /// Passeio automático pelas telas (ver `Demo`).
+    demo: Option<Demo>,
+    /// Quando a tela atual começou a aparecer, para a animação de entrada.
     abertura: Option<std::time::Instant>,
+}
+
+/// Diagnóstico opcional: com `DITADOR_DEMO=1` o programa passa sozinho pelas
+/// três telas que ilustram o README — gravando, resultado e configurações —,
+/// com conteúdo de exemplo, e sai. Junto com `DITADOR_CAPTURA` é o que gera as
+/// imagens do README a partir de um clone qualquer, sem precisar de microfone,
+/// de modelo baixado nem de alguém falando na hora certa.
+struct Demo {
+    desde: std::time::Instant,
+}
+
+impl Demo {
+    fn novo() -> Option<Self> {
+        std::env::var_os("DITADOR_DEMO").map(|_| Self {
+            desde: std::time::Instant::now(),
+        })
+    }
 }
 
 /// Diagnóstico opcional: com `DITADOR_QUADROS=1` a janela repinta sem parar e
@@ -77,7 +99,8 @@ impl Medidor {
 
 /// Diagnóstico opcional: com `DITADOR_CAPTURA=<pasta>`, grava um PNG de cada
 /// tela assim que ela estabiliza. Existe porque o GNOME nega a API de captura
-/// de tela a aplicativos comuns, e sem isso não há como conferir o desenho.
+/// de tela a aplicativos comuns, e sem isso não há como conferir o desenho — é
+/// com ele que saem as imagens do README.
 #[derive(Default)]
 struct Captura {
     tela: Option<View>,
@@ -94,15 +117,16 @@ impl App {
         sinal: Sinal,
     ) -> Self {
         sinal.ligar_interface(cc.egui_ctx.clone());
-        if let Some(gl) = cc.gl.clone() {
-            crate::glass_gpu::iniciar(gl, &cc.egui_ctx);
+        // Diagnóstico opcional: `DITADOR_ZOOM=1.5` desenha tudo maior, o que
+        // serve tanto para conferir a interface numa tela densa quanto para as
+        // imagens do README saírem com resolução de sobra.
+        if let Ok(zoom) = std::env::var("DITADOR_ZOOM").map(|z| z.parse::<f32>()) {
+            cc.egui_ctx
+                .set_zoom_factor(zoom.unwrap_or(1.0).clamp(0.5, 3.0));
         }
-        // A primeira captura sai agora, com a janela ainda escondida — é ela
-        // que o vidro refrata na primeira vez que alguém abrir alguma tela.
-        crate::captura::iniciar(crate::glass_gpu::reler_o_fundo);
-        carregar_fontes(&cc.egui_ctx);
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        cc.egui_ctx.all_styles_mut(estilo_de_vidro);
+        tema::instalar_fontes(&cc.egui_ctx);
+        tema::definir_escuro(escuro_agora(&lock(&shared).config.appearance));
+        cc.egui_ctx.all_styles_mut(tema::estilo);
 
         Self {
             shared,
@@ -112,8 +136,47 @@ impl App {
             bars: vec![0.0; crate::audio::LEVEL_HISTORY],
             captura: Captura::default(),
             medidor: Medidor::novo(),
+            demo: Demo::novo(),
             abertura: None,
         }
+    }
+
+    /// Passa sozinho pelas telas do README, com conteúdo de exemplo.
+    ///
+    /// Devolve `true` enquanto estiver conduzindo. Ver `Demo`.
+    fn demonstrar(&mut self, ctx: &egui::Context, state: &mut crate::state::Shared) -> bool {
+        const TEXTO: &str = "Confirmei com o time da manhã: o relatório de agosto sai na \
+             sexta, com os números de julho já fechados. Se aparecer alguma pendência do \
+             financeiro até quarta, me avisa que eu remanejo a revisão para a segunda. \
+             Já pedi ao Marcelo que adiante a parte de compras, que é a que sempre atrasa, \
+             e deixei a apresentação de terça marcada só depois do almoço.";
+
+        let Some(demo) = &self.demo else {
+            return false;
+        };
+        let t = demo.desde.elapsed().as_secs_f32();
+
+        state.model = ModelState::Ready;
+        state.view = match t {
+            _ if t < 4.0 => {
+                // Alguns segundos para trás, para o cronômetro da imagem não
+                // ficar parado em zero.
+                state.recording_since = demo.desde.checked_sub(Duration::from_secs(7));
+                View::Recording
+            }
+            _ if t < 9.0 => {
+                state.text = TEXTO.to_string();
+                state.status = "3,4 s · Vulkan".to_string();
+                View::Result
+            }
+            _ if t < 15.0 => View::Settings,
+            _ => {
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+                View::Hidden
+            }
+        };
+        ctx.request_repaint();
+        true
     }
 
     fn diagnostico(&mut self, ctx: &egui::Context, view: View) {
@@ -170,163 +233,17 @@ impl App {
     }
 }
 
-/// Tipografia: **Inter**, embutida no binário.
+/// Qual dos dois desenhos vale agora.
 ///
-/// É a fonte de interface que o Rasmus Andersson desenhou para tela, e a
-/// alternativa de código aberto (SIL OFL 1.1) que mais se aproxima da SF Pro da
-/// Apple: altura de x alta, aberturas largas e formas que não se fecham quando
-/// o corpo é pequeno — que é a metade da tela aqui.
-///
-/// Vai embutida em vez de ser procurada no sistema porque a maioria das
-/// máquinas não a tem instalada, e o visual não pode depender disso; e nos dois
-/// pesos de baixo, não no Regular, porque texto claro sobre vidro escuro fica
-/// anêmico. O corpo é o **Medium** (500) e os títulos e botões, o **SemiBold**
-/// (600).
-///
-/// Os pesos vêm como instâncias estáticas, e não como a fonte variável: o
-/// rasterizador do egui não interpola eixos, então uma variável renderizaria
-/// sempre na instância padrão.
-fn carregar_fontes(ctx: &egui::Context) {
-    const CORPO: &[u8] = include_bytes!("../assets/fontes/Inter-Medium.ttf");
-    const FORTE: &[u8] = include_bytes!("../assets/fontes/Inter-SemiBold.ttf");
-
-    fn instalar(fontes: &mut egui::FontDefinitions, nome: &str, bytes: &'static [u8]) {
-        fontes.font_data.insert(
-            nome.to_string(),
-            std::sync::Arc::new(egui::FontData::from_static(bytes)),
-        );
+/// `DITADOR_TEMA=claro|escuro` atropela a configuração pelo tempo de uma
+/// execução. É diagnóstico, como as outras variáveis daqui: é assim que as duas
+/// versões das imagens do README saem sem mexer na configuração de ninguém.
+fn escuro_agora(ap: &crate::config::Appearance) -> bool {
+    match std::env::var("DITADOR_TEMA").as_deref() {
+        Ok("claro") => false,
+        Ok("escuro") => true,
+        _ => ap.escuro(),
     }
-
-    let mut fontes = egui::FontDefinitions::default();
-    instalar(&mut fontes, "ditador-corpo", CORPO);
-    instalar(&mut fontes, "ditador-forte", FORTE);
-
-    // Entra na frente das embutidas do egui, que continuam atrás como reserva
-    // para o que a Inter não cobrir (emoji, símbolos).
-    fontes
-        .families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .insert(0, "ditador-corpo".to_string());
-
-    // A família "forte" herda essas mesmas reservas.
-    let mut lista = fontes
-        .families
-        .get(&FontFamily::Proportional)
-        .cloned()
-        .unwrap_or_default();
-    lista.insert(0, "ditador-forte".to_string());
-    fontes
-        .families
-        .insert(FontFamily::Name("forte".into()), lista);
-
-    ctx.set_fonts(fontes);
-}
-
-/// Controles translúcidos, para que fiquem sobre o vidro em vez de tapá-lo.
-/// Escolhe a paleta do texto pelo brilho do que está atrás da janela. A faixa
-/// morta entre os dois limites é de propósito: sem ela, um papel de parede que
-/// pare bem em cima do limiar faria o texto piscar entre claro e escuro a cada
-/// pixel que a janela andasse.
-fn adaptar_texto(ctx: &egui::Context, ligado: bool) {
-    let escuro = match (ligado, crate::glass_gpu::brilho_do_fundo()) {
-        (true, Some(luma)) => {
-            let atual = widgets::text() == widgets::TEXTO_ESCURO;
-            if atual { luma > 0.52 } else { luma > 0.60 }
-        }
-        _ => false,
-    };
-    if widgets::definir_texto_escuro(escuro) {
-        ctx.all_styles_mut(estilo_de_vidro);
-    }
-}
-
-fn estilo_de_vidro(style: &mut egui::Style) {
-    // Um ponto e meio maior que antes, em toda a escala. A Inter tem a altura
-    // de x alta, então neste corpo ela ocupa mais linha do que a fonte anterior
-    // ocupava — o texto miúdo das notas é o que mais ganha com isso.
-    style.text_styles = [
-        (egui::TextStyle::Heading, fonte_forte(20.5)),
-        (egui::TextStyle::Body, egui::FontId::proportional(15.5)),
-        (egui::TextStyle::Button, fonte_forte(15.0)),
-        (egui::TextStyle::Small, egui::FontId::proportional(12.5)),
-        (egui::TextStyle::Monospace, egui::FontId::monospace(13.5)),
-    ]
-    .into();
-
-    let v = &mut style.visuals;
-    v.override_text_color = Some(widgets::text());
-    v.panel_fill = Color32::TRANSPARENT;
-    // Listas suspensas e menus saem numa camada própria, fora do vidro do
-    // painel: precisam de fundo próprio ou ficariam ilegíveis sobre o desktop.
-    v.window_fill = glass::tint(19, 20, 28, 244);
-    v.window_stroke = Stroke::new(1.0, glass::white(40));
-    v.window_corner_radius = CornerRadius::same(16);
-    v.menu_corner_radius = CornerRadius::same(16);
-    v.window_shadow = egui::epaint::Shadow {
-        offset: [0, 10],
-        blur: 30,
-        spread: 0,
-        color: Color32::from_black_alpha(120),
-    };
-    v.popup_shadow = v.window_shadow;
-    v.faint_bg_color = glass::white(10);
-    // Fundo dos campos de texto.
-    v.extreme_bg_color = glass::white(14);
-    v.selection.bg_fill = glass::tint(122, 173, 255, 92);
-    v.selection.stroke = Stroke::new(1.0, widgets::text());
-    v.slider_trailing_fill = true;
-    v.handle_shape = egui::style::HandleShape::Circle;
-
-    let vidro = |w: &mut egui::style::WidgetVisuals, fill: u8, borda: u8| {
-        w.bg_fill = glass::white(fill);
-        w.weak_bg_fill = glass::white(fill);
-        w.bg_stroke = Stroke::new(1.0, glass::white(borda));
-        w.fg_stroke = Stroke::new(1.0, widgets::text());
-        w.corner_radius = CornerRadius::same(13);
-        w.expansion = 0.0;
-    };
-    vidro(&mut v.widgets.inactive, 28, 54);
-    vidro(&mut v.widgets.hovered, 48, 92);
-    vidro(&mut v.widgets.active, 64, 124);
-    vidro(&mut v.widgets.open, 30, 56);
-    vidro(&mut v.widgets.noninteractive, 0, 24);
-
-    style.spacing.item_spacing = Vec2::new(9.0, 9.0);
-    style.spacing.button_padding = Vec2::new(14.0, 8.0);
-    style.spacing.slider_width = 190.0;
-    style.spacing.combo_height = 260.0;
-    // Barra de rolagem flutuante: some quase por completo quando ninguém a
-    // está usando, para não cortar o vidro com um trilho opaco. A margem à
-    // direita é o corredor onde ela aparece, longe da borda dos cartões.
-    style.spacing.scroll = egui::style::ScrollStyle::floating();
-    let barra = &mut style.spacing.scroll;
-    barra.bar_width = 8.0;
-    barra.floating_width = 4.0;
-    barra.handle_min_length = 28.0;
-    barra.content_margin = Margin {
-        right: 10,
-        ..Margin::ZERO
-    };
-    barra.dormant_handle_opacity = 0.22;
-    barra.active_handle_opacity = 0.45;
-    barra.interact_handle_opacity = 0.75;
-}
-
-fn fonte_forte(tamanho: f32) -> egui::FontId {
-    egui::FontId::new(tamanho, FontFamily::Name("forte".into()))
-}
-
-/// Texto de título/rótulo com o corte mais encorpado.
-fn forte(texto: impl Into<String>, tamanho: f32) -> RichText {
-    RichText::new(texto)
-        .size(tamanho)
-        .family(FontFamily::Name("forte".into()))
-}
-
-/// Texto de apoio: pequeno e apagado.
-fn nota(texto: impl Into<String>) -> RichText {
-    RichText::new(texto).size(12.5).color(widgets::muted())
 }
 
 impl eframe::App for App {
@@ -337,48 +254,48 @@ impl eframe::App for App {
     /// Roda a cada `request_repaint`, inclusive com a janela escondida — é aqui
     /// que decidimos mostrá-la, redimensioná-la e posicioná-la.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut state = lock(&self.shared);
+        // O Arc é clonado para que o guard não fique emprestando `self`: o
+        // passeio de demonstração, logo abaixo, precisa de acesso exclusivo.
+        let shared = self.shared.clone();
+        let mut state = lock(&shared);
 
         if state.quitting {
             ctx.send_viewport_cmd(ViewportCommand::Close);
             return;
         }
 
-        // Fecha o resultado sozinho, se configurado.
-        if state.view == View::Result && state.config.result_timeout_secs > 0 {
-            let limite = Duration::from_secs(state.config.result_timeout_secs);
-            if state.result_shown_at.is_some_and(|t| t.elapsed() >= limite) {
-                state.view = View::Hidden;
+        // O passeio de demonstração manda na tela, e por isso vem antes de tudo
+        // que também mexe nela.
+        if !self.demonstrar(ctx, &mut state) {
+            // Fecha o resultado sozinho, se configurado.
+            if state.view == View::Result && state.config.result_timeout_secs > 0 {
+                let limite = Duration::from_secs(state.config.result_timeout_secs);
+                if state.result_shown_at.is_some_and(|t| t.elapsed() >= limite) {
+                    state.view = View::Hidden;
+                }
             }
         }
 
         let view = state.view;
-        // Ao abrir as configurações, o interruptor de início automático precisa
-        // mostrar o que o sistema realmente tem armado, não o que ficou gravado
-        // da última vez — o usuário pode ter mexido nisso por fora.
+        // Ao abrir as configurações, dois controles precisam mostrar o que o
+        // sistema realmente tem, não o que ficou gravado da última vez: o
+        // interruptor de início automático e o tema, que o usuário pode ter
+        // mudado no GNOME desde que o Ditador subiu.
         if view == View::Settings && self.applied != Some(View::Settings) {
             state.draft.start_with_session = crate::autostart::ligado();
             state.config.start_with_session = state.draft.start_with_session;
+            tema::reler_o_sistema();
         }
         drop(state);
 
         if self.applied != Some(view) {
             apply_window(ctx, view);
-            // Acabou de esconder: é a única hora em que dá para fotografar a
-            // tela sem a nossa própria janela no quadro. A captura sai numa
-            // thread, com folga para o compositor terminar de fechar a janela.
-            if view == View::Hidden && self.applied.is_some() {
-                crate::captura::escondeu();
-            }
             self.applied = Some(view);
-            // Cada tela entra com a sua própria mola. Trocar de tela também
-            // redimensiona a janela, e a animação é o que costura as duas
-            // coisas em um movimento só.
             self.abertura = (view != View::Hidden).then(std::time::Instant::now);
         }
 
         match view {
-            // Animação da gravação e do spinner.
+            // Animação da gravação e do indicador de trabalho.
             View::Recording | View::Processing => ctx.request_repaint(),
             // Mantém o aviso de "copiado" e o tempo limite em dia.
             View::Result => ctx.request_repaint_after(Duration::from_millis(250)),
@@ -405,32 +322,22 @@ impl eframe::App for App {
             return;
         }
 
-        // O vidro por GPU precisa saber onde a janela caiu na tela, para
-        // recortar o papel de parede que vai por baixo dele.
         // Com as configurações abertas vale o rascunho, não o que está salvo:
-        // assim o controle mostra o que faz enquanto está sendo arrastado.
-        let mut aparencia = if view == View::Settings {
+        // assim o tema muda enquanto se escolhe, antes de salvar.
+        let aparencia = if view == View::Settings {
             state.draft.appearance
         } else {
             state.config.appearance
         };
-        aparencia.sanear();
-        crate::glass_gpu::aplicar_aparencia(aparencia);
-        crate::glass_gpu::atualizar_tela(ui.ctx());
-        adaptar_texto(ui.ctx(), aparencia.adaptive_text);
-        self.animar_abertura(ui, aparencia);
+        if tema::definir_escuro(escuro_agora(&aparencia)) {
+            ui.ctx().all_styles_mut(tema::estilo);
+        }
 
-        // O painel vai na camada de fundo, antes de qualquer widget. A posição
-        // do cursor vai junto: é ela que faz a beirada acender por onde a mão
-        // passa (`None` quando o ponteiro está fora da janela).
-        let folga = glass::shadow_pad();
-        let card = ui.max_rect().shrink(folga);
-        let foco = ui.ctx().input(|i| i.pointer.hover_pos());
-        ui.ctx()
-            .layer_painter(LayerId::background())
-            .add(glass::painel(card, aparencia.corner_radius, foco));
+        let opacidade = self.animar_abertura(ui, aparencia);
+        self.painel(ui, opacidade);
+        ui.multiply_opacity(opacidade);
 
-        let margem = folga as i8 + 16;
+        let margem = tema::FOLGA_SOMBRA as i8 + 18;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(Margin::same(margem)))
             .show(ui, |ui| match view {
@@ -445,13 +352,30 @@ impl eframe::App for App {
 }
 
 impl App {
-    /// A tela entra crescendo de dentro do próprio centro, com uma mola curta.
+    /// A superfície da janela: sombra, preenchimento e borda.
+    fn painel(&self, ui: &egui::Ui, opacidade: f32) {
+        let p = paleta();
+        let rect = ui.max_rect().shrink(tema::FOLGA_SOMBRA);
+        let raio = CornerRadius::same(tema::RAIO_JANELA);
+        let painter = ui.ctx().layer_painter(LayerId::background());
+
+        let mut sombra = tema::sombra_janela();
+        sombra.color = sombra.color.gamma_multiply(opacidade);
+        painter.add(sombra.as_shape(rect, raio));
+        painter.rect_filled(rect, raio, p.fundo.gamma_multiply(opacidade));
+        painter.rect_stroke(
+            rect,
+            raio,
+            Stroke::new(1.0, p.borda.gamma_multiply(opacidade)),
+            StrokeKind::Inside,
+        );
+    }
+
+    /// A janela entra subindo um fio e clareando. Devolve a opacidade do quadro.
     ///
-    /// A escala vai numa transformação da camada de fundo, então ela pega tudo
-    /// de uma vez — vidro, texto e controles — em vez de cada peça se animar por
-    /// conta. Já a opacidade precisa de dois caminhos: o do egui não alcança os
-    /// callbacks de desenho, que é o que o vidro é.
-    fn animar_abertura(&mut self, ui: &mut egui::Ui, ap: crate::config::Appearance) {
+    /// O movimento vai numa transformação da camada de fundo, então pega tudo de
+    /// uma vez — superfície, texto e controles.
+    fn animar_abertura(&mut self, ui: &mut egui::Ui, ap: crate::config::Appearance) -> f32 {
         let camada = LayerId::background();
         let ctx = ui.ctx().clone();
 
@@ -464,27 +388,17 @@ impl App {
         if x >= 1.0 {
             self.abertura = None;
             ctx.set_transform_layer(camada, egui::emath::TSTransform::IDENTITY);
-            crate::glass_gpu::definir_opacidade(1.0);
-            return;
+            return 1.0;
         }
 
-        let t = glass::mola(x, ap.animation_bounce);
-        let escala = 1.0 - (1.0 - ap.animation_scale) * (1.0 - t);
-        // A opacidade fecha antes do movimento: o painel já está inteiro quando
-        // a mola ainda está assentando, e o que se vê é só o assentar.
-        let opacidade = (t * 1.6).clamp(0.02, 1.0);
-
-        // A âncora é o centro da janela, que é onde o painel está.
-        let centro = ui.max_rect().center();
+        // Desaceleração cúbica: sai rápido e encosta devagar, sem ultrapassar.
+        let t = 1.0 - (1.0 - x).powi(3);
         ctx.set_transform_layer(
             camada,
-            egui::emath::TSTransform::from_translation(centro.to_vec2())
-                * egui::emath::TSTransform::from_scaling(escala)
-                * egui::emath::TSTransform::from_translation(-centro.to_vec2()),
+            egui::emath::TSTransform::from_translation(Vec2::new(0.0, 10.0 * (1.0 - t))),
         );
-        ui.multiply_opacity(opacidade);
-        crate::glass_gpu::definir_opacidade(opacidade);
         ctx.request_repaint();
+        (t * 1.4).min(1.0)
     }
 }
 
@@ -520,36 +434,37 @@ impl App {
             .map(|t| t.elapsed().as_secs_f32())
             .unwrap_or(0.0);
         let tempo = ui.input(|i| i.time) as f32;
+        let p = paleta();
 
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
-            let pulso = 0.5 + 0.5 * (tempo * 3.4).sin();
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+            let pulso = 0.5 + 0.5 * (tempo * 3.0).sin();
             let painter = ui.painter();
-            painter.add(glass::glow_dot(
+            // Ponto vermelho com um anel que abre e some, como a luz de um
+            // gravador. Duas formas, sem desfoque nenhum.
+            painter.circle_filled(rect.center(), 5.0, p.gravando);
+            painter.circle_stroke(
                 rect.center(),
-                9.5 + 4.5 * pulso,
-                REC.gamma_multiply(0.20 + 0.32 * pulso),
-            ));
-            painter.circle_filled(rect.center(), 5.5, REC);
-            // Reflexo no alto da bolinha: até ela é uma conta de vidro.
-            painter.circle_filled(rect.center() - Vec2::new(1.4, 1.8), 1.9, glass::white(120));
+                5.0 + 5.0 * pulso,
+                Stroke::new(1.5, p.gravando.gamma_multiply(0.55 * (1.0 - pulso))),
+            );
 
-            ui.add_space(3.0);
-            ui.label(forte("Ouvindo", 17.0));
+            ui.add_space(4.0);
+            ui.label(medio("Ouvindo", 16.0));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!("{:.0}:{:02.0}", decorrido / 60.0, decorrido % 60.0))
-                        .size(15.0)
-                        .color(widgets::muted())
+                        .size(14.0)
+                        .color(p.texto_fraco)
                         .monospace(),
                 );
             });
         });
 
-        ui.add_space(10.0);
-        self.waveform(ui, tempo);
         ui.add_space(12.0);
+        self.waveform(ui, tempo);
+        ui.add_space(14.0);
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -559,12 +474,27 @@ impl App {
         });
     }
 
+    /// As barras do nível do microfone: cinzas no silêncio, vermelhas na voz.
     fn waveform(&mut self, ui: &mut egui::Ui, tempo: f32) {
-        let altura = 54.0;
+        let altura = 52.0;
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), altura), Sense::hover());
 
-        let leituras: Vec<f32> = {
+        let leituras: Vec<f32> = if self.demo.is_some() {
+            // No passeio de demonstração não há microfone: a soma de três senos
+            // dá a irregularidade de uma frase falada, e depende só do índice —
+            // então a imagem do README sai igual toda vez.
+            (0..self.bars.len())
+                .map(|i| {
+                    let x = i as f32;
+                    (0.34
+                        + 0.30 * (x * 0.9).sin()
+                        + 0.18 * (x * 2.3).sin()
+                        + 0.10 * (x * 5.1).sin())
+                    .clamp(0.04, 0.95)
+                })
+                .collect()
+        } else {
             let guard = self.levels.lock().unwrap_or_else(|e| e.into_inner());
             guard.iter().copied().collect()
         };
@@ -585,35 +515,25 @@ impl App {
             self.bars[i] += (alvo - self.bars[i]) * suavizacao;
         }
 
-        let pico = self.bars.last().copied().unwrap_or(0.0);
+        let p = paleta();
         let painter = ui.painter();
-
-        // Halo geral acompanhando o volume: o vidro "acende" quando você fala.
-        if pico > 0.04 {
-            painter.add(glass::glow(
-                rect.shrink2(Vec2::new(rect.width() * 0.12, altura * 0.28)),
-                altura,
-                REC.gamma_multiply(0.10 + 0.16 * pico),
-                48.0,
-            ));
-        }
-
-        let vao = 4.5;
+        let vao = 4.0;
         let largura = ((rect.width() - vao * (total as f32 - 1.0)) / total as f32).max(1.0);
         let meio = rect.center().y;
+        let raio = CornerRadius::same((largura / 2.0) as u8);
 
         for (i, valor) in self.bars.iter().enumerate() {
             let x = rect.left() + i as f32 * (largura + vao);
             // Onda lenta atravessando as barras: mesmo em silêncio o painel
             // respira, deixando claro que está ouvindo.
             let onda = 0.5 + 0.5 * (tempo * 1.7 + i as f32 * 0.42).sin();
-            let repouso = 4.0 + 11.0 * onda;
-            let h = (valor * altura * 0.94).max(repouso);
+            let repouso = 4.0 + 8.0 * onda;
+            let h = (valor * altura * 0.92).max(repouso);
             let barra = Rect::from_min_size(Pos2::new(x, meio - h / 2.0), Vec2::new(largura, h));
-
-            // Frio no silêncio, quente na voz.
-            let cor = glass::mix(glass::tint(150, 178, 235, 122), REC, valor.min(1.0));
-            painter.add(glass::pastilha(barra, cor));
+            // Só o que está alto de verdade fica vermelho; o resto do tempo a
+            // barra é cinza, e a cor vira a informação.
+            let cor = widgets::mistura(p.texto_fraco, p.gravando, valor.powf(1.8));
+            painter.rect_filled(barra, raio, cor);
         }
     }
 
@@ -622,33 +542,12 @@ impl App {
     fn processing(&self, ui: &mut egui::Ui, state: &crate::state::Shared) {
         let tempo = ui.input(|i| i.time) as f32;
         ui.vertical_centered(|ui| {
-            ui.add_space(10.0);
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
-            let painter = ui.painter();
-            painter.add(glass::glow_dot(
-                rect.center(),
-                21.0,
-                ACCENT.gamma_multiply(0.20),
-            ));
+            ui.add_space(12.0);
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+            girando(ui.painter(), rect.center(), 13.0, tempo);
 
-            // Contas de luz girando: cada uma acende e apaga com um atraso, o
-            // que dá a impressão de uma única gota correndo pelo anel.
-            const CONTAS: usize = 10;
-            for i in 0..CONTAS {
-                let fase = (tempo * 1.15 - i as f32 / CONTAS as f32).rem_euclid(1.0);
-                let brilho = (1.0 - fase).powf(2.2);
-                let angulo =
-                    std::f32::consts::TAU * i as f32 / CONTAS as f32 - std::f32::consts::FRAC_PI_2;
-                let centro = rect.center() + Vec2::angled(angulo) * 14.5;
-                painter.circle_filled(
-                    centro,
-                    1.8 + 1.5 * brilho,
-                    ACCENT.gamma_multiply(0.16 + 0.84 * brilho),
-                );
-            }
-
-            ui.add_space(10.0);
-            ui.label(forte("Transcrevendo…", 15.0));
+            ui.add_space(12.0);
+            ui.label(medio("Transcrevendo…", 15.0));
             if !state.status.is_empty() {
                 ui.label(nota(&state.status));
             }
@@ -661,7 +560,7 @@ impl App {
         drag_area(ui, "resultado");
 
         ui.horizontal(|ui| {
-            ui.label(forte("Texto transcrito", 16.5));
+            ui.label(titulo("Texto transcrito", 16.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::botao_icone(ui, Icone::Fechar, "Fechar").clicked() {
                     self.act(UiAction::Hide);
@@ -676,9 +575,9 @@ impl App {
             });
         });
 
-        ui.add_space(10.0);
+        ui.add_space(8.0);
 
-        let altura_texto = ui.available_height() - 60.0;
+        let altura_texto = ui.available_height() - 58.0;
         widgets::cartao(ui, |ui| {
             ui.set_min_height(altura_texto - 24.0);
             if state.config.editable_result {
@@ -695,7 +594,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(altura_texto - 24.0)
                     .show(ui, |ui| {
-                        ui.label(RichText::new(&state.text).size(15.5));
+                        ui.label(RichText::new(&state.text).size(14.5));
                     });
             }
         });
@@ -707,12 +606,10 @@ impl App {
                 .copied_at
                 .is_some_and(|t| t.elapsed() < Duration::from_secs(3));
 
-            let botao = if copiado {
-                Botao::new("✔  Copiado").destaque(OK)
-            } else {
-                Botao::new("Copiar").destaque(ACCENT)
-            };
-            if ui.add(botao.largura_minima(126.0)).clicked() {
+            let principal = Botao::new(if copiado { "Copiado" } else { "Copiar" })
+                .principal()
+                .largura_minima(120.0);
+            if ui.add(principal).clicked() {
                 self.act(UiAction::Copy);
             }
 
@@ -722,7 +619,17 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !state.message.is_empty() {
-                    ui.label(RichText::new(&state.message).size(12.5).color(REC));
+                    ui.label(
+                        RichText::new(&state.message)
+                            .size(12.5)
+                            .color(paleta().erro),
+                    );
+                } else if copiado {
+                    ui.label(
+                        RichText::new("na área de transferência")
+                            .size(12.5)
+                            .color(paleta().ok),
+                    );
                 } else if state.config.auto_copy {
                     ui.label(nota("cópia automática ligada"));
                 }
@@ -736,34 +643,34 @@ impl App {
         drag_area(ui, "erro");
 
         let carregando = state.model == ModelState::Loading;
-        let cor = if carregando { ACCENT } else { REC };
+        let p = paleta();
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
-            let painter = ui.painter();
-            painter.add(glass::glow_dot(
-                rect.center(),
-                16.0,
-                cor.gamma_multiply(0.22),
-            ));
-            painter.add(glass::peca(
-                rect,
-                13.0,
-                Vidro::controle(0.0).com_corpo(glass::tint(cor.r(), cor.g(), cor.b(), 60)),
-            ));
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                if carregando { "⏳" } else { "!" },
-                fonte_forte(14.0),
-                cor,
-            );
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+            if carregando {
+                girando(
+                    ui.painter(),
+                    rect.center(),
+                    10.0,
+                    ui.input(|i| i.time) as f32,
+                );
+            } else {
+                let painter = ui.painter();
+                painter.circle_filled(rect.center(), 11.0, p.erro.gamma_multiply(0.16));
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "!",
+                    tema::fonte_forte(14.0),
+                    p.erro,
+                );
+            }
             ui.add_space(4.0);
-            ui.label(forte("Ditador", 16.5));
+            ui.label(titulo("Ditador", 16.0));
         });
 
-        ui.add_space(12.0);
+        ui.add_space(10.0);
         ui.label(RichText::new(&state.message).size(14.5));
-        ui.add_space(14.0);
+        ui.add_space(12.0);
 
         if self.modelo_faltando(ui, state) {
             return;
@@ -771,9 +678,7 @@ impl App {
 
         ui.horizontal(|ui| {
             if state.model == ModelState::Failed
-                && ui
-                    .add(Botao::new("Tentar de novo").destaque(ACCENT))
-                    .clicked()
+                && ui.add(Botao::new("Tentar de novo").principal()).clicked()
             {
                 self.act(UiAction::ReloadModel);
             }
@@ -807,7 +712,7 @@ impl App {
                 return true;
             }
             if let Some(Err(erro)) = &p.fim {
-                ui.label(RichText::new(erro).size(12.5).color(REC));
+                ui.label(RichText::new(erro).size(12.5).color(paleta().erro));
                 ui.add_space(8.0);
             }
         }
@@ -820,7 +725,7 @@ impl App {
             let baixavel = crate::modelo::disponivel();
             ui.add_enabled_ui(baixavel, |ui| {
                 if ui
-                    .add(Botao::new("Baixar o modelo (574 MB)").destaque(ACCENT))
+                    .add(Botao::new("Baixar o modelo (574 MB)").principal())
                     .on_hover_text(format!(
                         "Baixa {} de huggingface.co para {}",
                         crate::modelo::PADRAO,
@@ -854,43 +759,42 @@ impl App {
         drag_area(ui, "config");
 
         ui.horizontal(|ui| {
-            ui.label(forte("Configurações", 19.0));
+            ui.label(titulo("Configurações", 19.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                widgets::keycap(
+                widgets::etiqueta(
                     ui,
                     &format!("v{} · {}", env!("CARGO_PKG_VERSION"), stt::BACKEND),
+                    paleta().texto_fraco,
                 );
             });
         });
 
-        let rodape = 56.0;
-        let area = egui::ScrollArea::vertical()
+        let rodape = 58.0;
+        egui::ScrollArea::vertical()
             .max_height(ui.available_height() - rodape)
             .show(ui, |ui| {
                 self.settings_atalho(ui, state);
+                self.settings_aparencia(ui, state);
                 self.settings_sistema(ui, state);
                 self.settings_transcricao(ui, state);
                 self.settings_area_transferencia(ui, state);
                 self.settings_desempenho(ui, state);
-                self.settings_aparencia(ui, state);
                 self.settings_avancado(ui, state);
                 ui.add_space(6.0);
             });
 
-        // O conteúdo não termina no corte: ele some por baixo do vidro.
-        let faixa = Rect::from_min_max(
-            Pos2::new(area.inner_rect.left(), area.inner_rect.bottom() - 26.0),
-            area.inner_rect.max,
-        );
-        ui.painter()
-            .add(glass::gradiente_da_base(faixa, 0.0, 1.0, |t| {
-                glass::tint(15, 16, 23, (196.0 * (1.0 - t).powf(1.5)) as u8)
-            }));
-
+        // Uma linha separando a lista, que é rolável e por isso termina cortada,
+        // dos botões que valem para a tela inteira.
         ui.add_space(10.0);
+        let (linha, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+        ui.painter()
+            .rect_filled(linha, CornerRadius::ZERO, paleta().borda);
+        ui.add_space(10.0);
+
         ui.horizontal(|ui| {
             if ui
-                .add(Botao::new("Salvar").destaque(ACCENT).largura_minima(112.0))
+                .add(Botao::new("Salvar").principal().largura_minima(110.0))
                 .clicked()
             {
                 self.act(UiAction::ApplyDraft);
@@ -900,7 +804,7 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(Botao::new("Encerrar o Ditador").cor(REC))
+                    .add(Botao::new("Encerrar o Ditador").perigo())
                     .on_hover_text("Fecha o aplicativo por completo")
                     .clicked()
                 {
@@ -917,7 +821,7 @@ impl App {
                 ui.label("Segure para falar:");
 
                 if state.capturing_hotkey {
-                    ui.label(forte("pressione a combinação…", 14.0).color(ACCENT));
+                    ui.label(medio("pressione a combinação…", 14.0));
                     if widgets::botao(ui, "Cancelar").clicked() {
                         self.act(UiAction::CancelHotkeyCapture);
                     }
@@ -932,12 +836,46 @@ impl App {
                     }
                 }
             });
-            ui.add_space(4.0);
+            ui.add_space(2.0);
             ui.label(nota(
                 "A leitura é passiva: a tecla continua funcionando normalmente nos \
                  outros programas. Prefira teclas sem função própria (Pause, F13…). \
                  Esc cancela a captura.",
             ));
+        });
+    }
+
+    /// Tema e animação. A mudança vale no quadro seguinte, antes mesmo de
+    /// salvar, para dar para ver o que se está escolhendo.
+    fn settings_aparencia(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        widgets::secao(ui, "Aparência");
+        widgets::cartao(ui, |ui| {
+            let ap = &mut state.draft.appearance;
+
+            ui.label("Tema:");
+            let opcoes: Vec<(Tema, &str)> = Tema::TODOS.iter().map(|t| (*t, t.nome())).collect();
+            widgets::segmentado(ui, &mut ap.theme, &opcoes);
+            ui.add_space(2.0);
+            ui.label(nota(match ap.theme {
+                Tema::Sistema => {
+                    "Acompanha o que estiver escolhido em Configurações → Aparência \
+                     do GNOME, conferido toda vez que esta tela abre."
+                }
+                Tema::Claro => "Fundo branco, texto preto.",
+                Tema::Escuro => "Fundo preto, texto branco.",
+            }));
+
+            ui.add_space(6.0);
+            widgets::interruptor(ui, &mut ap.animation, "Animação ao abrir a janela");
+            ui.add_enabled_ui(ap.animation, |ui| {
+                let mut ms = ap.animation_ms as i32;
+                if ui
+                    .add(egui::Slider::new(&mut ms, 0..=500).text("Duração (ms)"))
+                    .changed()
+                {
+                    ap.animation_ms = ms as u64;
+                }
+            });
         });
     }
 
@@ -1105,7 +1043,7 @@ impl App {
                 .add(
                     egui::TextEdit::singleline(&mut caminho)
                         .desired_width(f32::INFINITY)
-                        .margin(Margin::symmetric(10, 7)),
+                        .margin(Margin::symmetric(10, 8)),
                 )
                 .changed()
             {
@@ -1120,134 +1058,12 @@ impl App {
                     "Arquivo não encontrado — a tela inicial oferece baixá-lo"
                 })
                 .size(12.5)
-                .color(if existe { widgets::muted() } else { REC }),
+                .color(if existe {
+                    paleta().texto_fraco
+                } else {
+                    paleta().erro
+                }),
             );
-        });
-    }
-
-    /// Os controles do vidro. É um recorte: o `config.json` tem todos, e a
-    /// mudança aqui vale no quadro seguinte, então dá para ver o efeito
-    /// enquanto se arrasta o controle.
-    fn settings_aparencia(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
-        use crate::config::Tema;
-
-        widgets::secao(ui, "Aparência");
-        widgets::cartao(ui, |ui| {
-            let ap = &mut state.draft.appearance;
-
-            // O tema não é guardado: ele *é* o conjunto de valores abaixo. Daí
-            // o seletor descobrir qual está valendo comparando, em vez de ler
-            // um campo — assim mexer num controle à mão simplesmente sai de
-            // qualquer tema, sem ficar mentindo que ainda está num deles.
-            let atual = Tema::atual(ap);
-            ui.horizontal(|ui| {
-                ui.label("Tema:");
-                egui::ComboBox::from_id_salt("tema")
-                    .selected_text(atual.map_or("Personalizado", Tema::nome))
-                    .show_ui(ui, |ui| {
-                        for tema in Tema::TODOS {
-                            let resposta = ui
-                                .selectable_label(atual == Some(tema), tema.nome())
-                                .on_hover_text(tema.descricao());
-                            if resposta.clicked() {
-                                tema.aplicar(ap);
-                            }
-                        }
-                    });
-            });
-            if let Some(tema) = atual {
-                ui.label(nota(tema.descricao()));
-            }
-
-            ui.add_space(6.0);
-            widgets::interruptor(ui, &mut ap.wallpaper, "Imagem de fundo por baixo do vidro");
-            ui.add_enabled_ui(ap.wallpaper, |ui| {
-                widgets::interruptor(ui, &mut ap.screen_capture, "Usar a tela de verdade");
-                porcentagem(ui, &mut ap.wallpaper_opacity, 0.0..=1.0, "Quanto aparece");
-                // O detalhe é a redução aplicada ao papel de parede. A captura
-                // da tela não passa por ela: reduzi-la apagaria justamente o
-                // que se quer ver atrás do vidro.
-                ui.add_enabled_ui(!ap.screen_capture, |ui| {
-                    let mut nitidez = ap.wallpaper_detail as i32;
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut nitidez, 60..=1200)
-                                .text("Detalhe (menor = mais borrado)"),
-                        )
-                        .changed()
-                    {
-                        ap.wallpaper_detail = nitidez as u32;
-                    }
-                });
-            });
-            ui.label(nota(if ap.screen_capture {
-                "O vidro refrata o que está mesmo atrás da janela. A foto é \
-                 tirada com a janela escondida — senão o vidro refrataria a si \
-                 mesmo —, então é a de pouco antes de a janela abrir e fica \
-                 parada enquanto ela estiver aberta. O detalhe só vale para o \
-                 papel de parede; a captura entra na resolução cheia."
-            } else {
-                "O papel de parede não é o que está atrás da janela, é só a cor \
-                 do desktop naquele ponto. Ligue o de cima para o vidro mostrar \
-                 as janelas de trás de verdade."
-            }));
-
-            ui.add_space(4.0);
-            porcentagem(ui, &mut ap.tint_strength, 0.0..=1.0, "Tinta do vidro");
-            ui.add(
-                egui::Slider::new(&mut ap.ior, 1.0..=3.0)
-                    .text("Índice de refração")
-                    .fixed_decimals(2),
-            );
-            ui.add(
-                egui::Slider::new(&mut ap.displacement, 0.0..=200.0)
-                    .text("Força da refração")
-                    .fixed_decimals(0),
-            );
-            ui.add(
-                egui::Slider::new(&mut ap.blur_radius, 0.0..=20.0)
-                    .text("Desfoque do fundo")
-                    .fixed_decimals(1),
-            );
-            porcentagem(ui, &mut ap.rim_intensity, 0.0..=2.0, "Brilho das bordas");
-            porcentagem(ui, &mut ap.sheen, 0.0..=2.0, "Véu da superfície");
-            porcentagem(ui, &mut ap.specular, 0.0..=2.0, "Reflexo concentrado");
-            porcentagem(ui, &mut ap.shadow_intensity, 0.0..=1.0, "Sombra projetada");
-            ui.add(
-                egui::Slider::new(&mut ap.light_angle, 0.0..=360.0)
-                    .text("Ângulo da luz (graus)")
-                    .fixed_decimals(0),
-            );
-
-            ui.add_space(4.0);
-            widgets::interruptor(
-                ui,
-                &mut ap.adaptive_text,
-                "Cor do texto pelo brilho do fundo",
-            );
-            ui.label(nota(
-                "Com o vidro claro do padrão, o texto precisa escurecer sobre um \
-                 papel de parede claro para continuar legível. Desligue para \
-                 fixar o texto claro.",
-            ));
-
-            ui.add_space(4.0);
-            widgets::interruptor(ui, &mut ap.animation, "Animação de mola ao abrir");
-            ui.add_enabled_ui(ap.animation, |ui| {
-                let mut ms = ap.animation_ms as i32;
-                if ui
-                    .add(egui::Slider::new(&mut ms, 0..=800).text("Duração (ms)"))
-                    .changed()
-                {
-                    ap.animation_ms = ms as u64;
-                }
-                porcentagem(ui, &mut ap.animation_bounce, 0.0..=1.0, "Ultrapassagem");
-            });
-
-            ui.add_space(6.0);
-            if widgets::botao(ui, "Voltar ao padrão").clicked() {
-                *ap = crate::config::Appearance::PADRAO;
-            }
         });
     }
 
@@ -1260,7 +1076,7 @@ impl App {
             ui.add(
                 egui::TextEdit::multiline(&mut state.draft.initial_prompt)
                     .desired_rows(2)
-                    .margin(Margin::symmetric(10, 7))
+                    .margin(Margin::symmetric(10, 8))
                     .desired_width(f32::INFINITY),
             );
 
@@ -1317,6 +1133,22 @@ impl App {
 
 // --------------------------------------------------------------------- apoio
 
+/// Indicador de trabalho: um anel apagado com um arco da cor do texto girando
+/// por cima.
+fn girando(painter: &egui::Painter, centro: Pos2, raio: f32, tempo: f32) {
+    const ARCO: f32 = 1.9; // radianos ≈ 110°
+    const PASSOS: usize = 14;
+
+    let p = paleta();
+    painter.circle_stroke(centro, raio, Stroke::new(2.5, p.superficie_forte));
+
+    let inicio = tempo * 3.2;
+    let pontos: Vec<Pos2> = (0..=PASSOS)
+        .map(|i| centro + Vec2::angled(inicio + ARCO * i as f32 / PASSOS as f32) * raio)
+        .collect();
+    painter.add(egui::Shape::line(pontos, Stroke::new(2.5, p.texto)));
+}
+
 /// Faixa invisível no topo que permite arrastar a janela sem decoração.
 fn drag_area(ui: &mut egui::Ui, id: &str) {
     let rect = egui::Rect::from_min_size(
@@ -1326,28 +1158,6 @@ fn drag_area(ui: &mut egui::Ui, id: &str) {
     let response = ui.interact(rect, egui::Id::new(id), Sense::drag());
     if response.dragged() {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
-    }
-}
-
-/// Controle deslizante de um fator, mostrado em porcentagem — que é como se lê
-/// "quanto disto", bem melhor do que 0,55.
-fn porcentagem(
-    ui: &mut egui::Ui,
-    valor: &mut f32,
-    faixa: std::ops::RangeInclusive<f32>,
-    rotulo: &str,
-) {
-    let mut pct = (*valor * 100.0).round();
-    let limites = (*faixa.start() * 100.0).round()..=(*faixa.end() * 100.0).round();
-    if ui
-        .add(
-            egui::Slider::new(&mut pct, limites)
-                .suffix(" %")
-                .text(rotulo),
-        )
-        .changed()
-    {
-        *valor = pct / 100.0;
     }
 }
 

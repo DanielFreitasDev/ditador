@@ -117,9 +117,9 @@ Provides: ditador-backend
 Conflicts: ditador-backend
 Replaces: ditador-backend
 Description: $RESUMO
- Segure uma tecla, fale, solte: o texto transcrito aparece numa janela de vidro
- e vai para a área de transferência. Tudo acontece na sua máquina — o áudio não
- sai dela, e o programa funciona sem internet depois que o modelo é baixado.
+ Segure uma tecla, fale, solte: o texto transcrito aparece numa janela e vai
+ para a área de transferência. Tudo acontece na sua máquina — o áudio não sai
+ dela, e o programa funciona sem internet depois que o modelo é baixado.
  .
  Roda em segundo plano com um ícone na barra superior. O modelo de transcrição
  (cerca de 574 MB) não vem no pacote: a própria janela oferece baixá-lo na

@@ -16,11 +16,11 @@ pub enum View {
 
 impl View {
     /// Tamanho da janela para cada tela, em pontos lógicos. Inclui a folga em
-    /// volta do painel de vidro, onde a sombra é desenhada.
+    /// volta da superfície, onde a sombra é desenhada.
     pub fn size(self) -> [f32; 2] {
-        let pad = 2.0 * crate::glass::shadow_pad();
+        let pad = 2.0 * crate::tema::FOLGA_SOMBRA;
         let [w, h] = match self {
-            View::Hidden | View::Recording | View::Processing => [440.0, 152.0],
+            View::Hidden | View::Recording | View::Processing => [440.0, 178.0],
             View::Result => [620.0, 372.0],
             View::Settings => [660.0, 660.0],
             View::Error => [500.0, 200.0],

@@ -10,7 +10,11 @@
 </p>
 
 <p align="center">
-  <img src="assets/capturas/recording.jpg" alt="A sobreposição de gravação sobre a área de trabalho" width="820">
+  <img src="assets/capturas/gravando.png" alt="A janela de gravação, no tema claro e no escuro" width="860">
+</p>
+
+<p align="center">
+  <i>Tema claro e tema escuro, acompanhando o do sistema.</i>
 </p>
 
 ## Como começar
@@ -18,7 +22,7 @@
 **Com o pacote pronto** (Ubuntu 24.04 ou mais novo):
 
 ```bash
-sudo apt install ./ditador_0.3.0_amd64.deb      # ou ditador-cpu_… se a máquina não tem GPU
+sudo apt install ./ditador_0.4.0_amd64.deb      # ou ditador-cpu_… se a máquina não tem GPU
 sudo usermod -aG input $USER                    # para o atalho global ler o teclado
 ```
 
@@ -40,8 +44,8 @@ ditador --baixar-modelo
 **Gerando o pacote para outra máquina:**
 
 ```bash
-./empacotar.sh                # target/deb/ditador_0.3.0_amd64.deb  (Vulkan)
-./empacotar.sh cpu            # target/deb/ditador-cpu_0.3.0_amd64.deb
+./empacotar.sh                # target/deb/ditador_0.4.0_amd64.deb  (Vulkan)
+./empacotar.sh cpu            # target/deb/ditador-cpu_0.4.0_amd64.deb
 ```
 
 O pacote leva o programa, os ícones, o atalho do menu e o serviço de usuário do
@@ -49,7 +53,7 @@ systemd. Não leva o modelo: são centenas de megabytes, e a própria janela o
 baixa na primeira vez.
 
 <p align="center">
-  <img src="assets/capturas/result.jpg" alt="O texto transcrito, pronto para copiar" width="760">
+  <img src="assets/capturas/resultado.png" alt="O texto transcrito, pronto para copiar" width="760">
 </p>
 
 ## Como funciona
@@ -59,7 +63,7 @@ evdev (/dev/input/event*)  ──►  controlador  ──►  cpal (microfone)
    segurar/soltar a tecla         │                    │ 16 kHz mono
                                   │                    ▼
    interface egui  ◄──────────────┤             whisper.cpp (Vulkan)
-   vidro / animação / resultado   │                    │
+   gravando / resultado / config  │                    │
                                   │  ◄─────────────────┘
    ícone da barra  ◄──────────────┘        texto
    StatusNotifierItem
@@ -106,7 +110,7 @@ estiver desligada, o Ditador funciona igual — só avisa no log que ficou sem
 
 Nas configurações dá para trocar o atalho (clique no botão e pressione a nova
 tecla ou combinação), o idioma, o microfone, o modelo, ligar a colagem
-automática, mandar o programa subir junto com a sessão e mexer no vidro.
+automática, mandar o programa subir junto com a sessão e escolher o tema.
 
 Com a cópia automática ligada dá para **desligar a janela de resultado** (*Área
 de transferência → Mostrar a janela com o texto transcrito*): aí é falar, soltar
@@ -115,7 +119,7 @@ texto não tiver chegado à área de transferência — a transcrição não se 
 causa de uma preferência.
 
 <p align="center">
-  <img src="assets/capturas/settings.jpg" alt="A tela de configurações" width="700">
+  <img src="assets/capturas/configuracoes.png" alt="A tela de configurações" width="660">
 </p>
 
 ## Decisões que valem explicar
@@ -143,74 +147,41 @@ escolhe onde sua janela aparece nem consegue ficar por cima das outras — as du
 coisas que uma sobreposição de ditado precisa. Pelo X11 funciona. Desligue em
 *Configurações → Avançado* se preferir Wayland nativo.
 
-**Como o vidro é feito.** Cada peça — o painel, os cartões, os botões, os
-interruptores — sai de um shader GLSL (`src/glass_gpu.rs`) que faz a óptica
-pixel a pixel, na mesma linha da extensão de GNOME
-[liquid-glass](https://github.com/ryohsuke1231/liquid-glass):
+**Como a interface é desenhada.** Em cores sólidas, e é só isso: cada tela é um
+retângulo arredondado preenchido com a cor de fundo do tema, uma borda de um
+pixel e uma sombra por baixo. Nada de transparência, refração ou desfoque.
 
-* silhueta de **squircle**, direto na função de distância: os cantos são
-  superelipse (`|x/r|⁴·² + |y/r|⁴·² = 1`), não arcos de círculo, que é o que dá
-  a curva contínua dos cantos da Apple. Cápsulas e círculos voltam ao arco;
-* **relevo com altura de verdade**: um perfil de superelipse faz a superfície
-  subir da borda até o meio, e a normal em 3D sai por diferenças finitas desse
-  campo de altura;
-* **refração pela lei de Snell**: o raio que entra de frente sai torto dentro do
-  vidro, e o quanto ele anda de lado é o deslocamento da amostra do fundo —
-  mais **aberração cromática**, porque cada cor entorta um pouco diferente;
-* **borda especular com direção**, em duas escalas: um fio bem em cima do
-  contorno (a nitidez da quina) e um realce mais largo descendo pelo bisel (a
-  espessura acendendo). Ela acende onde a normal encara a luz e azula do lado
-  oposto, onde só resta o retorno frio de quem atravessou a peça — e ganha um
-  brilho extra por onde o cursor passa, como vidro polido sob a mão;
-* **reflexo, véu e oclusão**: Blinn para o brilho concentrado, queda angular
-  para o véu da face e uma faixa escura por dentro da borda, onde o próprio
-  corpo do vidro tapa a luz;
-* **sombra projetada** com umbra e penumbra separadas, seguindo a silhueta;
-* **mola na abertura**: a tela entra crescendo do próprio centro, com uma
-  ultrapassagem curta antes de assentar. A escala vai numa transformação da
-  camada, então pega tudo de uma vez — vidro, texto e controles — e o shader
-  descobre a escala comparando o retângulo que recebeu com o que pediu.
+A referência é o ChatGPT — o preto é preto, o branco é branco, e a hierarquia se
+faz com três tons e uma linha, não com camadas translúcidas. Daí vem também o
+botão principal de cada tela, em cor cheia e invertida em relação ao fundo:
+preto sobre claro, branco sobre escuro. É o único elemento de contraste máximo
+em qualquer tela, e por isso o olho sempre sabe qual é a ação.
 
-Cada peça é um único quadrilátero. Fora da silhueta o shader devolve o pixel do
-fundo intocado, o que deixa desenhar com a mistura desligada sem deixar rastro —
-e passado o bisel, onde a superfície é plana, ele pula o campo de altura inteiro.
-Na tela de configurações, com umas 25 peças, isso dá **~1,2 ms por quadro**,
-contra 2,3 ms do desenho vetorial que havia antes: o vidro por GPU é o dobro
-mais rápido, não mais caro.
+A paleta inteira mora em `src/tema.rs` e tem treze cores por tema — fundo, duas
+superfícies, duas bordas, dois níveis de texto, o botão principal e as cores de
+gravando, concluído e erro. Os controles (`src/widgets.rs`) são todos feitos
+dessas cores: botões em cápsula, interruptores que deslizam, cartões agrupando
+as configurações, o seletor de tema em três abas. Sob o cursor a superfície troca
+de tom numa animação de 120 ms — é a única coisa que se move, e custa uma
+interpolação de cor por quadro.
 
-Se a GPU não estiver disponível — ou com `DITADOR_SEM_GPU=1` — o mesmo
-vocabulário sai em vetores pelo `src/glass.rs`, empilhando as pistas em camadas.
+**Tipografia.** A [Geist](https://vercel.com/font), da Vercel (SIL OFL 1.1), em
+três pesos: Regular no corpo, Medium nos botões e rótulos, SemiBold nos títulos.
+O cronômetro e o atalho saem na Geist Mono — números de largura fixa não dançam
+ao contar. Vão embutidas no binário porque nenhuma máquina as tem instaladas por
+padrão, e o visual não pode depender disso.
 
-**O que o vidro refrata.** O painel refrata uma **captura da tela**, recortada
-na posição da janela. Ela vem do `org.freedesktop.portal.Screenshot`, que é a
-única porta aberta: o GNOME nega o `org.gnome.Shell.Screenshot` a aplicativos
-comuns desde a versão 41, e sob XWayland o `XGetImage` na raiz responde
-`BadMatch`.
-
-A foto só é tirada **com a janela escondida** — na abertura do programa e depois
-de cada vez que a janela some. Não é economia: uma foto tirada com a janela na
-tela conteria a própria janela, e o vidro passaria a refratar a si mesmo. O
-portal não deixa excluir a nossa janela do quadro. Daí a limitação que fica: a
-imagem é a de pouco antes de a janela abrir e não se mexe enquanto ela estiver
-aberta — um vídeo tocando atrás fica parado no vidro. Sem uma extensão rodando
-dentro do compositor, que é o caminho da extensão de GNOME de referência e que
-um aplicativo comum não tem, não há como fazer melhor.
-
-Sem portal de captura, o painel cai no **papel de parede** da área de trabalho:
-o caminho vem do GNOME (`picture-uri`, seguindo o tema claro/escuro) e a imagem é
-reduzida, borrada e escurecida numa thread à parte. Não é o que está atrás — uma
-janela por baixo não aparece —, é só a cor do desktop naquele ponto. As duas
-fontes entram com alfa parcial: o que estiver mesmo atrás continua aparecendo
-pelo canal alfa da janela. Desligue em *Configurações → Aparência* para deixar o
-painel só com a tinta escura.
-
-Já tudo que fica **dentro** do painel refrata uma cópia do próprio framebuffer,
-tirada logo antes de desenhar a peça — e esse fundo é exato: a beirada de um
-botão realmente entorta o texto e o vidro que estão embaixo dele.
-
-Os controles (`src/widgets.rs`) são feitos das mesmas peças: botões em cápsula,
-interruptores que deslizam, cartões agrupando as configurações — todos acendem
-sob o cursor e afundam ao serem pressionados.
+**Por que o vidro saiu.** As versões 0.2 e 0.3 tinham um painel de vidro líquido
+feito num shader GLSL: refração pela lei de Snell, borda especular com direção,
+relevo com altura de verdade, e uma captura da tela por baixo para o vidro ter o
+que refratar. Funcionava, e custava caro em código — 2.156 linhas entre o shader,
+o desenho vetorial de reserva e a conversa com o `xdg-desktop-portal`, mais um
+bloco de configuração com quase trinta parâmetros ópticos. Para uma
+janela que fica na tela três segundos por vez, é muito aparato para pouca
+entrega: a legibilidade dependia do papel de parede de cada um, e a imagem
+refratada nem sequer acompanhava o que estava atrás em tempo real. O visual
+sólido cabe em `tema.rs` + `widgets.rs`, não pede nada da GPU além do que o egui
+já faz e é legível sobre qualquer coisa.
 
 **Por que o programa sai com `_exit`.** Liberar os buffers da GPU enquanto a
 thread principal desmonta o contexto gráfico derruba o driver da NVIDIA
@@ -234,43 +205,45 @@ Um campo que vale conhecer: `initial_prompt`. O texto que você puser ali vai
 como contexto para o modelo — útil para nomes próprios, jargão da sua área ou
 para induzir um estilo de pontuação.
 
-O bloco `appearance` tem o vidro inteiro, inclusive o que a tela não expõe. Os
-controles deslizantes valem no quadro seguinte, então dá para ver o efeito
-enquanto se arrasta:
+O bloco `appearance` é curto — o visual sólido não tem o que regular:
 
 | Campo | Padrão | O que faz |
 |---|---|---|
-| `screen_capture` | `true` | refratar a captura da tela; desligado, usa o papel de parede |
-| `wallpaper` / `wallpaper_opacity` | `true` / `0.55` | imagem de fundo por baixo do vidro, e quanto dela aparece |
-| `wallpaper_detail` | `260` | largura para a qual o papel de parede é reduzido — é o controle do desfoque. Não vale para a captura da tela, que entra na resolução cheia |
-| `wallpaper_brightness` / `wallpaper_saturation` | `0.55` / `1.18` | escurecer e colorir antes de entrar |
-| `refraction` | `1.52` | índice de refração: 1,0 não entorta nada, vidro real ~1,5 |
-| `thickness` / `chromatic` | `1.0` / `1.0` | espessura aparente e separação das cores |
-| `edge` / `specular` / `sheen` / `occlusion` | `1.0` | multiplicadores da luz |
-| `shadow` | `0.62` | sombra projetada do painel |
-| `animation` / `animation_ms` | `true` / `260` | a mola de abertura e a duração dela |
-| `animation_bounce` / `animation_scale` | `0.6` / `0.94` | quanto ela ultrapassa o alvo e de que tamanho parte |
+| `theme` | `"sistema"` | `"sistema"`, `"claro"` ou `"escuro"`. No modo sistema segue o que estiver escolhido em *Configurações → Aparência* do GNOME |
+| `animation` / `animation_ms` | `true` / `150` | a janela entrar subindo um fio, e a duração disso |
 
-Valores fora de faixa são aparados na leitura — o arquivo é editável à mão, e um
-índice de refração de 40 deixaria a janela ilegível.
+Quem vinha da versão do vidro não precisa fazer nada: o `appearance` antigo, com
+os parâmetros ópticos que não existem mais, continua sendo lido sem derrubar o
+resto do arquivo — o tema volta ao padrão e as preferências que sobreviveram
+ficam como estavam.
 
 ## Desenvolvimento
 
 ```bash
-cargo test                       # vidro, mola, config, reamostragem, texto
+cargo test                       # config, reamostragem, texto, controlador
 RUST_LOG=debug cargo run         # inclui o texto transcrito no log
-DITADOR_CAPTURA=/tmp/shots cargo run --release   # grava um PNG de cada tela
-DITADOR_QUADROS=1 cargo run --release            # quadros/s, sem sincronia vertical
-DITADOR_SEM_GPU=1 cargo run --release            # força o desenho vetorial
+./gerar-imagens.sh               # refaz as imagens deste README
 ```
 
-A captura existe porque o GNOME nega a API de screenshot a aplicativos comuns,
-e sem ela não há como conferir o desenho da interface. As imagens deste README
-saem dela, compostas sobre o papel de parede na posição em que a janela de fato
-aparece na tela.
+E as variáveis de diagnóstico da interface, que se combinam:
 
-**Ícones.** `assets/ditador.svg` é o ícone colorido — a mesma peça de vidro do
-aplicativo, com o microfone dentro. `assets/simbolicos/` traz os quatro estados
+| Variável | O que faz |
+|---|---|
+| `DITADOR_CAPTURA=<pasta>` | grava um PNG de cada tela assim que ela estabiliza |
+| `DITADOR_DEMO=1` | passa sozinho pelas três telas, com texto de exemplo, e sai |
+| `DITADOR_TEMA=claro\|escuro` | ignora a configuração e força um dos temas |
+| `DITADOR_ZOOM=1.5` | desenha tudo maior, como numa tela densa |
+| `DITADOR_QUADROS=1` | relata quadros/s, sem sincronia vertical |
+
+A captura existe porque o GNOME nega a API de screenshot a aplicativos comuns,
+e sem ela não há como conferir o desenho da interface. O `gerar-imagens.sh` junta
+as quatro primeiras: roda o programa nos dois temas, deixa que ele mesmo passe
+pelas telas e pousa as capturas sobre um fundo liso. Sai igual em qualquer
+clone, sem microfone, sem o modelo baixado e sem ninguém falar na hora certa.
+
+**Ícones.** `assets/ditador.svg` é o ícone do aplicativo: uma pastilha quase
+preta, em silhueta de squircle, com o microfone branco dentro — quatro formas
+sólidas, nenhum degradê. `assets/simbolicos/` traz os quatro estados
 da barra superior (pronto, gravando, trabalhando, falhou), só com formas
 preenchidas, que é o que o GTK consegue recolorir. Depois de mexer neles:
 

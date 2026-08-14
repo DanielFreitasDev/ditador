@@ -1,71 +1,42 @@
-//! Controles feitos de vidro.
+//! Os controles do Ditador, em cores sólidas.
 //!
-//! O egui desenha botões e caixas de seleção como retângulos chapados; aqui
-//! cada controle é uma peça de `glass.rs` — mesma silhueta de squircle, mesma
-//! borda especular, mesma faixa de refração do painel. Além da aparência, todos
-//! reagem ao cursor com uma animação curta: no vidro líquido a luz responde ao
-//! toque, e é isso que separa "um retângulo translúcido" de "vidro".
+//! Cada um é um retângulo arredondado preenchido com uma cor da paleta (ver
+//! `tema.rs`) e, quando precisa se separar do fundo, uma borda de um pixel. Sob
+//! o cursor a superfície troca de tom numa animação curta — é a única coisa que
+//! se move, e custa uma interpolação de cor por quadro.
+//!
+//! A hierarquia é a mesma em toda tela: **um** botão principal, em cor cheia e
+//! invertida em relação ao fundo; o resto em superfície discreta.
 
-use crate::glass::{self, Vidro};
+use crate::tema::{self, paleta};
 use egui::{
-    Color32, Id, Pos2, Rect, Response, Sense, Stroke, TextStyle, TextWrapMode, Ui, Vec2, WidgetText,
+    Color32, CornerRadius, Pos2, Rect, Response, Sense, Stroke, StrokeKind, TextStyle,
+    TextWrapMode, Ui, Vec2, WidgetText,
 };
 
-/// Cores compartilhadas com a interface.
-pub const REC: Color32 = Color32::from_rgb(255, 96, 108);
-pub const ACCENT: Color32 = Color32::from_rgb(122, 173, 255);
-pub const OK: Color32 = Color32::from_rgb(112, 224, 158);
+/// Tempo das animações de realce. Curto o bastante para parecer resposta, não
+/// transição.
+const ANIM: f32 = 0.12;
 
-/// Texto sobre fundo escuro, e sobre fundo claro. O vidro do padrão é claro e
-/// quase transparente, então quem decide qual das duas vale é o papel de parede
-/// atrás da janela — a mesma ideia do `contrastSampler` da extensão.
-const TEXTO_CLARO: Color32 = Color32::from_rgb(242, 243, 248);
-const APAGADO_CLARO: Color32 = Color32::from_rgb(156, 159, 176);
-pub const TEXTO_ESCURO: Color32 = Color32::from_rgb(22, 23, 30);
-const APAGADO_ESCURO: Color32 = Color32::from_rgb(78, 80, 94);
-
-static TEXTO_ESCURECIDO: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Troca a paleta do texto. Devolve `true` quando ela de fato mudou — aí quem
-/// chamou precisa reaplicar o estilo do egui, que guarda a cor por cópia.
-pub fn definir_texto_escuro(escuro: bool) -> bool {
-    TEXTO_ESCURECIDO.swap(escuro, std::sync::atomic::Ordering::Relaxed) != escuro
-}
-
-fn texto_escuro() -> bool {
-    TEXTO_ESCURECIDO.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Cor do texto normal.
-pub fn text() -> Color32 {
-    if texto_escuro() {
-        TEXTO_ESCURO
-    } else {
-        TEXTO_CLARO
-    }
-}
-
-/// Cor do texto secundário.
-pub fn muted() -> Color32 {
-    if texto_escuro() {
-        APAGADO_ESCURO
-    } else {
-        APAGADO_CLARO
-    }
-}
-
-/// Tempo das animações de realce. Curto o bastante para parecer resposta física.
-const ANIM: f32 = 0.14;
+/// Altura dos botões e dos campos de uma linha.
+const ALTURA: f32 = 36.0;
 
 // ---------------------------------------------------------------------- botão
 
-/// Botão em cápsula de vidro.
+/// O peso de um botão dentro da tela.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Peso {
+    /// A ação da tela: cor cheia, invertida em relação ao fundo.
+    Principal,
+    /// Todo o resto: superfície discreta com borda.
+    Comum,
+    /// Ação destrutiva: sem preenchimento, texto vermelho.
+    Perigo,
+}
+
 pub struct Botao {
     texto: WidgetText,
-    cor: Color32,
-    /// Botão principal da tela: recebe tinta em vez de só clarear.
-    destaque: bool,
+    peso: Peso,
     largura_minima: f32,
 }
 
@@ -73,22 +44,18 @@ impl Botao {
     pub fn new(texto: impl Into<WidgetText>) -> Self {
         Self {
             texto: texto.into(),
-            cor: text(),
-            destaque: false,
+            peso: Peso::Comum,
             largura_minima: 0.0,
         }
     }
 
-    /// Botão principal: fundo tingido com `cor`.
-    pub fn destaque(mut self, cor: Color32) -> Self {
-        self.cor = cor;
-        self.destaque = true;
+    pub fn principal(mut self) -> Self {
+        self.peso = Peso::Principal;
         self
     }
 
-    /// Botão comum, com o texto colorido (avisos, ações destrutivas).
-    pub fn cor(mut self, cor: Color32) -> Self {
-        self.cor = cor;
+    pub fn perigo(mut self) -> Self {
+        self.peso = Peso::Perigo;
         self
     }
 
@@ -108,8 +75,8 @@ impl egui::Widget for Botao {
         );
 
         let tamanho = Vec2::new(
-            (galley.size().x + 36.0).max(self.largura_minima),
-            (galley.size().y + 18.0).max(36.0),
+            (galley.size().x + 32.0).max(self.largura_minima),
+            ALTURA.max(galley.size().y + 16.0),
         );
         let (rect, resposta) = ui.allocate_at_least(tamanho, Sense::click());
         if !ui.is_rect_visible(rect) {
@@ -117,52 +84,62 @@ impl egui::Widget for Botao {
         }
 
         let ativo = ui.is_enabled();
-        let sob_cursor = realce(ui, &resposta, ativo);
-        let pressionado = ui.ctx().animate_bool_with_time(
+        let realce = animar(ui, &resposta, ativo && resposta.hovered());
+        let pressao = animar_com(
+            ui,
             resposta.id.with("pressao"),
             ativo && resposta.is_pointer_button_down_on(),
-            0.06,
+            0.05,
         );
+        let energia = (realce + pressao).min(1.0);
 
-        // Afunda um fio ao ser pressionado: o vidro cede.
-        let rect = rect.shrink(pressionado * 1.5);
-        let raio = rect.height() / 2.0;
-        let energia = (0.45 * sob_cursor + 0.55 * pressionado).min(1.0);
+        let p = paleta();
+        let (fundo, borda, cor_texto) = match self.peso {
+            Peso::Principal => (
+                // O botão principal já é a cor mais forte da tela: sob o cursor
+                // ele recua na direção do fundo em vez de acender mais.
+                mistura(p.primario, p.fundo, 0.10 * energia),
+                Color32::TRANSPARENT,
+                p.sobre_primario,
+            ),
+            Peso::Comum => (
+                mistura(p.superficie, p.superficie_forte, energia),
+                mistura(p.borda, p.borda_forte, energia),
+                p.texto,
+            ),
+            Peso::Perigo => (
+                mistura(Color32::TRANSPARENT, p.erro.gamma_multiply(0.14), energia),
+                mistura(p.borda, p.erro.gamma_multiply(0.5), energia),
+                p.erro,
+            ),
+        };
 
-        let mut vidro = Vidro::controle(energia);
-        let mut cor_texto = self.cor;
-        if self.destaque {
-            let alfa = (76.0 + 54.0 * energia) as u8;
-            vidro = vidro.com_corpo(glass::tint(self.cor.r(), self.cor.g(), self.cor.b(), alfa));
-            vidro.borda += 0.25;
-            cor_texto = text();
-        }
-
+        // Afunda um fio ao ser pressionado.
+        let rect = rect.shrink(pressao);
+        let raio = CornerRadius::same((rect.height() / 2.0) as u8);
         let painter = ui.painter();
-        if sob_cursor > 0.0 {
-            let halo = if self.destaque { self.cor } else { text() };
-            painter.add(glass::glow(
-                rect.expand(3.0),
+        painter.rect_filled(rect, raio, esmaecer(fundo, ativo));
+        if borda != Color32::TRANSPARENT {
+            painter.rect_stroke(
+                rect,
                 raio,
-                halo.gamma_multiply(0.10 * sob_cursor),
-                16.0,
-            ));
+                Stroke::new(1.0, esmaecer(borda, ativo)),
+                StrokeKind::Inside,
+            );
         }
-        painter.add(glass::peca(rect, raio, apagar(vidro, ativo)));
 
         let pos = rect.center() - galley.size() / 2.0;
-        painter.galley(pos.round(), galley, cor(cor_texto, ativo));
-
+        painter.galley(pos.round(), galley, esmaecer(cor_texto, ativo));
         resposta
     }
 }
 
-/// Atalho para `ui.add(Botao::new(..))`.
+/// Atalho para um botão comum.
 pub fn botao(ui: &mut Ui, texto: impl Into<WidgetText>) -> Response {
     ui.add(Botao::new(texto))
 }
 
-// -------------------------------------------------------------- botão de ícone
+// ------------------------------------------------------------ botão de ícone
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icone {
@@ -170,47 +147,44 @@ pub enum Icone {
     Ajustes,
 }
 
-/// Botão redondo de vidro com um ícone desenhado a vetor — nada de glifos de
-/// fonte, que em tamanho pequeno saem borrados e desalinhados.
+/// Botão redondo com o ícone desenhado a vetor — nada de glifos de fonte, que
+/// em tamanho pequeno saem borrados e desalinhados.
 pub fn botao_icone(ui: &mut Ui, icone: Icone, dica: &str) -> Response {
-    let (rect, resposta) = ui.allocate_at_least(Vec2::splat(30.0), Sense::click());
+    let (rect, resposta) = ui.allocate_at_least(Vec2::splat(32.0), Sense::click());
     let resposta = resposta.on_hover_text(dica);
     if !ui.is_rect_visible(rect) {
         return resposta;
     }
 
     let ativo = ui.is_enabled();
-    let sob_cursor = realce(ui, &resposta, ativo);
-    let pressionado = ui.ctx().animate_bool_with_time(
-        resposta.id.with("pressao"),
-        ativo && resposta.is_pointer_button_down_on(),
-        0.06,
-    );
-    let energia = (0.5 * sob_cursor + 0.5 * pressionado).min(1.0);
+    let realce = animar(ui, &resposta, ativo && resposta.hovered());
+    let p = paleta();
 
     let painter = ui.painter();
-    painter.add(glass::peca(
-        rect,
-        rect.height() / 2.0,
-        apagar(Vidro::controle(energia), ativo),
-    ));
+    if realce > 0.0 {
+        painter.circle_filled(
+            rect.center(),
+            rect.height() / 2.0,
+            p.superficie_forte.gamma_multiply(realce),
+        );
+    }
 
     let c = rect.center();
-    let cor_traco = cor(glass::mix(muted(), text(), sob_cursor), ativo);
+    let cor = esmaecer(mistura(p.texto_fraco, p.texto, realce), ativo);
     match icone {
         Icone::Fechar => {
-            let d = 4.2;
-            let traco = Stroke::new(1.5, cor_traco);
+            let d = 4.5;
+            let traco = Stroke::new(1.6, cor);
             painter.line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], traco);
             painter.line_segment([c + Vec2::new(d, -d), c + Vec2::new(-d, d)], traco);
         }
         Icone::Ajustes => {
-            // Três cursores deslizantes, como o ícone de ajustes do iOS.
-            let traco = Stroke::new(1.4, cor_traco);
+            // Três cursores deslizantes, como qualquer ícone de ajustes.
+            let traco = Stroke::new(1.5, cor);
             for (i, x) in [1.5f32, -1.5, 3.0].into_iter().enumerate() {
-                let y = c.y + (i as f32 - 1.0) * 4.6;
+                let y = c.y + (i as f32 - 1.0) * 4.8;
                 painter.line_segment([Pos2::new(c.x - 6.0, y), Pos2::new(c.x + 6.0, y)], traco);
-                painter.circle_filled(Pos2::new(c.x + x, y), 2.1, cor_traco);
+                painter.circle_filled(Pos2::new(c.x + x, y), 2.2, cor);
             }
         }
     }
@@ -218,83 +192,64 @@ pub fn botao_icone(ui: &mut Ui, icone: Icone, dica: &str) -> Response {
     resposta
 }
 
-// ------------------------------------------------------------------- progresso
+// ------------------------------------------------------------------ progresso
 
-/// Barra de progresso em cápsula de vidro. Com `fracao` em `None` a barra fica
-/// indeterminada: uma faixa de luz correndo pelo trilho, para o caso de o
-/// servidor não dizer o tamanho do arquivo.
+/// Barra de progresso. Com `fracao` em `None` fica indeterminada: uma faixa
+/// indo e voltando pelo trilho, para o caso de o servidor não dizer o tamanho
+/// do arquivo.
 pub fn progresso(ui: &mut Ui, fracao: Option<f32>, rotulo: &str) {
-    const ALTURA: f32 = 10.0;
+    const ALTURA_BARRA: f32 = 8.0;
 
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ALTURA), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), ALTURA_BARRA),
+        Sense::hover(),
+    );
     if !ui.is_rect_visible(rect) {
         return;
     }
 
-    let raio = ALTURA / 2.0;
+    let p = paleta();
+    let raio = CornerRadius::same((ALTURA_BARRA / 2.0) as u8);
     let painter = ui.painter();
-    painter.add(glass::peca(
-        rect,
-        raio,
-        Vidro {
-            corpo: glass::white(20),
-            brilho: 0.4,
-            borda: 0.5,
-            lente: 2.0,
-            base: 0.0,
-            foco: None,
-        },
-    ));
+    painter.rect_filled(rect, raio, p.superficie_forte);
 
     let cheio = match fracao {
         Some(f) => {
-            let largura = (rect.width() * f.clamp(0.0, 1.0)).max(ALTURA);
-            Rect::from_min_size(rect.min, Vec2::new(largura, ALTURA))
+            let largura = (rect.width() * f.clamp(0.0, 1.0)).max(ALTURA_BARRA);
+            Rect::from_min_size(rect.min, Vec2::new(largura, ALTURA_BARRA))
         }
         None => {
-            // Vai e volta, sem nunca sair do trilho.
             let t = ui.input(|i| i.time) as f32 * 0.8;
             let largura = rect.width() * 0.3;
             let curso = (rect.width() - largura).max(0.0);
             let x = rect.left() + curso * (0.5 - 0.5 * (t * std::f32::consts::TAU).cos());
             ui.ctx().request_repaint();
-            Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(largura, ALTURA))
+            Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(largura, ALTURA_BARRA))
         }
     };
-
-    painter.add(glass::glow(
-        cheio.expand(2.0),
-        raio,
-        ACCENT.gamma_multiply(0.20),
-        12.0,
-    ));
-    painter.add(glass::pastilha(
-        cheio,
-        glass::tint(ACCENT.r(), ACCENT.g(), ACCENT.b(), 235),
-    ));
+    painter.rect_filled(cheio, raio, p.primario);
 
     if !rotulo.is_empty() {
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(rotulo).size(12.5).color(muted()));
+        ui.add_space(6.0);
+        ui.label(tema::nota(rotulo));
     }
 }
 
 // ---------------------------------------------------------------- interruptor
 
-/// Linha inteira com rótulo à esquerda e um interruptor de vidro à direita.
-/// Clicar em qualquer ponto da linha alterna o valor.
+/// Linha inteira com o rótulo à esquerda e o interruptor à direita. Clicar em
+/// qualquer ponto da linha alterna o valor.
 pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<WidgetText>) -> Response {
-    const TRILHO: Vec2 = Vec2::new(46.0, 27.0);
+    const TRILHO: Vec2 = Vec2::new(42.0, 24.0);
 
     let largura = ui.available_width();
-    let rotulo: WidgetText = rotulo.into();
-    let galley = rotulo.into_galley(
+    let galley = rotulo.into().into_galley(
         ui,
         Some(TextWrapMode::Wrap),
         (largura - TRILHO.x - 16.0).max(40.0),
         TextStyle::Body,
     );
-    let altura = galley.size().y.max(TRILHO.y) + 8.0;
+    let altura = galley.size().y.max(TRILHO.y) + 6.0;
 
     let (rect, mut resposta) = ui.allocate_at_least(Vec2::new(largura, altura), Sense::click());
     if resposta.clicked() {
@@ -306,16 +261,15 @@ pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<WidgetText>
     }
 
     let ativo = ui.is_enabled();
-    let sob_cursor = realce(ui, &resposta, ativo);
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(resposta.id.with("ligado"), *ligado, 0.18);
+    let realce = animar(ui, &resposta, ativo && resposta.hovered());
+    let t = animar_com(ui, resposta.id.with("ligado"), *ligado, 0.15);
 
+    let p = paleta();
     let painter = ui.painter();
     painter.galley(
         Pos2::new(rect.left(), rect.center().y - galley.size().y / 2.0).round(),
         galley,
-        cor(text(), ativo),
+        esmaecer(p.texto, ativo),
     );
 
     let trilho = Rect::from_center_size(
@@ -323,95 +277,128 @@ pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<WidgetText>
         TRILHO,
     );
     let raio = trilho.height() / 2.0;
-
-    if t > 0.0 {
-        painter.add(glass::glow(
-            trilho.expand(2.0),
-            raio,
-            ACCENT.gamma_multiply(0.16 * t * if ativo { 1.0 } else { 0.4 }),
-            14.0,
-        ));
-    }
-    let corpo = glass::mix(
-        glass::white((22.0 + 16.0 * sob_cursor) as u8),
-        glass::tint(ACCENT.r(), ACCENT.g(), ACCENT.b(), 205),
-        t,
+    let desligado = mistura(p.superficie_forte, p.borda_forte, 0.4 * realce);
+    painter.rect_filled(
+        trilho,
+        CornerRadius::same(raio as u8),
+        esmaecer(mistura(desligado, p.primario, t), ativo),
     );
-    let mut vidro = Vidro::controle(0.25 * sob_cursor).com_corpo(corpo);
-    vidro.borda += 0.3 * t;
-    painter.add(glass::peca(trilho, raio, apagar(vidro, ativo)));
 
-    // O botão desliza e cresce um fio ao ligar, como se a luz o inflasse.
+    // O botão desliza de uma ponta à outra; a cor dele é a do fundo quando
+    // desligado e a do texto sobre o principal quando ligado.
     let curso = trilho.width() - trilho.height();
     let centro = Pos2::new(trilho.left() + raio + curso * t, trilho.center().y);
-    let botao_raio = raio - 3.5 + 0.6 * t;
-    let botao = Rect::from_center_size(centro, Vec2::splat(botao_raio * 2.0));
-    painter.add(glass::glow(
-        botao.translate(Vec2::new(0.0, 1.5)),
-        botao_raio,
-        Color32::from_black_alpha(if ativo { 70 } else { 30 }),
-        6.0,
-    ));
-    painter.add(glass::peca(
-        botao,
-        botao_raio,
-        apagar(
-            Vidro {
-                corpo: glass::white(if *ligado { 250 } else { 226 }),
-                brilho: 0.9,
-                borda: 0.8,
-                lente: 2.0,
-                base: 0.0,
-                foco: None,
-            },
-            ativo,
-        ),
-    ));
+    let bolinha = mistura(p.fundo, p.sobre_primario, t);
+    painter.circle_filled(centro, raio - 3.0, esmaecer(bolinha, ativo));
+
+    resposta
+}
+
+// ------------------------------------------------------------------ segmentado
+
+/// Escolha entre poucas opções, lado a lado numa cápsula. Para conjuntos de
+/// duas ou três opções curtas é melhor que uma lista suspensa: mostra todas as
+/// alternativas de uma vez e resolve em um clique.
+pub fn segmentado<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    valor: &mut T,
+    opcoes: &[(T, &str)],
+) -> Response {
+    const ALTURA_SEG: f32 = 32.0;
+
+    let largura = ui.available_width();
+    let (rect, mut resposta) = ui.allocate_at_least(Vec2::new(largura, ALTURA_SEG), Sense::hover());
+    if !ui.is_rect_visible(rect) || opcoes.is_empty() {
+        return resposta;
+    }
+
+    let p = paleta();
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, CornerRadius::same(tema::RAIO_CONTROLE), p.superficie);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(tema::RAIO_CONTROLE),
+        Stroke::new(1.0, p.borda),
+        StrokeKind::Inside,
+    );
+
+    let passo = rect.width() / opcoes.len() as f32;
+    for (i, (opcao, rotulo)) in opcoes.iter().enumerate() {
+        let celula = Rect::from_min_size(
+            Pos2::new(rect.left() + i as f32 * passo, rect.top()),
+            Vec2::new(passo, rect.height()),
+        )
+        .shrink(3.0);
+        let clique = ui.interact(celula, resposta.id.with(i), Sense::click());
+        if clique.clicked() && *valor != *opcao {
+            *valor = *opcao;
+            resposta.mark_changed();
+        }
+
+        let escolhida = *valor == *opcao;
+        let realce = animar(ui, &clique, ui.is_enabled() && clique.hovered());
+        if escolhida {
+            painter.rect_filled(celula, CornerRadius::same(tema::RAIO_CONTROLE - 3), p.fundo);
+            painter.rect_stroke(
+                celula,
+                CornerRadius::same(tema::RAIO_CONTROLE - 3),
+                Stroke::new(1.0, p.borda),
+                StrokeKind::Inside,
+            );
+        }
+        let cor = if escolhida {
+            p.texto
+        } else {
+            mistura(p.texto_fraco, p.texto, realce)
+        };
+        painter.text(
+            celula.center(),
+            egui::Align2::CENTER_CENTER,
+            rotulo,
+            tema::fonte_media(13.5),
+            esmaecer(cor, ui.is_enabled()),
+        );
+    }
 
     resposta
 }
 
 // -------------------------------------------------------------------- cartões
 
-/// Cartão de vidro por trás de um grupo de controles.
-///
-/// O conteúdo é disposto primeiro e a peça é inserida atrás depois (`set`),
-/// porque só ao final se sabe a altura que ele ocupou.
+/// Cartão por trás de um grupo de controles: superfície, borda de um pixel.
 pub fn cartao<R>(ui: &mut Ui, conteudo: impl FnOnce(&mut Ui) -> R) -> R {
-    const MARGEM: f32 = 14.0;
-
-    let largura = ui.available_width();
-    let lugar = ui.painter().add(egui::Shape::Noop);
-    let resposta = egui::Frame::NONE
-        .inner_margin(egui::Margin::symmetric(MARGEM as i8, (MARGEM - 2.0) as i8))
+    let p = paleta();
+    egui::Frame::NONE
+        .fill(p.superficie)
+        .stroke(Stroke::new(1.0, p.borda))
+        .corner_radius(CornerRadius::same(tema::RAIO_CARTAO))
+        .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
-            ui.set_min_width(largura - 2.0 * MARGEM);
+            ui.set_width(ui.available_width() - 28.0);
             conteudo(ui)
-        });
-
-    ui.painter().set(
-        lugar,
-        glass::peca(resposta.response.rect, glass::RAIO_CARTAO, Vidro::cartao()),
-    );
-    resposta.inner
+        })
+        .inner
 }
 
 /// Título de seção, acima de um cartão.
 pub fn secao(ui: &mut Ui, titulo: &str) {
-    ui.add_space(14.0);
+    ui.add_space(12.0);
     ui.label(
-        egui::RichText::new(titulo.to_uppercase())
-            .size(11.5)
-            .color(muted())
-            .family(egui::FontFamily::Name("forte".into())),
+        tema::medio(titulo.to_uppercase(), 11.0)
+            .color(paleta().texto_fraco)
+            .extra_letter_spacing(0.6),
     );
-    ui.add_space(5.0);
+    ui.add_space(4.0);
 }
 
-/// Tecla de teclado desenhada como uma peça de vidro — usada para mostrar o
-/// atalho no meio de uma frase.
+/// Tecla de teclado, para mostrar o atalho no meio de uma frase.
 pub fn keycap(ui: &mut Ui, texto: &str) -> Response {
-    let galley = WidgetText::from(texto).into_galley(
+    etiqueta(ui, texto, paleta().texto)
+}
+
+/// Etiqueta pequena: mesma caixa da tecla, para versão e estado.
+pub fn etiqueta(ui: &mut Ui, texto: &str, cor: Color32) -> Response {
+    let galley = WidgetText::from(egui::RichText::new(texto).monospace().size(11.5)).into_galley(
         ui,
         Some(TextWrapMode::Extend),
         f32::INFINITY,
@@ -420,49 +407,47 @@ pub fn keycap(ui: &mut Ui, texto: &str) -> Response {
     let tamanho = Vec2::new(galley.size().x + 14.0, galley.size().y + 8.0);
     let (rect, resposta) = ui.allocate_at_least(tamanho, Sense::hover());
     if ui.is_rect_visible(rect) {
+        let p = paleta();
         let painter = ui.painter();
-        painter.add(glass::peca(
+        painter.rect_filled(rect, CornerRadius::same(7), p.superficie);
+        painter.rect_stroke(
             rect,
-            7.0,
-            Vidro {
-                corpo: glass::white(30),
-                brilho: 0.7,
-                borda: 0.55,
-                lente: 2.5,
-                base: 0.2,
-                foco: None,
-            },
-        ));
-        let pos = rect.center() - galley.size() / 2.0;
-        painter.galley(pos.round(), galley, text());
+            CornerRadius::same(7),
+            Stroke::new(1.0, p.borda),
+            StrokeKind::Inside,
+        );
+        painter.galley((rect.center() - galley.size() / 2.0).round(), galley, cor);
     }
     resposta
 }
 
 // ---------------------------------------------------------------------- apoio
 
-/// Animação de "sob o cursor", de 0 a 1.
-fn realce(ui: &Ui, resposta: &Response, ativo: bool) -> f32 {
-    ui.ctx()
-        .animate_bool_with_time(id_de(resposta), ativo && resposta.hovered(), ANIM)
+/// Interpola duas cores. `t` vai de 0 (a primeira) a 1 (a segunda).
+pub fn mistura(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let canal = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgba_premultiplied(
+        canal(a.r(), b.r()),
+        canal(a.g(), b.g()),
+        canal(a.b(), b.b()),
+        canal(a.a(), b.a()),
+    )
 }
 
-fn id_de(resposta: &Response) -> Id {
-    resposta.id.with("realce")
-}
-
-/// Apaga uma peça inteira quando o controle está desabilitado.
-fn apagar(mut vidro: Vidro, ativo: bool) -> Vidro {
-    if !ativo {
-        vidro.corpo = vidro.corpo.gamma_multiply(0.45);
-        vidro.brilho *= 0.4;
-        vidro.borda *= 0.35;
-        vidro.lente *= 0.5;
-        vidro.base *= 0.3;
+/// Apaga uma cor quando o controle está desabilitado.
+fn esmaecer(cor: Color32, ativo: bool) -> Color32 {
+    if ativo {
+        cor
+    } else {
+        mistura(cor, paleta().fundo, 0.55)
     }
-    vidro
 }
 
-fn cor(c: Color32, ativo: bool) -> Color32 {
-    if ativo { c } else { c.gamma_multiply(0.45) }
+fn animar(ui: &Ui, resposta: &Response, condicao: bool) -> f32 {
+    animar_com(ui, resposta.id.with("realce"), condicao, ANIM)
+}
+
+fn animar_com(ui: &Ui, id: egui::Id, condicao: bool, tempo: f32) -> f32 {
+    ui.ctx().animate_bool_with_time(id, condicao, tempo)
 }

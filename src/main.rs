@@ -5,12 +5,9 @@
 
 mod audio;
 mod autostart;
-mod captura;
 mod clipboard;
 mod config;
 mod controller;
-mod glass;
-mod glass_gpu;
 mod hotkey;
 mod icones;
 mod ipc;
@@ -19,6 +16,7 @@ mod modelo;
 mod resample;
 mod state;
 mod stt;
+mod tema;
 mod tray;
 mod ui;
 mod widgets;
@@ -222,7 +220,7 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
             .with_app_id("ditador")
             .with_title("Ditador")
             .with_icon(icones::janela())
-            .with_inner_size([440.0, 152.0])
+            .with_inner_size(state::View::Recording.size())
             .with_min_inner_size([320.0, 110.0])
             .with_decorations(false)
             .with_transparent(true)
@@ -233,14 +231,13 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
             .with_active(false),
         // O renderizador wgpu recusou a transparência nesta máquina ("surface
         // does not support a CompositeAlphaMode with transparency"), e sem canal
-        // alfa o painel de vidro vira um retângulo preto. O glow entrega a
-        // janela ARGB que o efeito precisa.
+        // alfa os cantos arredondados da janela saem em cima de um retângulo
+        // preto. O glow entrega a janela ARGB que eles precisam.
         renderer: eframe::Renderer::Glow,
         // Sem multiamostragem: nenhuma configuração do glutin nesta máquina
-        // junta canal alfa com MSAA, e o pedido derruba a criação da janela. As
-        // silhuetas de vidro saem suaves mesmo assim — o egui aplica a própria
-        // suavização (feathering) em tudo que ele tesselia, e os degradês em
-        // malha ficam recuados meio ponto, sob a borda especular.
+        // junta canal alfa com MSAA, e o pedido derruba a criação da janela. Os
+        // cantos saem suaves mesmo assim — o egui aplica a própria suavização
+        // (feathering) em tudo que ele tesselia.
         multisampling: 0,
         persist_window: false,
         centered: false,

@@ -1,6 +1,6 @@
 [package]
 name = "ditador"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Ditado por voz offline (speech-to-text) com Whisper, para Ubuntu/GNOME"
 license = "MIT"
@@ -32,13 +32,8 @@ eframe = { version = "0.36", features = ["glow"] }
 egui = "0.36"
 env_logger = "0.11"
 evdev = "0.13"
-# O PNG é para os ícones; JPEG e WebP, para ler o papel de parede do GNOME e
-# usá-lo como fundo refratado do vidro (ver glass_gpu.rs).
-image = { version = "0.25.10", default-features = false, features = [
-    "png",
-    "jpeg",
-    "webp",
-] }
+# Só PNG: os ícones embutidos e as capturas de diagnóstico (DITADOR_CAPTURA).
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 # `blocking` é só a fachada síncrona; o ksni ainda exige um executor por
 # baixo. async-io (smol) é bem mais leve que o tokio, que é o padrão.
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
@@ -46,9 +41,6 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 whisper-rs = { version = "0.16", default-features = false, features = ["log_backend"] }
-# Só para falar com o xdg-desktop-portal e capturar a tela que o vidro refrata
-# (ver captura.rs). Já vinha na árvore por baixo do ksni; aqui é uso direto.
-zbus = "5"
 # Dependência direta apenas para poder ligar o backend de GPU no crate -sys
 # (veja o comentário em [features]). O código só usa a API do whisper-rs.
 whisper-rs-sys = { version = "0.15", default-features = false }

@@ -1,13 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
   <title>Ditador — pronto</title>
   <!--
-    Ícone da barra superior: mesma silhueta do microfone do ícone colorido, na
-    grade de 16 do GNOME. Só formas preenchidas, nada de traço: o GTK recolore
-    ícones "-symbolic" forçando o `fill`, e um traço ficaria com a cor original.
+    Ícone da barra superior: o mesmo microfone do ícone do aplicativo — cápsula,
+    berço e pé —, nas mesmas proporções, redesenhado para a grade de 16 do
+    GNOME. Só formas preenchidas, nada de traço: o GTK recolore ícones
+    "-symbolic" forçando o `fill`, e um traço ficaria com a cor original.
   -->
   <g fill="#2e3436">
-    <rect x="6.2" y="1.2" width="3.6" height="7.6" rx="1.8"/>
-    <path d="M12.6,7.2 A4.6,4.6 0 0 1 3.4,7.2 L4.5,7.2 A3.5,3.5 0 0 0 11.5,7.2 Z"/>
-    <rect x="7.4" y="11" width="1.2" height="3.6" rx="0.6"/>
+    <rect x="6" y="1.4" width="4" height="6.6" rx="2"/>
+    <path d="M12.7,7.4 A4.7,4.7 0 0 1 3.3,7.4 L4.4,7.4 A3.6,3.6 0 0 0 11.6,7.4 Z"/>
+    <rect x="7.45" y="12.1" width="1.1" height="2.5" rx="0.55"/>
   </g>
 </svg>

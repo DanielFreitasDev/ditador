@@ -76,218 +76,41 @@ pub struct Config {
     /// Não é lido daqui: quem manda é o próprio systemd, e este campo só guarda
     /// o que o usuário escolheu na última vez (ver `autostart.rs`).
     pub start_with_session: bool,
-    /// Aparência do vidro.
+    /// Tema e animação da janela.
     pub appearance: Appearance,
 }
 
-/// Todos os parâmetros do vidro líquido. O que a interface expõe é um
-/// subconjunto; o resto vive aqui para quem quiser mexer no arquivo.
+/// Aparência da janela.
 ///
-/// Os padrões são os da extensão de GNOME `ryohsuke1231/liquid-glass` (o
-/// `gschema.xml` dela), que é a referência visual deste vidro: vidro claro e
-/// quase transparente, refração forte, borda acesa em volta inteira e sem
-/// reflexo concentrado. Os nomes seguem os de lá para dar para comparar valor
-/// a valor.
+/// É curta de propósito. O visual é sólido e tem só duas versões — clara e
+/// escura —, então não há o que regular: o que existia aqui antes era a régua
+/// de um efeito óptico que não existe mais.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
-    /// Refratar a tela de verdade — o que está mesmo atrás da janela — em vez
-    /// do papel de parede. A captura vem do `xdg-desktop-portal` e só é tirada
-    /// com a janela escondida, senão o vidro refrataria a si mesmo; por isso a
-    /// imagem é a de pouco antes de a janela abrir e fica parada enquanto ela
-    /// estiver aberta. Ver `captura.rs`. Sem portal disponível, cai sozinho no
-    /// papel de parede.
-    pub screen_capture: bool,
-    /// Deixar o papel de parede da área de trabalho entrar por baixo do vidro,
-    /// borrado, para o painel ter o que refratar. Nenhum compositor do Linux
-    /// entrega o que está mesmo atrás da janela; isto é o mais perto disso.
-    pub wallpaper: bool,
-    /// Quanto dele aparece por baixo da tinta, de 0 a 1. Não vai a 1 de
-    /// propósito: o resto do alfa é o que deixa o que está atrás aparecer.
-    pub wallpaper_opacity: f32,
-    /// Largura, em pixels, para a qual o papel de parede é reduzido — é o
-    /// controle do desfoque. Menor = mais borrado.
-    pub wallpaper_detail: u32,
-    /// Brilho e saturação aplicados a ele antes de entrar. A extensão não mexe
-    /// em nenhum dos dois (`dock-brightness`/`-saturation` = 1,0).
-    pub wallpaper_brightness: f32,
-    pub wallpaper_saturation: f32,
-    /// Raio, em pixels, do desfoque aplicado ao que o vidro refrata. Na
-    /// extensão é `dock-blur-radius`: ela sempre refrata um fundo já borrado.
-    pub blur_radius: f32,
-
-    /// Tinta do corpo (`dock-tint-color`) e o quanto dela entra
-    /// (`dock-tint-strength`). Branco a 12% é o que dá o vidro claro.
-    pub tint: [u8; 3],
-    pub tint_strength: f32,
-    /// Raio dos cantos do painel (`dock-corner-radius`). É ele também que dita
-    /// a largura da faixa em que a superfície sobe da borda — na extensão a
-    /// altura é normalizada justamente pelo raio.
-    pub corner_radius: f32,
-    /// Expoente do perfil da superfície (`glass-profile-shape-n`). Quanto
-    /// maior, mais depressa o vidro sobe junto da borda e mais cedo achata no
-    /// meio — é o que dá a cara de almofada.
-    pub profile_n: f32,
-    /// Altura máxima do relevo (`glass-max-z`), em pixels. Manda na inclinação
-    /// da normal, ou seja, em para onde a luz entorta.
-    pub max_z: f32,
-    /// Escala do deslocamento da refração (`glass-displacement-scale`), em
-    /// pixels. É o quanto o fundo anda de lado ao ser visto pelo bisel.
-    pub displacement: f32,
-    /// Largura, em pixels, do amaciamento da silhueta (`glass-edge-smoothing`).
-    pub edge_smoothing: f32,
-    /// Índice de refração (`glass-ior`). 1,0 = nada entorta; vidro real ~1,5;
-    /// o padrão da extensão, 2,4, é bem mais duro do que vidro de verdade.
-    pub ior: f32,
-    /// Separação das componentes de cor na refração (`glass-chroma-strength`),
-    /// em pixels.
-    pub chroma: f32,
-
-    /// Ângulo da luz, em graus (`glass-light-angle-deg`).
-    pub light_angle: f32,
-    /// Reflexo concentrado (`glass-specular-intensity`) e o quanto ele fecha
-    /// (`glass-shininess`). A extensão vem com o reflexo desligado.
-    pub specular: f32,
-    pub shininess: f32,
-    /// A borda acesa: largura, intensidade, o quanto ela segue a direção da luz,
-    /// o expoente de Fresnel e o ganho de cor — `glass-rim-*`.
-    pub rim_width: f32,
-    pub rim_intensity: f32,
-    pub rim_directional_power: f32,
-    pub rim_power: f32,
-    pub rim_color_intensity: f32,
-    /// Véu amplo da face (`glass-sheen-intensity`).
-    pub sheen: f32,
-    /// Escurecimento por dentro, junto da borda: intensidade e alcance em
-    /// pixels (`glass-ao-intensity`, `glass-ao-radius`).
-    pub ao: f32,
-    pub ao_radius: f32,
-    /// Sombra projetada: raio em pixels e intensidade (`shadow-radius`,
-    /// `shadow-intensity`).
-    pub shadow_radius: f32,
-    pub shadow_intensity: f32,
-
-    /// Escolher a cor do texto pelo brilho do que está atrás, como o
-    /// `enable-adaptive-text-color` da extensão. Com o vidro claro do padrão é
-    /// o que mantém o texto legível sobre um papel de parede claro.
-    pub adaptive_text: bool,
-
-    /// Animação de mola ao abrir.
+    pub theme: Tema,
+    /// Animação de entrada da janela.
     pub animation: bool,
     /// Duração dela, em milissegundos.
     pub animation_ms: u64,
-    /// Quanto ela ultrapassa o alvo antes de assentar, de 0 (nada) a 1.
-    pub animation_bounce: f32,
-    /// Tamanho de onde o painel parte, em fração do tamanho final.
-    pub animation_scale: f32,
 }
-
-/// As duas tintas do vidro, que são as mesmas duas que o macOS 26.1 passou a
-/// oferecer no botão **Clear / Tinted** da Aparência depois das reclamações de
-/// legibilidade.
-///
-/// A escura é o padrão daqui pelo mesmo motivo que é o da Apple numa janela: no
-/// System Settings do macOS a área de conteúdo é praticamente opaca, e o vidro
-/// translúcido de verdade fica só na moldura — barra lateral, barra de
-/// ferramentas, dock, Central de Controle. A óptica (refração, borda acesa,
-/// véu, sombra) é a mesma nas duas; o que muda é a densidade do corpo.
-pub const TINTA_ESCURA: [u8; 3] = [20, 21, 28];
-pub const FORCA_ESCURA: f32 = 0.68;
-/// A clara é o padrão da extensão de GNOME (branco a 20%, o valor que ela usa
-/// nos menus). Deixa o papel de parede aparecer; sobre um papel de parede
-/// movimentado, custa legibilidade.
-pub const TINTA_CLARA: [u8; 3] = [255, 255, 255];
-pub const FORCA_CLARA: f32 = 0.20;
 
 impl Appearance {
     pub const PADRAO: Self = Self {
-        screen_capture: true,
-        wallpaper: true,
-        // O papel de parede entra quase todo, mas por baixo de uma tinta densa:
-        // é ele que dá à superfície a cor do ambiente (o "tint window
-        // background with wallpaper colour" do macOS), não o desenho.
-        wallpaper_opacity: 0.92,
-        // Borrado com força, de propósito. Numa janela cheia de texto a Apple
-        // não deixa o papel de parede legível por trás — no macOS a área de
-        // conteúdo é praticamente opaca, e no iOS 26 beta 2 a Central de
-        // Controle ganhou justamente mais desfoque e mais escuro por causa da
-        // ilegibilidade. Reduzir a imagem a esta largura é o passa-baixa que
-        // faz isso: o que atravessa o vidro é a luz e a cor do papel de parede,
-        // distorcidas pela beirada, não o desenho dele.
-        wallpaper_detail: 300,
-        wallpaper_brightness: 1.0,
-        wallpaper_saturation: 1.0,
-        blur_radius: 5.0,
-
-        tint: TINTA_ESCURA,
-        tint_strength: FORCA_ESCURA,
-        corner_radius: 30.0,
-        profile_n: 7.0,
-        max_z: 25.0,
-        displacement: 78.5,
-        edge_smoothing: 2.0,
-        ior: 2.40,
-        chroma: 0.006,
-
-        light_angle: 50.0,
-        specular: 0.0,
-        shininess: 42.0,
-        rim_width: 5.0,
-        rim_intensity: 0.6,
-        rim_directional_power: 2.7,
-        rim_power: 6.0,
-        rim_color_intensity: 1.4,
-        sheen: 0.32,
-        ao: 0.25,
-        ao_radius: 7.5,
-        shadow_radius: 30.0,
-        shadow_intensity: 0.55,
-
-        adaptive_text: true,
-
+        theme: Tema::Sistema,
         animation: true,
-        animation_ms: 260,
-        animation_bounce: 0.6,
-        animation_scale: 0.94,
+        animation_ms: 150,
     };
 
-    /// Apara os valores para faixas em que o desenho continua fazendo sentido.
-    /// O arquivo é editável à mão, e um índice de refração de 40 ou um papel de
-    /// parede de 1 pixel deixariam a janela ilegível. As faixas são as do
-    /// `gschema.xml` da extensão onde ele declara alguma.
+    /// O arquivo é editável à mão; uma animação de meio minuto não ajudaria
+    /// ninguém.
     pub fn sanear(&mut self) {
-        self.wallpaper_opacity = self.wallpaper_opacity.clamp(0.0, 1.0);
-        self.wallpaper_detail = self.wallpaper_detail.clamp(16, 3840);
-        self.wallpaper_brightness = self.wallpaper_brightness.clamp(0.05, 2.0);
-        self.wallpaper_saturation = self.wallpaper_saturation.clamp(0.0, 3.0);
-        self.blur_radius = self.blur_radius.clamp(0.0, 40.0);
+        self.animation_ms = self.animation_ms.clamp(0, 1000);
+    }
 
-        self.tint_strength = self.tint_strength.clamp(0.0, 1.0);
-        self.corner_radius = self.corner_radius.clamp(0.0, 80.0);
-        self.profile_n = self.profile_n.clamp(1.01, 20.0);
-        self.max_z = self.max_z.clamp(0.0, 200.0);
-        self.displacement = self.displacement.clamp(0.0, 400.0);
-        self.edge_smoothing = self.edge_smoothing.clamp(0.0, 10.0);
-        self.ior = self.ior.clamp(1.0, 3.0);
-        self.chroma = self.chroma.clamp(0.0, 20.0);
-
-        self.light_angle = self.light_angle.rem_euclid(360.0);
-        self.specular = self.specular.clamp(0.0, 5.0);
-        self.shininess = self.shininess.clamp(1.0, 200.0);
-        self.rim_width = self.rim_width.clamp(0.0, 40.0);
-        self.rim_intensity = self.rim_intensity.clamp(0.0, 5.0);
-        self.rim_directional_power = self.rim_directional_power.clamp(1.0, 20.0);
-        self.rim_power = self.rim_power.clamp(0.001, 20.0);
-        self.rim_color_intensity = self.rim_color_intensity.clamp(0.0, 5.0);
-        self.sheen = self.sheen.clamp(0.0, 3.0);
-        self.ao = self.ao.clamp(0.0, 1.0);
-        self.ao_radius = self.ao_radius.clamp(0.0, 50.0);
-        self.shadow_radius = self.shadow_radius.clamp(0.0, 100.0);
-        self.shadow_intensity = self.shadow_intensity.clamp(0.0, 1.0);
-
-        self.animation_ms = self.animation_ms.clamp(0, 2000);
-        self.animation_bounce = self.animation_bounce.clamp(0.0, 1.0);
-        self.animation_scale = self.animation_scale.clamp(0.3, 1.0);
+    /// Se a janela deve ser desenhada escura agora.
+    pub fn escuro(&self) -> bool {
+        self.theme.escuro()
     }
 }
 
@@ -297,114 +120,35 @@ impl Default for Appearance {
     }
 }
 
-/// Temas prontos. Mexem só no que define o *material* — densidade do corpo,
-/// quanto do papel de parede entra, força da óptica. Preferências que não são
-/// do tema (animação de abertura, atalho, tudo o mais) ficam como estão.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Os dois temas, mais a opção de seguir o sistema.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Tema {
-    /// O padrão: corpo denso, como a área de conteúdo de uma janela do macOS.
-    Denso,
-    /// O padrão da extensão de GNOME: branco a 20%, o papel de parede aparece.
+    /// Segue *Configurações → Aparência* do GNOME.
+    #[default]
+    Sistema,
     Claro,
-    /// Sem papel de parede nenhum e corpo quase opaco. É o de máximo contraste,
-    /// e o mais barato de desenhar — serve para tela pequena, monitor fraco ou
-    /// quem simplesmente não quer o desktop competindo com o texto.
-    Fosco,
-    /// O oposto: vidro fino, refração forte, beirada acesa. É bonito e é o que
-    /// mostra a óptica; sobre um papel de parede movimentado, custa leitura.
-    Cristal,
+    Escuro,
 }
 
 impl Tema {
-    pub const TODOS: [Tema; 4] = [Tema::Denso, Tema::Claro, Tema::Fosco, Tema::Cristal];
+    pub const TODOS: [Tema; 3] = [Tema::Sistema, Tema::Claro, Tema::Escuro];
 
     pub fn nome(self) -> &'static str {
         match self {
-            Tema::Denso => "Denso",
+            Tema::Sistema => "Igual ao do sistema",
             Tema::Claro => "Claro",
-            Tema::Fosco => "Fosco",
-            Tema::Cristal => "Cristal",
+            Tema::Escuro => "Escuro",
         }
     }
 
-    pub fn descricao(self) -> &'static str {
+    /// Se este tema pede o desenho escuro agora.
+    pub fn escuro(self) -> bool {
         match self {
-            Tema::Denso => "O padrão. Corpo escuro, papel de parede só como cor de ambiente.",
-            Tema::Claro => "Vidro claro, com o papel de parede aparecendo através dele.",
-            Tema::Fosco => "Sem papel de parede e quase opaco: contraste máximo.",
-            Tema::Cristal => "Vidro fino e refração forte. O mais bonito, o menos legível.",
+            Tema::Sistema => crate::tema::sistema_escuro(),
+            Tema::Claro => false,
+            Tema::Escuro => true,
         }
-    }
-
-    /// Escreve o tema por cima da aparência, deixando o resto intacto.
-    pub fn aplicar(self, a: &mut Appearance) {
-        let p = Appearance::PADRAO;
-        match self {
-            Tema::Denso => {
-                a.tint = TINTA_ESCURA;
-                a.tint_strength = FORCA_ESCURA;
-                a.wallpaper = true;
-                a.wallpaper_opacity = p.wallpaper_opacity;
-                a.wallpaper_detail = p.wallpaper_detail;
-                a.blur_radius = p.blur_radius;
-                a.ior = p.ior;
-                a.displacement = p.displacement;
-                a.rim_intensity = p.rim_intensity;
-                a.sheen = p.sheen;
-            }
-            Tema::Claro => {
-                a.tint = TINTA_CLARA;
-                a.tint_strength = FORCA_CLARA;
-                a.wallpaper = true;
-                a.wallpaper_opacity = 0.82;
-                // Bem menos borrado: no vidro claro é o desenho do papel de
-                // parede, entortado pela beirada, que faz a peça parecer vidro.
-                a.wallpaper_detail = 1280;
-                a.blur_radius = p.blur_radius;
-                a.ior = p.ior;
-                a.displacement = p.displacement;
-                a.rim_intensity = p.rim_intensity;
-                a.sheen = p.sheen;
-            }
-            Tema::Fosco => {
-                a.tint = [18, 19, 26];
-                a.tint_strength = 0.94;
-                a.wallpaper = false;
-                a.blur_radius = 0.0;
-                // A refração continua existindo nos cartões e nos botões, que
-                // refratam o painel; no painel em si, sem fundo, ela não teria
-                // o que entortar.
-                a.displacement = 40.0;
-                a.ior = 1.9;
-                a.rim_intensity = 0.7;
-                a.sheen = 0.26;
-            }
-            Tema::Cristal => {
-                a.tint = TINTA_CLARA;
-                a.tint_strength = 0.08;
-                a.wallpaper = true;
-                a.wallpaper_opacity = 0.92;
-                a.wallpaper_detail = 1600;
-                a.blur_radius = 3.0;
-                a.ior = 2.6;
-                a.displacement = 120.0;
-                a.rim_intensity = 0.9;
-                a.sheen = 0.45;
-            }
-        }
-        // Com corpo claro, texto claro some sobre papel de parede claro.
-        a.adaptive_text = true;
-        a.sanear();
-    }
-
-    /// Qual tema a aparência atual representa, se for algum deles — é o que
-    /// deixa o seletor mostrar o que está valendo depois de reabrir a janela.
-    pub fn atual(a: &Appearance) -> Option<Tema> {
-        Tema::TODOS.into_iter().find(|t| {
-            let mut candidato = *a;
-            t.aplicar(&mut candidato);
-            candidato == *a
-        })
     }
 }
 
@@ -500,38 +244,48 @@ mod tests {
     }
 
     #[test]
-    fn o_padrao_e_o_tema_denso_e_cada_tema_se_reconhece() {
-        // O seletor descobre o tema comparando, então um tema que não voltasse
-        // igual a si mesmo apareceria para sempre como "Personalizado".
-        assert_eq!(Tema::atual(&Appearance::PADRAO), Some(Tema::Denso));
-        for tema in Tema::TODOS {
-            let mut a = Appearance::PADRAO;
-            tema.aplicar(&mut a);
-            assert_eq!(Tema::atual(&a), Some(tema), "{}", tema.nome());
-        }
+    fn a_aparencia_do_vidro_e_lida_sem_derrubar_a_config() {
+        // Quem usava a versão do vidro tem um `appearance` cheio de campos que
+        // não existem mais. O arquivo inteiro precisa continuar abrindo, e a
+        // aparência voltar ao padrão em vez de virar lixo.
+        let vidro = r#"{
+            "language": "en",
+            "appearance": {
+                "ior": 2.4, "tint": [20, 21, 28], "tint_strength": 0.68,
+                "wallpaper": true, "animation": false, "animation_ms": 260
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(vidro).expect("config do vidro");
+        assert_eq!(cfg.language, "en");
+        assert_eq!(cfg.appearance.theme, Tema::Sistema);
+        // O que sobreviveu à mudança continua valendo.
+        assert!(!cfg.appearance.animation);
+        assert_eq!(cfg.appearance.animation_ms, 260);
     }
 
     #[test]
-    fn mexer_num_controle_sai_do_tema() {
-        let mut a = Appearance::PADRAO;
-        a.tint_strength += 0.1;
-        assert_eq!(Tema::atual(&a), None);
+    fn os_temas_sao_gravados_por_nome() {
+        let cfg = Config {
+            appearance: Appearance {
+                theme: Tema::Escuro,
+                ..Appearance::PADRAO
+            },
+            ..Config::default()
+        };
+        let raw = serde_json::to_string(&cfg).expect("gravar");
+        assert!(raw.contains(r#""theme":"escuro""#), "{raw}");
+        let volta: Config = serde_json::from_str(&raw).expect("ler");
+        assert_eq!(volta.appearance.theme, Tema::Escuro);
     }
 
     #[test]
     fn valores_absurdos_do_arquivo_sao_aparados() {
         let mut a = Appearance {
-            ior: 40.0,
-            wallpaper_detail: 1,
-            wallpaper_opacity: -3.0,
-            animation_scale: 0.0,
+            animation_ms: 90_000,
             ..Appearance::PADRAO
         };
         a.sanear();
-        assert_eq!(a.ior, 3.0);
-        assert_eq!(a.wallpaper_detail, 16);
-        assert_eq!(a.wallpaper_opacity, 0.0);
-        assert_eq!(a.animation_scale, 0.3);
+        assert_eq!(a.animation_ms, 1000);
         // O padrão passa incólume.
         let mut padrao = Appearance::PADRAO;
         padrao.sanear();
