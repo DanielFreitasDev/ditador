@@ -108,6 +108,12 @@ Nas configurações dá para trocar o atalho (clique no botão e pressione a nov
 tecla ou combinação), o idioma, o microfone, o modelo, ligar a colagem
 automática, mandar o programa subir junto com a sessão e mexer no vidro.
 
+Com a cópia automática ligada dá para **desligar a janela de resultado** (*Área
+de transferência → Mostrar a janela com o texto transcrito*): aí é falar, soltar
+e colar, sem nada aparecer na frente. A janela volta a aparecer sozinha se o
+texto não tiver chegado à área de transferência — a transcrição não se perde por
+causa de uma preferência.
+
 <p align="center">
   <img src="assets/capturas/settings.jpg" alt="A tela de configurações" width="700">
 </p>

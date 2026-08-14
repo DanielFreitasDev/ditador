@@ -1005,6 +1005,29 @@ impl App {
                 "Copiar o texto automaticamente ao terminar",
             );
 
+            // Só faz sentido se o texto for parar na área de transferência
+            // sozinho; sem isso a janela é o único jeito de pegá-lo.
+            let copia_sozinho = state.draft.auto_copy || state.draft.auto_paste;
+            ui.add_enabled_ui(copia_sozinho, |ui| {
+                widgets::interruptor(
+                    ui,
+                    &mut state.draft.show_result,
+                    "Mostrar a janela com o texto transcrito",
+                );
+            });
+            if !copia_sozinho {
+                ui.label(nota(
+                    "Sem a cópia automática a janela sempre aparece — é por ela \
+                     que o texto é pego.",
+                ));
+            } else if !state.draft.show_result {
+                ui.label(nota(
+                    "Nada vai aparecer na tela: solte a tecla, espere o ícone da \
+                     barra voltar ao normal e cole. Se algo der errado, a janela \
+                     aparece assim mesmo, para o texto não se perder.",
+                ));
+            }
+
             let ydotool = clipboard::paste_available();
             ui.add_enabled_ui(ydotool, |ui| {
                 widgets::interruptor(

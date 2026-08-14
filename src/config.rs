@@ -46,6 +46,11 @@ pub struct Config {
     pub auto_copy: bool,
     /// Após copiar, colar automaticamente na janela em foco (usa ydotool).
     pub auto_paste: bool,
+    /// Abrir a janela com o texto ao terminar de transcrever. Desligue quando a
+    /// cópia automática já resolve: o texto vai para a área de transferência e
+    /// nada aparece na tela. Só vale quando o texto de fato chegou lá — senão a
+    /// transcrição se perderia sem ninguém ver.
+    pub show_result: bool,
     /// Usar aceleração por GPU (ignorado em builds só-CPU).
     pub use_gpu: bool,
     /// Threads de CPU usadas na inferência.
@@ -179,6 +184,7 @@ impl Default for Config {
             translate: false,
             auto_copy: true,
             auto_paste: false,
+            show_result: true,
             use_gpu: true,
             threads,
             input_device: None,

@@ -183,10 +183,30 @@ impl Controller {
         }
     }
 
+    /// Mostrar ou não a janela com o texto, ao terminar de transcrever.
+    ///
+    /// `a_salvo` é o que manda: só dá para pular a janela se o texto tiver
+    /// chegado mesmo à área de transferência, senão a transcrição sumiria sem
+    /// ninguém ter visto. Com colagem automática ela nunca aparece — o texto já
+    /// foi parar onde o usuário estava digitando; fora isso, quem decide é o
+    /// `show_result`, para quem já tem a cópia automática e não quer nada na
+    /// frente.
+    fn tela_do_resultado(a_salvo: bool, auto_paste: bool, show_result: bool) -> View {
+        if a_salvo && (auto_paste || !show_result) {
+            View::Hidden
+        } else {
+            View::Result
+        }
+    }
+
     fn on_transcription(&self, text: String, elapsed_ms: u128) {
-        let (auto_copy, auto_paste) = {
+        let (auto_copy, auto_paste, show_result) = {
             let state = lock(&self.shared);
-            (state.config.auto_copy, state.config.auto_paste)
+            (
+                state.config.auto_copy,
+                state.config.auto_paste,
+                state.config.show_result,
+            )
         };
 
         let mut copy_error = None;
@@ -217,18 +237,9 @@ impl Controller {
             } else {
                 state.text = text.clone();
                 state.message = copy_error.clone().unwrap_or_default();
-                state.copied_at = if copy_error.is_none() && (auto_copy || auto_paste) {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-                // Com colagem automática a janela não aparece: o texto vai
-                // direto para onde o usuário estava digitando.
-                state.view = if auto_paste && copy_error.is_none() {
-                    View::Hidden
-                } else {
-                    View::Result
-                };
+                let a_salvo = (auto_copy || auto_paste) && copy_error.is_none();
+                state.copied_at = a_salvo.then(Instant::now);
+                state.view = Self::tela_do_resultado(a_salvo, auto_paste, show_result);
                 state.result_shown_at = Some(Instant::now());
             }
         }
@@ -529,5 +540,48 @@ impl Controller {
     fn set_view(&self, view: View) {
         lock(&self.shared).view = view;
         self.sinal.mudou();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (a_salvo, auto_paste, show_result) → tela
+    fn tela(a_salvo: bool, auto_paste: bool, show_result: bool) -> View {
+        Controller::tela_do_resultado(a_salvo, auto_paste, show_result)
+    }
+
+    #[test]
+    fn sem_a_janela_quando_a_copia_automatica_ja_resolveu() {
+        // O caso novo: o texto está na área de transferência e o usuário não
+        // quer nada na frente.
+        assert_eq!(tela(true, false, false), View::Hidden);
+        // Com a janela ligada, ela aparece, que é o padrão.
+        assert_eq!(tela(true, false, true), View::Result);
+    }
+
+    #[test]
+    fn a_colagem_automatica_esconde_a_janela_de_qualquer_jeito() {
+        // O texto já foi para onde o usuário estava digitando; mostrar a janela
+        // depois disso só atrapalharia.
+        assert_eq!(tela(true, true, true), View::Hidden);
+        assert_eq!(tela(true, true, false), View::Hidden);
+    }
+
+    #[test]
+    fn a_janela_aparece_quando_o_texto_nao_esta_a_salvo() {
+        // Nada foi para a área de transferência (cópia desligada, ou a cópia
+        // falhou): a janela é o único jeito de pegar o texto, então ela aparece
+        // mesmo com todas as chaves pedindo o contrário.
+        for auto_paste in [false, true] {
+            for show_result in [false, true] {
+                assert_eq!(
+                    tela(false, auto_paste, show_result),
+                    View::Result,
+                    "auto_paste={auto_paste} show_result={show_result}"
+                );
+            }
+        }
     }
 }
