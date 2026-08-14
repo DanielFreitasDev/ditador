@@ -1,10 +1,56 @@
-# Ditador
+<p align="center">
+  <img src="assets/png/ditador-256.png" alt="Ditador" width="128" height="128">
+</p>
 
-Ditado por voz **offline** para Ubuntu/GNOME, em Rust, usando o Whisper
-(whisper.cpp) na GPU. Nada é enviado para a internet.
+<h1 align="center">Ditador</h1>
 
-Segure **Pause/Break**, fale, solte. O texto aparece numa caixinha de vidro e já
-vai para a área de transferência.
+<p align="center">
+  Ditado por voz <b>offline</b> para Ubuntu/GNOME, em Rust, com o Whisper na GPU.<br>
+  Segure <b>Pause/Break</b>, fale, solte. Nada sai da sua máquina.
+</p>
+
+<p align="center">
+  <img src="assets/capturas/recording.jpg" alt="A sobreposição de gravação sobre a área de trabalho" width="820">
+</p>
+
+## Como começar
+
+**Com o pacote pronto** (Ubuntu 24.04 ou mais novo):
+
+```bash
+sudo apt install ./ditador_0.1.0_amd64.deb      # ou ditador-cpu_… se a máquina não tem GPU
+sudo usermod -aG input $USER                    # para o atalho global ler o teclado
+```
+
+Saia da sessão e entre de novo. Abra o **Ditador** pelo menu de aplicativos: na
+primeira vez ele oferece baixar o modelo de transcrição (~574 MB) ali mesmo, com
+barra de progresso. Depois disso, tudo roda sem internet.
+
+Em *Configurações → Sistema* está o interruptor **Iniciar junto com a sessão** —
+ligue e o Ditador sobe sozinho toda vez que você entrar, já em segundo plano.
+
+**Compilando você mesmo:**
+
+```bash
+sudo apt install -y cmake libasound2-dev libvulkan-dev glslc wl-clipboard
+./instalar.sh                 # ou: ./instalar.sh cpu   |   ./instalar.sh cuda
+ditador --baixar-modelo
+```
+
+**Gerando o pacote para outra máquina:**
+
+```bash
+./empacotar.sh                # target/deb/ditador_0.1.0_amd64.deb  (Vulkan)
+./empacotar.sh cpu            # target/deb/ditador-cpu_0.1.0_amd64.deb
+```
+
+O pacote leva o programa, os ícones, o atalho do menu e o serviço de usuário do
+systemd. Não leva o modelo: são centenas de megabytes, e a própria janela o
+baixa na primeira vez.
+
+<p align="center">
+  <img src="assets/capturas/result.jpg" alt="O texto transcrito, pronto para copiar" width="760">
+</p>
 
 ## Como funciona
 
@@ -25,27 +71,6 @@ o `Sinal` avisa a interface (repintando) e o ícone (que relê o estado) a cada
 mudança — um canal de capacidade 1 por observador, para que avisos em rajada
 se fundam num só.
 
-## Instalação
-
-```bash
-sudo apt install -y cmake libasound2-dev libvulkan-dev glslc wl-clipboard
-```
-
-```bash
-./baixar-modelo.sh && ./instalar.sh && systemctl --user enable --now ditador
-```
-
-O `instalar.sh` compila, põe o binário em `~/.local/bin`, registra o ícone e o
-serviço de usuário. Rode `./baixar-modelo.sh --lista` para ver outros modelos.
-
-Seu usuário precisa estar no grupo `input` (para ler o teclado):
-
-```bash
-sudo usermod -aG input $USER
-```
-
-Depois disso, saia e entre de novo na sessão.
-
 ## Uso
 
 | Ação | Como |
@@ -54,8 +79,11 @@ Depois disso, saia e entre de novo na sessão.
 | Copiar | Botão **Copiar** (ou automático, já vem ligado) |
 | Configurar | Ícone da barra → *Configurações*, ou `ditador --configuracoes` |
 | Alternar gravação sem segurar tecla | Ícone da barra → *Ditar agora*, ou `ditador --alternar` |
+| Baixar outro modelo | `ditador --baixar-modelo medium-q5_0` |
 | Ver estado | `ditador --status` |
 | Encerrar | Ícone da barra → *Encerrar*, ou `ditador --encerrar` |
+
+`./baixar-modelo.sh --lista` mostra os modelos disponíveis e o tamanho de cada um.
 
 ### Ícone na barra superior
 
@@ -77,8 +105,12 @@ estiver desligada, o Ditador funciona igual — só avisa no log que ficou sem
 ícone.
 
 Nas configurações dá para trocar o atalho (clique no botão e pressione a nova
-tecla ou combinação), o idioma, o microfone, o modelo, e ligar a colagem
-automática.
+tecla ou combinação), o idioma, o microfone, o modelo, ligar a colagem
+automática, mandar o programa subir junto com a sessão e mexer no vidro.
+
+<p align="center">
+  <img src="assets/capturas/settings.jpg" alt="A tela de configurações" width="700">
+</p>
 
 ## Decisões que valem explicar
 
@@ -105,22 +137,57 @@ escolhe onde sua janela aparece nem consegue ficar por cima das outras — as du
 coisas que uma sobreposição de ditado precisa. Pelo X11 funciona. Desligue em
 *Configurações → Avançado* se preferir Wayland nativo.
 
-**Por que o vidro não borra o fundo.** Nenhum compositor do Linux expõe desfoque
-de fundo para aplicativos. Então o vidro vem das outras pistas que o olho usa
-para reconhecê-lo, todas em `src/glass.rs`:
+**Como o vidro é feito.** Cada peça — o painel, os cartões, os botões, os
+interruptores — sai de um shader GLSL (`src/glass_gpu.rs`) que faz a óptica
+pixel a pixel, na mesma linha da extensão de GNOME
+[liquid-glass](https://github.com/ryohsuke1231/liquid-glass):
 
-* silhueta de **squircle** — os cantos são quartos de superelipse
-  (`|x/r|⁴·² + |y/r|⁴·² = 1`), não arcos de círculo, que é o que dá a curva
-  contínua dos cantos da Apple. Cápsulas e círculos voltam ao arco;
-* **borda especular com direção**: a normal da silhueta é calculada ponto a
-  ponto e comparada com a direção da luz, então a beirada acende no topo/à
-  esquerda, esfria e azula embaixo — e ganha um brilho extra por onde o cursor
-  passa, como vidro polido sob a mão;
-* **faixa de refração**: quatro linhas concêntricas cada vez mais fracas
-  imitando a luz que a borda concentra;
-* brilho de topo e retorno de base em malha, com as linhas de corte adensadas
-  na altura dos cantos para o degradê não cortar a curva;
-* duas bordas separadas por 2 pt, para sugerir espessura.
+* silhueta de **squircle**, direto na função de distância: os cantos são
+  superelipse (`|x/r|⁴·² + |y/r|⁴·² = 1`), não arcos de círculo, que é o que dá
+  a curva contínua dos cantos da Apple. Cápsulas e círculos voltam ao arco;
+* **relevo com altura de verdade**: um perfil de superelipse faz a superfície
+  subir da borda até o meio, e a normal em 3D sai por diferenças finitas desse
+  campo de altura;
+* **refração pela lei de Snell**: o raio que entra de frente sai torto dentro do
+  vidro, e o quanto ele anda de lado é o deslocamento da amostra do fundo —
+  mais **aberração cromática**, porque cada cor entorta um pouco diferente;
+* **borda especular com direção**, em duas escalas: um fio bem em cima do
+  contorno (a nitidez da quina) e um realce mais largo descendo pelo bisel (a
+  espessura acendendo). Ela acende onde a normal encara a luz e azula do lado
+  oposto, onde só resta o retorno frio de quem atravessou a peça — e ganha um
+  brilho extra por onde o cursor passa, como vidro polido sob a mão;
+* **reflexo, véu e oclusão**: Blinn para o brilho concentrado, queda angular
+  para o véu da face e uma faixa escura por dentro da borda, onde o próprio
+  corpo do vidro tapa a luz;
+* **sombra projetada** com umbra e penumbra separadas, seguindo a silhueta;
+* **mola na abertura**: a tela entra crescendo do próprio centro, com uma
+  ultrapassagem curta antes de assentar. A escala vai numa transformação da
+  camada, então pega tudo de uma vez — vidro, texto e controles — e o shader
+  descobre a escala comparando o retângulo que recebeu com o que pediu.
+
+Cada peça é um único quadrilátero. Fora da silhueta o shader devolve o pixel do
+fundo intocado, o que deixa desenhar com a mistura desligada sem deixar rastro —
+e passado o bisel, onde a superfície é plana, ele pula o campo de altura inteiro.
+Na tela de configurações, com umas 25 peças, isso dá **~1,2 ms por quadro**,
+contra 2,3 ms do desenho vetorial que havia antes: o vidro por GPU é o dobro
+mais rápido, não mais caro.
+
+Se a GPU não estiver disponível — ou com `DITADOR_SEM_GPU=1` — o mesmo
+vocabulário sai em vetores pelo `src/glass.rs`, empilhando as pistas em camadas.
+
+**O que o vidro refrata.** Nenhum compositor do Linux entrega para um
+aplicativo comum o que está atrás da janela dele, então o fundo vem de duas
+fontes. O painel refrata o **papel de parede** da área de trabalho: o caminho
+vem do GNOME (`picture-uri`, seguindo o tema claro/escuro), a imagem é reduzida,
+borrada e escurecida numa thread à parte e recortada na posição da janela. Não é
+o que está atrás de verdade — uma janela por baixo não aparece —, por isso ele
+entra com alfa parcial: o que estiver mesmo atrás continua aparecendo pelo canal
+alfa da janela. Desligue em *Configurações → Aparência* para deixar o painel só
+com a tinta escura.
+
+Já tudo que fica **dentro** do painel refrata uma cópia do próprio framebuffer,
+tirada logo antes de desenhar a peça — e esse fundo é exato: a beirada de um
+botão realmente entorta o texto e o vidro que estão embaixo dele.
 
 Os controles (`src/widgets.rs`) são feitos das mesmas peças: botões em cápsula,
 interruptores que deslizam, cartões agrupando as configurações — todos acendem
@@ -132,25 +199,55 @@ thread principal desmonta o contexto gráfico derruba o driver da NVIDIA
 isso como falha e reiniciaria o serviço, o encerramento pula os destrutores
 globais — o sistema recupera a memória de qualquer jeito.
 
+**Como o "iniciar com a sessão" funciona.** Quando o serviço de usuário do
+systemd está instalado (é o caso pelo pacote e pelo `instalar.sh`), o
+interruptor faz `systemctl --user enable ditador`. Sem ele — quem só compilou e
+rodou —, escreve um atalho em `~/.config/autostart`, que qualquer ambiente
+gráfico entende. Desligar limpa os dois, para não sobrar resquício de uma
+instalação anterior mandando o programa subir.
+
 ## Configuração
 
-`~/.config/ditador/config.json`. Tudo que está lá aparece na tela de
-configurações; os campos menos usados ficam em *Avançado*.
+`~/.config/ditador/config.json`. Quase tudo aparece na tela de configurações; os
+campos menos usados ficam em *Avançado* e em *Aparência*.
 
 Um campo que vale conhecer: `initial_prompt`. O texto que você puser ali vai
 como contexto para o modelo — útil para nomes próprios, jargão da sua área ou
 para induzir um estilo de pontuação.
 
+O bloco `appearance` tem o vidro inteiro, inclusive o que a tela não expõe. Os
+controles deslizantes valem no quadro seguinte, então dá para ver o efeito
+enquanto se arrasta:
+
+| Campo | Padrão | O que faz |
+|---|---|---|
+| `wallpaper` / `wallpaper_opacity` | `true` / `0.55` | papel de parede por baixo do vidro, e quanto dele aparece |
+| `wallpaper_detail` | `260` | largura para a qual ele é reduzido — é o controle do desfoque |
+| `wallpaper_brightness` / `wallpaper_saturation` | `0.55` / `1.18` | escurecer e colorir antes de entrar |
+| `refraction` | `1.52` | índice de refração: 1,0 não entorta nada, vidro real ~1,5 |
+| `thickness` / `chromatic` | `1.0` / `1.0` | espessura aparente e separação das cores |
+| `edge` / `specular` / `sheen` / `occlusion` | `1.0` | multiplicadores da luz |
+| `shadow` | `0.62` | sombra projetada do painel |
+| `animation` / `animation_ms` | `true` / `260` | a mola de abertura e a duração dela |
+| `animation_bounce` / `animation_scale` | `0.6` / `0.94` | quanto ela ultrapassa o alvo e de que tamanho parte |
+
+Valores fora de faixa são aparados na leitura — o arquivo é editável à mão, e um
+índice de refração de 40 deixaria a janela ilegível.
+
 ## Desenvolvimento
 
 ```bash
-cargo test                       # reamostragem e limpeza de texto
+cargo test                       # vidro, mola, config, reamostragem, texto
 RUST_LOG=debug cargo run         # inclui o texto transcrito no log
 DITADOR_CAPTURA=/tmp/shots cargo run --release   # grava um PNG de cada tela
+DITADOR_QUADROS=1 cargo run --release            # quadros/s, sem sincronia vertical
+DITADOR_SEM_GPU=1 cargo run --release            # força o desenho vetorial
 ```
 
 A captura existe porque o GNOME nega a API de screenshot a aplicativos comuns,
-e sem ela não há como conferir o desenho da interface.
+e sem ela não há como conferir o desenho da interface. As imagens deste README
+saem dela, compostas sobre o papel de parede na posição em que a janela de fato
+aparece na tela.
 
 **Ícones.** `assets/ditador.svg` é o ícone colorido — a mesma peça de vidro do
 aplicativo, com o microfone dentro. `assets/simbolicos/` traz os quatro estados
