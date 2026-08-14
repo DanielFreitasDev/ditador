@@ -110,7 +110,7 @@ Version: $VERSAO
 Section: utils
 Priority: optional
 Architecture: $ARQ
-Maintainer: Daniel Freitas <claudeceara@gmail.com>
+Maintainer: Daniel Freitas <danielsfreitas97@gmail.com>
 Depends: $DEPS
 Recommends: curl | wget${SUGERE:+, $SUGERE}
 Provides: ditador-backend
@@ -181,7 +181,7 @@ Copyright: Daniel Freitas
 License: MIT
 FIM
 
-printf '%s (%s) unstable; urgency=low\n\n  * Versão %s.\n\n -- Daniel Freitas <claudeceara@gmail.com>  %s\n' \
+printf '%s (%s) unstable; urgency=low\n\n  * Versão %s.\n\n -- Daniel Freitas <danielsfreitas97@gmail.com>  %s\n' \
     "$PACOTE" "$VERSAO" "$VERSAO" "$(date -R)" \
     | gzip -9n > "$RAIZ/usr/share/doc/$PACOTE/changelog.Debian.gz"
 
