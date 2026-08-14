@@ -22,7 +22,7 @@
 **Com o pacote pronto** (Ubuntu 24.04 ou mais novo):
 
 ```bash
-sudo apt install ./ditador_0.4.1_amd64.deb      # ou ditador-cpu_… se a máquina não tem GPU
+sudo apt install ./ditador_0.4.2_amd64.deb      # ou ditador-cpu_… se a máquina não tem GPU
 sudo usermod -aG input $USER                    # para o atalho global ler o teclado
 ```
 
@@ -44,8 +44,8 @@ ditador --baixar-modelo
 **Gerando o pacote para outra máquina:**
 
 ```bash
-./empacotar.sh                # target/deb/ditador_0.4.1_amd64.deb  (Vulkan)
-./empacotar.sh cpu            # target/deb/ditador-cpu_0.4.1_amd64.deb
+./empacotar.sh                # target/deb/ditador_0.4.2_amd64.deb  (Vulkan)
+./empacotar.sh cpu            # target/deb/ditador-cpu_0.4.2_amd64.deb
 ```
 
 O pacote leva o programa, os ícones, o atalho do menu e o serviço de usuário do

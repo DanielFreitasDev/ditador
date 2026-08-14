@@ -5,8 +5,12 @@
 //! barramento de sessão. Registramos um StatusNotifierItem nele: o ícone muda
 //! conforme o estado e o menu dá acesso ao que o atalho faz.
 //!
-//! Se o vigia não existir (extensão desligada, outra área de trabalho), o
-//! registro falha e o programa segue sem ícone — nunca é motivo para não subir.
+//! Subimos junto com a sessão gráfica, quase sempre antes de o Shell terminar
+//! de carregar as extensões: no primeiro registro o vigia costuma nem existir
+//! ainda. Por isso pedimos ao ksni que trate essa ausência como espera, e não
+//! como erro — ele fica de olho no barramento e nos registra quando o vigia
+//! chega. Se ele nunca chegar (extensão desligada, outra área de trabalho), o
+//! programa segue sem ícone — nunca é motivo para não subir.
 
 use crate::controller::IpcCommand;
 use crate::icones::{self, Estado};
@@ -15,7 +19,7 @@ use crate::state::{ModelState, SharedState, Sinal, View, lock};
 use crossbeam_channel::Sender;
 use ksni::blocking::TrayMethods;
 use ksni::menu::StandardItem;
-use ksni::{Category, MenuItem, Status, ToolTip};
+use ksni::{Category, MenuItem, OfflineReason, Status, ToolTip};
 
 /// Retrato do estado que o ícone precisa. Guardamos uma cópia para que os
 /// callbacks do ksni, que rodam na thread do D-Bus, nunca travem o mutex
@@ -103,6 +107,18 @@ impl ksni::Tray for Icone {
         }
     }
 
+    /// Sem vigia não há onde pendurar o ícone. Devolver `true` mantém o serviço
+    /// vivo à espera dele: é o caso normal no login, quando chegamos antes das
+    /// extensões do Shell, e também quando o usuário reinicia o Shell.
+    fn watcher_offline(&self, reason: OfflineReason) -> bool {
+        log::info!("bandeja sem vigia ({reason:?}); esperando ele aparecer");
+        true
+    }
+
+    fn watcher_online(&self) {
+        log::info!("vigia da bandeja no ar; ícone publicado na barra superior");
+    }
+
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let gravando = self.retrato.view == View::Recording;
         let pronto = self.retrato.model == ModelState::Ready;
@@ -160,14 +176,13 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>) {
         retrato: retrato.clone(),
         comandos,
     })
+    // Vigia ausente vira espera, não erro: veja o comentário do módulo.
+    .assume_sni_available(true)
     .spawn()
     {
         Ok(handle) => handle,
         Err(e) => {
-            log::warn!(
-                "sem ícone na barra superior ({e}). No GNOME, isso costuma \
-                 significar que a extensão AppIndicators está desligada."
-            );
+            log::warn!("sem ícone na barra superior ({e})");
             return;
         }
     };
@@ -192,5 +207,5 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>) {
         })
         .expect("spawn tray thread");
 
-    log::info!("ícone publicado na barra superior");
+    log::info!("serviço do ícone da barra superior no ar");
 }
