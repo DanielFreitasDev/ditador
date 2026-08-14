@@ -72,10 +72,7 @@ pub fn list_input_devices() -> Vec<String> {
 }
 
 fn device_name(device: &cpal::Device) -> Option<String> {
-    device
-        .description()
-        .ok()
-        .map(|d| d.name().to_string())
+    device.description().ok().map(|d| d.name().to_string())
 }
 
 struct Recording {
@@ -115,7 +112,9 @@ fn run(
             }
 
             AudioCmd::Stop => {
-                let Some(rec) = recording.take() else { continue };
+                let Some(rec) = recording.take() else {
+                    continue;
+                };
                 let duration_ms = rec.started.elapsed().as_millis() as u64;
                 let sample_rate = rec.sample_rate;
                 let buffer = rec.buffer.clone();

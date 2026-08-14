@@ -4,7 +4,7 @@ use crate::audio::{AudioCmd, AudioEvent, AudioHandle, AudioSettings};
 use crate::clipboard;
 use crate::config::Config;
 use crate::hotkey::{HotkeyEvent, HotkeyListener};
-use crate::state::{ModelState, Sinal, SharedState, UiAction, View, lock};
+use crate::state::{ModelState, SharedState, Sinal, UiAction, View, lock};
 use crate::stt::{SttCmd, SttEvent, TranscribeOptions};
 use crossbeam_channel::{Receiver, select};
 use std::sync::Arc;

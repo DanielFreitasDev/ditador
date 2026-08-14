@@ -104,7 +104,10 @@ impl Config {
             Ok(raw) => match serde_json::from_str::<Config>(&raw) {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    log::warn!("config inválida em {}: {e}. Usando padrões.", path.display());
+                    log::warn!(
+                        "config inválida em {}: {e}. Usando padrões.",
+                        path.display()
+                    );
                     Config::default()
                 }
             },
@@ -120,8 +123,7 @@ impl Config {
 
     pub fn save(&self) -> Result<()> {
         let dir = config_dir();
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("criando {}", dir.display()))?;
+        std::fs::create_dir_all(&dir).with_context(|| format!("criando {}", dir.display()))?;
         let raw = serde_json::to_string_pretty(self)?;
         let path = config_path();
         std::fs::write(&path, raw).with_context(|| format!("gravando {}", path.display()))?;
