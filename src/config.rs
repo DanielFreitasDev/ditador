@@ -30,6 +30,17 @@ pub fn models_dir() -> PathBuf {
     data_dir().join("models")
 }
 
+/// O caminho com a pasta pessoal trocada por `~`.
+///
+/// Serve para caber numa frase: escrito por extenso, o caminho do modelo sozinho
+/// ocupa três linhas da janela de erro.
+pub fn caminho_curto(caminho: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|casa| caminho.strip_prefix(casa).ok()) {
+        Some(resto) => format!("~/{}", resto.display()),
+        None => caminho.display().to_string(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {

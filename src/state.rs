@@ -23,7 +23,9 @@ impl View {
             View::Hidden | View::Recording | View::Processing => [440.0, 178.0],
             View::Result => [620.0, 372.0],
             View::Settings => [660.0, 660.0],
-            View::Error => [500.0, 200.0],
+            // A mais alta das mensagens é a do modelo faltando: título, duas
+            // linhas de texto, os botões e ainda a nota de rodapé.
+            View::Error => [520.0, 228.0],
         };
         [w + pad, h + pad]
     }

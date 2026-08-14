@@ -81,7 +81,7 @@ fn run(rx: Receiver<SttCmd>, events: Sender<SttEvent>) {
         if !model_path.exists() {
             let _ = events.send(SttEvent::LoadFailed(format!(
                 "O modelo de transcrição ainda não está aqui ({}).",
-                model_path.display()
+                crate::config::caminho_curto(&model_path)
             )));
             continue;
         }
