@@ -134,9 +134,11 @@ pub enum Tema {
 impl Tema {
     pub const TODOS: [Tema; 3] = [Tema::Sistema, Tema::Claro, Tema::Escuro];
 
+    /// Nome curto, do tamanho de uma aba do seletor. O que cada um faz está na
+    /// nota logo abaixo dele, não no rótulo.
     pub fn nome(self) -> &'static str {
         match self {
-            Tema::Sistema => "Igual ao do sistema",
+            Tema::Sistema => "Sistema",
             Tema::Claro => "Claro",
             Tema::Escuro => "Escuro",
         }

@@ -442,9 +442,14 @@ impl App {
             let painter = ui.painter();
             // Ponto vermelho com um anel que abre e some, como a luz de um
             // gravador. Duas formas, sem desfoque nenhum.
-            painter.circle_filled(rect.center(), 5.0, p.gravando);
+            //
+            // O centro é encostado à esquerda da caixa, e não no meio dela: é a
+            // borda do ponto que precisa cair na mesma vertical do texto da
+            // linha de baixo, não o eixo dele.
+            let centro = Pos2::new(rect.left() + 5.0, rect.center().y);
+            painter.circle_filled(centro, 5.0, p.gravando);
             painter.circle_stroke(
-                rect.center(),
+                centro,
                 5.0 + 5.0 * pulso,
                 Stroke::new(1.5, p.gravando.gamma_multiply(0.55 * (1.0 - pulso))),
             );
@@ -454,10 +459,11 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    RichText::new(format!("{:.0}:{:02.0}", decorrido / 60.0, decorrido % 60.0))
-                        .size(14.0)
-                        .color(p.texto_fraco)
-                        .monospace(),
+                    tema::tecnico(
+                        format!("{:.0}:{:02.0}", decorrido / 60.0, decorrido % 60.0),
+                        14.0,
+                    )
+                    .color(p.texto_fraco),
                 );
             });
         });
@@ -769,7 +775,11 @@ impl App {
             });
         });
 
-        let rodape = 58.0;
+        // O rodapé é fixo e a lista fica com o resto. A conta é a altura de tudo
+        // que vem depois da lista: o espaço antes da linha, a linha, o espaço
+        // depois dela, os botões — e mais um espaçamento, que o egui insere
+        // sozinho ao fechar a área de rolagem.
+        let rodape = 10.0 + 1.0 + 14.0 + 36.0 + ui.spacing().item_spacing.y;
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - rodape)
             .show(ui, |ui| {
@@ -790,7 +800,7 @@ impl App {
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
         ui.painter()
             .rect_filled(linha, CornerRadius::ZERO, paleta().borda);
-        ui.add_space(10.0);
+        ui.add_space(14.0);
 
         ui.horizontal(|ui| {
             if ui
@@ -817,9 +827,7 @@ impl App {
     fn settings_atalho(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
         widgets::secao(ui, "Atalho");
         widgets::cartao(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Segure para falar:");
-
+            widgets::linha(ui, "Segure para falar", |ui| {
                 if state.capturing_hotkey {
                     ui.label(medio("pressione a combinação…", 14.0));
                     if widgets::botao(ui, "Cancelar").clicked() {
@@ -828,7 +836,7 @@ impl App {
                 } else {
                     let atual = keys::combo_label(&state.draft.hotkey);
                     if ui
-                        .add(Botao::new(RichText::new(atual).monospace()))
+                        .add(Botao::new(tema::tecnico(atual, 13.0)))
                         .on_hover_text("Clique e pressione a nova tecla ou combinação")
                         .clicked()
                     {
@@ -852,9 +860,10 @@ impl App {
         widgets::cartao(ui, |ui| {
             let ap = &mut state.draft.appearance;
 
-            ui.label("Tema:");
             let opcoes: Vec<(Tema, &str)> = Tema::TODOS.iter().map(|t| (*t, t.nome())).collect();
-            widgets::segmentado(ui, &mut ap.theme, &opcoes);
+            widgets::linha(ui, "Tema", |ui| {
+                widgets::segmentado(ui, &mut ap.theme, &opcoes);
+            });
             ui.add_space(2.0);
             ui.label(nota(match ap.theme {
                 Tema::Sistema => {
@@ -868,9 +877,8 @@ impl App {
             ui.add_space(6.0);
             widgets::interruptor(ui, &mut ap.animation, "Animação ao abrir a janela");
             ui.add_enabled_ui(ap.animation, |ui| {
-                let mut ms = ap.animation_ms as i32;
-                if ui
-                    .add(egui::Slider::new(&mut ms, 0..=500).text("Duração (ms)"))
+                let mut ms = ap.animation_ms as i64;
+                if widgets::deslizante(ui, &mut ms, 0..=500, "Duração", |v| format!("{v} ms"))
                     .changed()
                 {
                     ap.animation_ms = ms as u64;
@@ -914,49 +922,38 @@ impl App {
     fn settings_transcricao(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
         widgets::secao(ui, "Transcrição");
         widgets::cartao(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Idioma:");
+            widgets::linha(ui, "Idioma", |ui| {
                 let atual = IDIOMAS
                     .iter()
                     .find(|(code, _)| *code == state.draft.language)
                     .map(|(_, nome)| *nome)
                     .unwrap_or("Personalizado");
-                egui::ComboBox::from_id_salt("idioma")
-                    .selected_text(atual)
-                    .show_ui(ui, |ui| {
-                        for (code, nome) in IDIOMAS {
-                            ui.selectable_value(&mut state.draft.language, code.to_string(), *nome);
-                        }
-                    });
+                lista(ui, "idioma", atual).show_ui(ui, |ui| {
+                    for (code, nome) in IDIOMAS {
+                        ui.selectable_value(&mut state.draft.language, code.to_string(), *nome);
+                    }
+                });
             });
 
             widgets::interruptor(ui, &mut state.draft.translate, "Traduzir para inglês");
 
-            ui.horizontal(|ui| {
-                ui.label("Microfone:");
+            widgets::linha(ui, "Microfone", |ui| {
                 let atual = state
                     .draft
                     .input_device
                     .clone()
                     .unwrap_or_else(|| "Padrão do sistema".to_string());
                 let dispositivos = state.devices.clone();
-                egui::ComboBox::from_id_salt("microfone")
-                    .selected_text(encurtar(&atual, 34))
-                    .width(300.0)
-                    .show_ui(ui, |ui| {
+                lista(ui, "microfone", &encurtar(&atual, 40)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut state.draft.input_device, None, "Padrão do sistema");
+                    for nome in &dispositivos {
                         ui.selectable_value(
                             &mut state.draft.input_device,
-                            None,
-                            "Padrão do sistema",
+                            Some(nome.clone()),
+                            encurtar(nome, 46),
                         );
-                        for nome in &dispositivos {
-                            ui.selectable_value(
-                                &mut state.draft.input_device,
-                                Some(nome.clone()),
-                                encurtar(nome, 46),
-                            );
-                        }
-                    });
+                    }
+                });
             });
         });
     }
@@ -1034,10 +1031,17 @@ impl App {
                 ui.label(nota("Este binário foi compilado só para CPU."));
             }
 
-            ui.add(egui::Slider::new(&mut state.draft.threads, 1..=16).text("Threads de CPU"));
+            let mut threads = state.draft.threads as i64;
+            if widgets::deslizante(ui, &mut threads, 1..=16, "Threads de CPU", |v| {
+                v.to_string()
+            })
+            .changed()
+            {
+                state.draft.threads = threads as i32;
+            }
 
             ui.add_space(2.0);
-            ui.label("Modelo:");
+            ui.label("Modelo");
             let mut caminho = state.draft.model_path.display().to_string();
             if ui
                 .add(
@@ -1091,29 +1095,33 @@ impl App {
                 "Permitir editar o texto no resultado",
             );
 
-            let mut minimo = state.draft.min_recording_ms as i32;
-            if ui
-                .add(egui::Slider::new(&mut minimo, 0..=2000).text("Gravação mínima (ms)"))
-                .changed()
+            let mut minimo = state.draft.min_recording_ms as i64;
+            if widgets::deslizante(ui, &mut minimo, 0..=2000, "Gravação mínima", |v| {
+                format!("{v} ms")
+            })
+            .changed()
             {
                 state.draft.min_recording_ms = minimo as u64;
             }
 
-            let mut maximo = state.draft.max_recording_secs as i32;
-            if ui
-                .add(egui::Slider::new(&mut maximo, 10..=600).text("Gravação máxima (s)"))
-                .changed()
+            let mut maximo = state.draft.max_recording_secs as i64;
+            if widgets::deslizante(ui, &mut maximo, 10..=600, "Gravação máxima", |v| {
+                format!("{v} s")
+            })
+            .changed()
             {
                 state.draft.max_recording_secs = maximo as u64;
             }
 
-            let mut fechar = state.draft.result_timeout_secs as i32;
-            if ui
-                .add(
-                    egui::Slider::new(&mut fechar, 0..=120)
-                        .text("Fechar o resultado após (s, 0 = nunca)"),
-                )
-                .changed()
+            let mut fechar = state.draft.result_timeout_secs as i64;
+            if widgets::deslizante(ui, &mut fechar, 0..=120, "Fechar o resultado após", |v| {
+                if v == 0 {
+                    "nunca".to_string()
+                } else {
+                    format!("{v} s")
+                }
+            })
+            .changed()
             {
                 state.draft.result_timeout_secs = fechar as u64;
             }
@@ -1147,6 +1155,19 @@ fn girando(painter: &egui::Painter, centro: Pos2, raio: f32, tempo: f32) {
         .map(|i| centro + Vec2::angled(inicio + ARCO * i as f32 / PASSOS as f32) * raio)
         .collect();
     painter.add(egui::Shape::line(pontos, Stroke::new(2.5, p.texto)));
+}
+
+/// Lista suspensa ocupando o resto da linha.
+///
+/// Largura pela sobra e texto truncado, e não o contrário: assim todas terminam
+/// na mesma vertical, na borda do cartão, em vez de cada uma ter a largura do
+/// nome que estiver escolhido. A seta é a nossa (ver `widgets::seta`).
+fn lista(ui: &egui::Ui, id: &str, selecionado: &str) -> egui::ComboBox {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(selecionado)
+        .width(ui.available_width())
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .icon(widgets::seta)
 }
 
 /// Faixa invisível no topo que permite arrastar a janela sem decoração.

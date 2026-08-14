@@ -165,11 +165,22 @@ as configurações, o seletor de tema em três abas. Sob o cursor a superfície 
 de tom numa animação de 120 ms — é a única coisa que se move, e custa uma
 interpolação de cor por quadro.
 
-**Tipografia.** A [Geist](https://vercel.com/font), da Vercel (SIL OFL 1.1), em
-três pesos: Regular no corpo, Medium nos botões e rótulos, SemiBold nos títulos.
-O cronômetro e o atalho saem na Geist Mono — números de largura fixa não dançam
-ao contar. Vão embutidas no binário porque nenhuma máquina as tem instaladas por
-padrão, e o visual não pode depender disso.
+**Tipografia.** A [Plus Jakarta
+Sans](https://fonts.google.com/specimen/Plus+Jakarta+Sans), do Google Fonts (SIL
+OFL 1.1). É uma grotesca geométrica com personalidade — o `a` e o `g` de andar
+único, o corte diagonal do `t` — que ainda assim não atrapalha numa tela feita de
+rótulo curto, e que segura bem os acentos do português.
+
+O peso faz o trabalho que o tamanho faria: só três corpos aparecem na tela — 20
+nos títulos (SemiBold), 14,5 nos rótulos (Medium) e no texto corrido (Regular), e
+12,5 nas explicações, em cinza. A [JetBrains
+Mono](https://fonts.google.com/specimen/JetBrains+Mono) entra só onde largura
+fixa *é* a informação: o cronômetro, que senão dança a cada segundo, o valor de
+um controle deslizante, a tecla do atalho e a versão.
+
+As duas vão embutidas no binário, em instâncias estáticas: nenhuma máquina as tem
+instaladas por padrão, e o rasterizador do egui não interpola eixos de fonte
+variável — com uma variável, todo peso sairia no padrão.
 
 **Por que o vidro saiu.** As versões 0.2 e 0.3 tinham um painel de vidro líquido
 feito num shader GLSL: refração pela lei de Snell, borda especular com direção,

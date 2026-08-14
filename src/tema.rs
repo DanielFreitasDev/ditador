@@ -104,29 +104,37 @@ pub fn definir_escuro(novo: bool) -> bool {
 
 // ------------------------------------------------------------------ tipografia
 
-/// **Geist**, embutida no binário.
+/// **Plus Jakarta Sans**, embutida no binário.
 ///
-/// É a grotesca que a Vercel desenhou para interface (SIL OFL 1.1) e a que mais
-/// se aproxima da família que o ChatGPT usa: terminais retos, aberturas fechadas
-/// e uma altura de x que segura o texto miúdo. Vai embutida em vez de procurada
-/// no sistema porque nenhuma máquina a tem instalada por padrão, e o visual não
-/// pode depender disso.
+/// É uma grotesca geométrica do Tokotype, do Google Fonts (SIL OFL 1.1).
+/// Escolhida por ter personalidade sem atrapalhar: o `a` e o `g` de andar único,
+/// o corte diagonal do `t` e do `l` e a altura de x alta dão cara própria a uma
+/// tela que é quase toda rótulo curto, e ela segura bem os acentos do português,
+/// que numa fonte de interface costumam ser a primeira coisa a apertar.
 ///
-/// Três pesos, cada um com um trabalho: **Regular** no corpo, **Medium** nos
-/// botões e rótulos, **SemiBold** nos títulos. O mono é o Geist Mono, para o
-/// cronômetro e o atalho — números de largura fixa não dançam ao contar.
+/// Vai embutida em vez de procurada no sistema porque nenhuma máquina a tem
+/// instalada por padrão, e o visual não pode depender disso. As instâncias são
+/// estáticas, e não a fonte variável: o rasterizador do egui não interpola
+/// eixos, então uma variável renderizaria tudo no peso padrão.
+///
+/// Três pesos, cada um com um trabalho: **Regular** no texto corrido, **Medium**
+/// nos rótulos e botões, **SemiBold** nos títulos.
+///
+/// A monoespaçada é a **JetBrains Mono**, também do Google Fonts, e aparece só
+/// onde largura fixa é a informação: o cronômetro (que senão dança a cada
+/// segundo), o valor de um controle deslizante, a tecla do atalho e a versão.
 pub fn instalar_fontes(ctx: &egui::Context) {
-    const CORPO: &[u8] = include_bytes!("../assets/fontes/Geist-Regular.ttf");
-    const MEDIO: &[u8] = include_bytes!("../assets/fontes/Geist-Medium.ttf");
-    const FORTE: &[u8] = include_bytes!("../assets/fontes/Geist-SemiBold.ttf");
-    const MONO: &[u8] = include_bytes!("../assets/fontes/GeistMono-Medium.ttf");
+    const CORPO: &[u8] = include_bytes!("../assets/fontes/PlusJakartaSans-Regular.ttf");
+    const MEDIO: &[u8] = include_bytes!("../assets/fontes/PlusJakartaSans-Medium.ttf");
+    const FORTE: &[u8] = include_bytes!("../assets/fontes/PlusJakartaSans-SemiBold.ttf");
+    const MONO: &[u8] = include_bytes!("../assets/fontes/JetBrainsMono-Medium.ttf");
 
     let mut fontes = egui::FontDefinitions::default();
     for (nome, bytes) in [
-        ("geist", CORPO),
-        ("geist-medio", MEDIO),
-        ("geist-forte", FORTE),
-        ("geist-mono", MONO),
+        ("corpo", CORPO),
+        ("medio", MEDIO),
+        ("forte", FORTE),
+        ("mono", MONO),
     ] {
         fontes.font_data.insert(
             nome.to_string(),
@@ -134,18 +142,18 @@ pub fn instalar_fontes(ctx: &egui::Context) {
         );
     }
 
-    // As embutidas do egui continuam atrás como reserva, para o que a Geist não
-    // cobrir (emoji, símbolos).
+    // As embutidas do egui continuam atrás como reserva, para o que a Plus
+    // Jakarta Sans não cobrir (emoji, símbolos, alfabetos não latinos).
     fontes
         .families
         .entry(FontFamily::Proportional)
         .or_default()
-        .insert(0, "geist".to_string());
+        .insert(0, "corpo".to_string());
     fontes
         .families
         .entry(FontFamily::Monospace)
         .or_default()
-        .insert(0, "geist-mono".to_string());
+        .insert(0, "mono".to_string());
 
     // Os outros pesos herdam essas mesmas reservas.
     let reservas = fontes
@@ -153,7 +161,7 @@ pub fn instalar_fontes(ctx: &egui::Context) {
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    for (familia, peso) in [(MEDIO_NOME, "geist-medio"), (FORTE_NOME, "geist-forte")] {
+    for (familia, peso) in [(MEDIO_NOME, "medio"), (FORTE_NOME, "forte")] {
         let mut lista = reservas.clone();
         lista.insert(0, peso.to_string());
         fontes
@@ -175,14 +183,27 @@ pub fn fonte_forte(tamanho: f32) -> FontId {
     FontId::new(tamanho, FontFamily::Name(FORTE_NOME.into()))
 }
 
-/// Texto de título.
+/// Corpo dos rótulos de controle. É o mesmo do texto corrido: o que separa um
+/// do outro é o peso, não o tamanho.
+pub const CORPO: f32 = 14.5;
+
+/// Texto de título. Sai com a letra um fio mais junta — a Plus Jakarta Sans é
+/// larga, e em corpo grande o espaçamento normal abre demais.
 pub fn titulo(texto: impl Into<String>, tamanho: f32) -> RichText {
     RichText::new(texto)
         .size(tamanho)
         .family(FontFamily::Name(FORTE_NOME.into()))
+        .extra_letter_spacing(-0.2)
 }
 
-/// Rótulo de controle, um pouco mais encorpado que o corpo de texto.
+/// Rótulo de controle: mesmo corpo do texto, um peso acima. É o que faz a
+/// pergunta ("Gravação mínima") se destacar da explicação abaixo dela sem
+/// precisar de outro tamanho nem de outra cor.
+pub fn rotulo(texto: impl Into<String>) -> RichText {
+    medio(texto, CORPO)
+}
+
+/// Texto no peso do meio, em qualquer corpo.
 pub fn medio(texto: impl Into<String>, tamanho: f32) -> RichText {
     RichText::new(texto)
         .size(tamanho)
@@ -194,6 +215,11 @@ pub fn nota(texto: impl Into<String>) -> RichText {
     RichText::new(texto).size(12.5).color(paleta().texto_fraco)
 }
 
+/// Números e teclas: monoespaçado, para largura fixa onde ela é a informação.
+pub fn tecnico(texto: impl Into<String>, tamanho: f32) -> RichText {
+    RichText::new(texto).size(tamanho).monospace()
+}
+
 // ---------------------------------------------------------------------- estilo
 
 /// Escreve a paleta atual no estilo do egui — o que pega as listas suspensas,
@@ -201,12 +227,15 @@ pub fn nota(texto: impl Into<String>) -> RichText {
 pub fn estilo(style: &mut egui::Style) {
     let p = paleta();
 
+    // Uma escala curta, e o peso fazendo o trabalho que o tamanho faria: título
+    // em SemiBold, rótulo em Medium, explicação em Regular e apagada. Só três
+    // corpos aparecem na tela — 20, 14,5 e 12,5.
     style.text_styles = [
-        (egui::TextStyle::Heading, fonte_forte(19.0)),
-        (egui::TextStyle::Body, FontId::proportional(14.5)),
-        (egui::TextStyle::Button, fonte_media(14.0)),
+        (egui::TextStyle::Heading, fonte_forte(20.0)),
+        (egui::TextStyle::Body, FontId::proportional(CORPO)),
+        (egui::TextStyle::Button, fonte_forte(13.5)),
         (egui::TextStyle::Small, FontId::proportional(12.5)),
-        (egui::TextStyle::Monospace, FontId::monospace(13.0)),
+        (egui::TextStyle::Monospace, FontId::monospace(12.5)),
     ]
     .into();
 
@@ -235,7 +264,12 @@ pub fn estilo(style: &mut egui::Style) {
     v.window_shadow = sombra_menu();
     v.popup_shadow = v.window_shadow;
 
-    v.selection.bg_fill = p.texto.gamma_multiply(0.22);
+    // `selection` faz três trabalhos ao mesmo tempo: o texto marcado numa caixa
+    // de texto, a parte cheia do controle deslizante e a linha escolhida de uma
+    // lista suspensa — nesta última ele também dita a cor do texto por cima
+    // (`selection.stroke`). Por isso é um tom médio, e não a cor do texto com
+    // transparência: aquilo deixava a linha escolhida da lista quase ilegível.
+    v.selection.bg_fill = p.borda_forte;
     v.selection.stroke = Stroke::new(1.0, p.texto);
     v.slider_trailing_fill = true;
     v.handle_shape = egui::style::HandleShape::Circle;
@@ -247,7 +281,7 @@ pub fn estilo(style: &mut egui::Style) {
         w.bg_fill = fundo;
         w.weak_bg_fill = fundo;
         w.bg_stroke = Stroke::new(1.0, borda);
-        w.fg_stroke = Stroke::new(1.0, p.texto);
+        w.fg_stroke = Stroke::new(1.5, p.texto);
         w.corner_radius = CornerRadius::same(RAIO_CONTROLE);
         w.expansion = 0.0;
     };
@@ -256,8 +290,14 @@ pub fn estilo(style: &mut egui::Style) {
     controle(&mut v.widgets.hovered, p.superficie_forte, p.borda_forte);
     controle(&mut v.widgets.active, p.superficie_forte, p.borda_forte);
     controle(&mut v.widgets.open, p.superficie, p.borda_forte);
-    // O cursor do controle deslizante é uma bolinha da cor do texto.
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.texto);
+
+    // `weak_bg_fill` é o fundo dos botões e das listas suspensas; `bg_fill`, o
+    // trilho e o cursor dos controles deslizantes. Precisam ser diferentes: o
+    // trilho fica dentro de um cartão da cor da superfície, e da cor dela
+    // sumia — o controle virava um círculo solto no meio do nada.
+    v.widgets.inactive.bg_fill = p.superficie_forte;
+    v.widgets.hovered.bg_fill = p.borda_forte;
+    v.widgets.active.bg_fill = p.borda_forte;
 
     style.spacing.item_spacing = Vec2::new(8.0, 10.0);
     style.spacing.button_padding = Vec2::new(14.0, 8.0);

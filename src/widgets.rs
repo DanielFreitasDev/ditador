@@ -239,11 +239,11 @@ pub fn progresso(ui: &mut Ui, fracao: Option<f32>, rotulo: &str) {
 
 /// Linha inteira com o rótulo à esquerda e o interruptor à direita. Clicar em
 /// qualquer ponto da linha alterna o valor.
-pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<WidgetText>) -> Response {
+pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<String>) -> Response {
     const TRILHO: Vec2 = Vec2::new(42.0, 24.0);
 
     let largura = ui.available_width();
-    let galley = rotulo.into().into_galley(
+    let galley = WidgetText::from(tema::rotulo(rotulo)).into_galley(
         ui,
         Some(TextWrapMode::Wrap),
         (largura - TRILHO.x - 16.0).max(40.0),
@@ -292,6 +292,106 @@ pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<WidgetText>
     painter.circle_filled(centro, raio - 3.0, esmaecer(bolinha, ativo));
 
     resposta
+}
+
+// ------------------------------------------------------- linhas de formulário
+
+/// Largura da coluna dos rótulos. É fixa de propósito: é ela que faz todos os
+/// controles de uma tela começarem na mesma vertical, em vez de cada um começar
+/// onde o seu rótulo terminou.
+const COLUNA: f32 = 140.0;
+
+/// Linha de formulário: rótulo à esquerda, na coluna fixa, controle à direita.
+pub fn linha<R>(ui: &mut Ui, rotulo: &str, controle: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        rotulo_da_coluna(ui, rotulo, COLUNA);
+        controle(ui)
+    })
+    .inner
+}
+
+/// Desenha o rótulo de uma linha, centrado na vertical, e reserva a coluna.
+fn rotulo_da_coluna(ui: &mut Ui, rotulo: &str, largura: f32) {
+    let galley = WidgetText::from(tema::rotulo(rotulo)).into_galley(
+        ui,
+        Some(TextWrapMode::Wrap),
+        largura - 8.0,
+        TextStyle::Body,
+    );
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(largura, galley.size().y.max(ALTURA)),
+        Sense::hover(),
+    );
+    let pos = Pos2::new(rect.left(), rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(
+        pos.round(),
+        galley,
+        esmaecer(paleta().texto, ui.is_enabled()),
+    );
+}
+
+/// Controle deslizante com o rótulo à esquerda e o valor à direita.
+///
+/// O trilho e a coluna do valor têm largura fixa e ficam encostados na direita,
+/// então vários destes empilhados formam três colunas alinhadas. O valor sai
+/// formatado com a unidade junto — é ali que "ms", "s" e "nunca" moram, o que
+/// deixa os rótulos curtos e numa linha só.
+pub fn deslizante(
+    ui: &mut Ui,
+    valor: &mut i64,
+    faixa: std::ops::RangeInclusive<i64>,
+    rotulo: &str,
+    formato: impl Fn(i64) -> String,
+) -> Response {
+    const TRILHO: f32 = 148.0;
+    const COLUNA_VALOR: f32 = 64.0;
+
+    let mut resposta = None;
+    ui.horizontal(|ui| {
+        let sobra = (ui.available_width() - TRILHO - COLUNA_VALOR - 20.0).max(60.0);
+        rotulo_da_coluna(ui, rotulo, sobra);
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let galley = WidgetText::from(tema::tecnico(formato(*valor), 12.5)).into_galley(
+                ui,
+                Some(TextWrapMode::Extend),
+                f32::INFINITY,
+                TextStyle::Small,
+            );
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(COLUNA_VALOR, ALTURA), Sense::hover());
+            let pos = Pos2::new(
+                rect.right() - galley.size().x,
+                rect.center().y - galley.size().y / 2.0,
+            );
+            ui.painter().galley(
+                pos.round(),
+                galley,
+                esmaecer(paleta().texto_fraco, ui.is_enabled()),
+            );
+
+            ui.spacing_mut().slider_width = TRILHO;
+            resposta = Some(ui.add(egui::Slider::new(valor, faixa).show_value(false)));
+        });
+    });
+    resposta.expect("o controle deslizante sempre é montado")
+}
+
+/// Seta das listas suspensas: um "v" de dois traços, no lugar do triângulo
+/// cheio do egui, que ao lado de texto fino parece um borrão.
+///
+/// A assinatura é a que o `ComboBox::icon` pede.
+pub fn seta(ui: &Ui, rect: Rect, _visuals: &egui::style::WidgetVisuals, _aberta: bool) {
+    let c = rect.center();
+    let (meia_largura, meia_altura) = (4.0, 2.2);
+    let traco = Stroke::new(1.6, esmaecer(paleta().texto_fraco, ui.is_enabled()));
+    ui.painter().add(egui::Shape::line(
+        vec![
+            Pos2::new(c.x - meia_largura, c.y - meia_altura),
+            Pos2::new(c.x, c.y + meia_altura),
+            Pos2::new(c.x + meia_largura, c.y - meia_altura),
+        ],
+        traco,
+    ));
 }
 
 // ------------------------------------------------------------------ segmentado
@@ -374,7 +474,11 @@ pub fn cartao<R>(ui: &mut Ui, conteudo: impl FnOnce(&mut Ui) -> R) -> R {
         .corner_radius(CornerRadius::same(tema::RAIO_CARTAO))
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width() - 28.0);
+            // Sem largura mínima o cartão encolhe até o conteúdo, e uma pilha
+            // deles fica com as bordas em verticais diferentes. A sobra medida
+            // aqui dentro já vem sem as margens do quadro, então é exatamente a
+            // largura que o conteúdo pode ocupar.
+            ui.set_width(ui.available_width());
             conteudo(ui)
         })
         .inner
@@ -397,8 +501,13 @@ pub fn keycap(ui: &mut Ui, texto: &str) -> Response {
 }
 
 /// Etiqueta pequena: mesma caixa da tecla, para versão e estado.
+///
+/// O corpo é o mesmo do texto de apoio que costuma ficar ao lado (12,5). Em
+/// tamanhos diferentes as duas fontes — a de texto e a monoespaçada — ficam com
+/// os centros em alturas diferentes, e a frase "Solte ⌜Pause⌟ para transcrever"
+/// sai com a tecla um fio abaixo da linha.
 pub fn etiqueta(ui: &mut Ui, texto: &str, cor: Color32) -> Response {
-    let galley = WidgetText::from(egui::RichText::new(texto).monospace().size(11.5)).into_galley(
+    let galley = WidgetText::from(tema::tecnico(texto, 12.5)).into_galley(
         ui,
         Some(TextWrapMode::Extend),
         f32::INFINITY,
