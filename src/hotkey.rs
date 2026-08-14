@@ -127,19 +127,43 @@ impl HotkeyListener {
     }
 
     fn read_device(&self, mut device: Device) {
+        // O que este teclado, e só ele, deixou pressionado.
+        let mut minhas: HashSet<u16> = HashSet::new();
+
         loop {
             let events = match device.fetch_events() {
                 Ok(events) => events,
                 Err(e) => {
                     log::debug!("leitura do dispositivo encerrada: {e}");
+                    // Um teclado que é desconectado com a tecla do atalho
+                    // pressionada nunca manda o evento de soltar. Sem isto o
+                    // código dela ficaria em `pressed` para sempre e a gravação
+                    // não teria como parar.
+                    self.soltar(minhas);
                     return;
                 }
             };
             for event in events {
                 if let EventSummary::Key(_, code, value) = event.destructure() {
+                    match value {
+                        0 => {
+                            minhas.remove(&code.code());
+                        }
+                        1 => {
+                            minhas.insert(code.code());
+                        }
+                        _ => {}
+                    }
                     self.handle_key(code, value);
                 }
             }
+        }
+    }
+
+    /// Solta as teclas indicadas, como se os eventos tivessem chegado.
+    fn soltar(&self, codigos: HashSet<u16>) {
+        for code in codigos {
+            self.handle_key(KeyCode::new(code), 0);
         }
     }
 
@@ -231,4 +255,62 @@ fn lock<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
 
 fn lock_mut<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Um ouvinte sem thread nenhuma, para exercitar só a máquina de teclas.
+    fn ouvinte(atalho: &[&str]) -> (HotkeyListener, crossbeam_channel::Receiver<HotkeyEvent>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let nomes: Vec<String> = atalho.iter().map(|k| k.to_string()).collect();
+        let listener = HotkeyListener {
+            target: RwLock::new(codes_of(&nomes)),
+            pressed: Mutex::new(HashSet::new()),
+            engaged: AtomicBool::new(false),
+            capturing: AtomicBool::new(false),
+            capture_buf: Mutex::new(Vec::new()),
+            watched: Mutex::new(HashSet::new()),
+            tx,
+        };
+        (listener, rx)
+    }
+
+    #[test]
+    fn segurar_e_soltar_a_tecla_liga_e_desliga_o_atalho() {
+        let (listener, rx) = ouvinte(&["KEY_PAUSE"]);
+        listener.handle_key(KeyCode::KEY_PAUSE, 1);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
+        // Repetição automática não conta como um novo aperto.
+        listener.handle_key(KeyCode::KEY_PAUSE, 2);
+        assert!(rx.try_recv().is_err());
+        listener.handle_key(KeyCode::KEY_PAUSE, 0);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
+    }
+
+    #[test]
+    fn o_teclado_que_some_com_a_tecla_presa_nao_deixa_a_gravacao_correndo() {
+        let (listener, rx) = ouvinte(&["KEY_PAUSE"]);
+        listener.handle_key(KeyCode::KEY_PAUSE, 1);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
+
+        // O teclado é desconectado agora: o evento de soltar nunca chega, e
+        // quem o inventa é a limpeza da leitura.
+        listener.soltar(HashSet::from([KeyCode::KEY_PAUSE.code()]));
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
+        assert!(lock_mut(&listener.pressed).is_empty());
+    }
+
+    #[test]
+    fn a_combinacao_so_vale_com_todas_as_teclas_juntas() {
+        let (listener, rx) = ouvinte(&["KEY_LEFTMETA", "KEY_SPACE"]);
+        listener.handle_key(KeyCode::KEY_LEFTMETA, 1);
+        assert!(rx.try_recv().is_err(), "meia combinação não grava");
+        listener.handle_key(KeyCode::KEY_SPACE, 1);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
+        // Soltar uma só já desfaz a combinação.
+        listener.handle_key(KeyCode::KEY_SPACE, 0);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
+    }
 }
