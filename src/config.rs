@@ -210,6 +210,14 @@ impl Config {
                         "config inválida em {}: {e}. Usando padrões.",
                         path.display()
                     );
+                    // Guarda o arquivo de lado antes que a primeira gravação o
+                    // substitua pelos padrões: o arquivo é editável à mão, e
+                    // quem errou uma vírgula precisa poder ver o que escreveu.
+                    let guardado = path.with_extension("json.invalida");
+                    match std::fs::rename(&path, &guardado) {
+                        Ok(()) => log::warn!("a anterior ficou em {}", guardado.display()),
+                        Err(e) => log::warn!("não consegui guardar a config inválida: {e}"),
+                    }
                     Config::default()
                 }
             },
@@ -228,7 +236,14 @@ impl Config {
         std::fs::create_dir_all(&dir).with_context(|| format!("criando {}", dir.display()))?;
         let raw = serde_json::to_string_pretty(self)?;
         let path = config_path();
-        std::fs::write(&path, raw).with_context(|| format!("gravando {}", path.display()))?;
+
+        // Grava ao lado e só então troca pelo definitivo. A troca é atômica
+        // dentro da mesma pasta: uma queda no meio da escrita deixa o arquivo
+        // anterior inteiro, em vez de um JSON pela metade que o `load` seguinte
+        // recusaria — e aí as configurações de quem usa sumiriam sem aviso.
+        let parcial = path.with_extension("json.parcial");
+        std::fs::write(&parcial, raw).with_context(|| format!("gravando {}", parcial.display()))?;
+        std::fs::rename(&parcial, &path).with_context(|| format!("gravando {}", path.display()))?;
         Ok(())
     }
 
