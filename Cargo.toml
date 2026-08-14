@@ -1,0 +1,45 @@
+[package]
+name = "ditador"
+version = "0.1.0"
+edition = "2024"
+description = "Ditado por voz offline (speech-to-text) com Whisper, para Ubuntu/GNOME"
+
+[features]
+# Vulkan é o padrão: usa a GPU NVIDIA/AMD/Intel sem precisar do CUDA Toolkit.
+#
+# Ativamos o backend direto no whisper-rs-sys em vez de usar `whisper-rs/vulkan`.
+# Motivo: o módulo auxiliar `vulkan` do whisper-rs 0.16 (só lista dispositivos,
+# que não usamos) referencia símbolos ausentes do bindings.rs pré-gerado do crate
+# -sys, e regenerar aquele arquivo exigiria instalar o LLVM/libclang inteiro.
+# Pelo caminho de baixo o whisper.cpp é compilado e ligado com Vulkan do mesmo
+# jeito — o ggml registra o backend sozinho em tempo de execução.
+default = ["vulkan"]
+vulkan = ["whisper-rs-sys/vulkan"]
+# Requer o CUDA Toolkit instalado (nvcc). Compile com: cargo build --release --no-default-features --features cuda
+cuda = ["whisper-rs-sys/cuda"]
+# Só CPU, sem nenhuma dependência de GPU: cargo build --release --no-default-features --features cpu
+cpu = []
+
+[dependencies]
+anyhow = "1"
+arboard = "3"
+cpal = "0.18"
+crossbeam-channel = "0.5"
+dirs = "6"
+eframe = { version = "0.36", features = ["glow"] }
+egui = "0.36"
+env_logger = "0.11"
+evdev = "0.13"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+whisper-rs = { version = "0.16", default-features = false, features = ["log_backend"] }
+# Dependência direta apenas para poder ligar o backend de GPU no crate -sys
+# (veja o comentário em [features]). O código só usa a API do whisper-rs.
+whisper-rs-sys = { version = "0.15", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

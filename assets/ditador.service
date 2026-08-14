@@ -1,0 +1,16 @@
+[Unit]
+Description=Ditador — ditado por voz offline com Whisper
+Documentation=file:%h/.local/share/ditador
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ditador
+Restart=on-failure
+RestartSec=3
+# O carregamento do modelo na GPU pode demorar alguns segundos.
+TimeoutStopSec=10
+
+[Install]
+WantedBy=graphical-session.target
