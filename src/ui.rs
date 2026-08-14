@@ -300,6 +300,11 @@ impl eframe::App for App {
             apply_window(ctx, view);
             self.applied = Some(view);
             self.abertura = (view != View::Hidden).then(std::time::Instant::now);
+            // Uma tela nova é o momento de conferir de novo o que está
+            // instalado — quem acabou de rodar `apt install ydotool` com o
+            // Ditador aberto vê a mudança sem reiniciar nada. Durante o
+            // desenho, as respostas vêm da memória (ver `programas.rs`).
+            crate::programas::reler();
         }
 
         match view {
@@ -737,8 +742,8 @@ impl App {
             return false;
         }
 
+        let baixavel = crate::modelo::disponivel();
         ui.horizontal(|ui| {
-            let baixavel = crate::modelo::disponivel();
             ui.add_enabled_ui(baixavel, |ui| {
                 if ui
                     .add(Botao::new("Baixar o modelo (574 MB)").principal())
@@ -760,7 +765,7 @@ impl App {
             }
         });
         ui.add_space(6.0);
-        ui.label(nota(if crate::modelo::disponivel() {
+        ui.label(nota(if baixavel {
             "É a única coisa que falta. Depois disso tudo roda na sua máquina, \
              sem internet."
         } else {

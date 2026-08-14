@@ -57,14 +57,7 @@ pub fn disponivel() -> bool {
 }
 
 fn programa() -> Option<&'static str> {
-    ["curl", "wget"].into_iter().find(|p| {
-        Command::new("which")
-            .arg(p)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
+    crate::programas::primeiro(&["curl", "wget"])
 }
 
 /// Começa o download numa thread. Devolve o andamento, que a interface lê a

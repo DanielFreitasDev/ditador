@@ -13,6 +13,7 @@ mod icones;
 mod ipc;
 mod keys;
 mod modelo;
+mod programas;
 mod resample;
 mod state;
 mod stt;

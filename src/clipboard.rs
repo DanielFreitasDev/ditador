@@ -71,7 +71,7 @@ fn copy_with_wl_copy(text: &str) -> Result<()> {
 }
 
 pub fn paste_available() -> bool {
-    which("ydotool")
+    crate::programas::existe("ydotool")
 }
 
 /// Envia Ctrl+V para a janela em foco.
@@ -100,16 +100,5 @@ pub fn paste() -> Result<()> {
 }
 
 pub fn wl_copy_available() -> bool {
-    which("wl-copy")
-}
-
-fn which(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| {
-                let candidate = dir.join(program);
-                candidate.is_file()
-            })
-        })
-        .unwrap_or(false)
+    crate::programas::existe("wl-copy")
 }

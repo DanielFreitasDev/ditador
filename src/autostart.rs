@@ -16,6 +16,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 const UNIDADE: &str = "ditador.service";
 
@@ -33,12 +34,21 @@ pub fn ligado() -> bool {
 
 /// O caminho que uma mudança vai usar. `Systemd` quando a unidade existe (o
 /// programa foi instalado), `Xdg` no resto dos casos.
+///
+/// A resposta é guardada porque quem pergunta é o desenho da tela de
+/// configurações, a cada quadro, e descobrir custa um processo `systemctl`.
+/// Guardar é seguro: a unidade só aparece numa instalação, e tanto o
+/// `instalar.sh` quanto o `prerm` do pacote encerram o Ditador antes de mexer
+/// em qualquer arquivo — nenhuma instalação acontece com este processo vivo.
 pub fn metodo() -> Metodo {
-    if unidade_existe() {
-        Metodo::Systemd
-    } else {
-        Metodo::Xdg
-    }
+    static MEMORIA: OnceLock<Metodo> = OnceLock::new();
+    *MEMORIA.get_or_init(|| {
+        if unidade_existe() {
+            Metodo::Systemd
+        } else {
+            Metodo::Xdg
+        }
+    })
 }
 
 /// Arma ou desarma. Mexe nos dois caminhos ao desarmar, para não sobrar um
