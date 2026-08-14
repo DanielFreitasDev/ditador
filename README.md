@@ -152,6 +152,19 @@ DITADOR_CAPTURA=/tmp/shots cargo run --release   # grava um PNG de cada tela
 A captura existe porque o GNOME nega a API de screenshot a aplicativos comuns,
 e sem ela não há como conferir o desenho da interface.
 
+**Ícones.** `assets/ditador.svg` é o ícone colorido — a mesma peça de vidro do
+aplicativo, com o microfone dentro. `assets/simbolicos/` traz os quatro estados
+da barra superior (pronto, gravando, trabalhando, falhou), só com formas
+preenchidas, que é o que o GTK consegue recolorir. Depois de mexer neles:
+
+```bash
+python3 assets/gerar-icones.py    # rasteriza assets/png/ (usa o librsvg do GNOME)
+```
+
+Os PNGs ficam versionados porque o binário os embute: a janela precisa do ícone
+antes de qualquer instalação, e a bandeja usa os símbolos em branco como reserva
+quando o tema do sistema ainda não tem os nossos.
+
 ## Limitações conhecidas
 
 - **Colagem automática** (desligada por padrão) depende do `ydotool` e de a

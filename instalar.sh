@@ -5,6 +5,7 @@ set -euo pipefail
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
 DESKTOP_DIR="$HOME/.local/share/applications"
+ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 
 # Backend: vulkan (padrão), cuda ou cpu
@@ -27,7 +28,23 @@ mkdir -p "$BIN_DIR"
 if ditador --encerrar >/dev/null 2>&1; then sleep 1; fi
 install -m 755 target/release/ditador "$BIN_DIR/ditador"
 
-echo "==> Instalando o ícone do aplicativo"
+echo "==> Instalando os ícones"
+mkdir -p "$ICON_DIR/scalable/apps" "$ICON_DIR/symbolic/apps"
+# O colorido, para a lista de aplicativos e o alternador de janelas. Vai como
+# SVG (que o GNOME usa em qualquer tamanho) e também nos tamanhos fixos, que o
+# tema prefere quando existem — sai mais nítido no dock.
+install -m 644 assets/ditador.svg "$ICON_DIR/scalable/apps/ditador.svg"
+for png in assets/png/ditador-*.png; do
+    tamanho="${png##*-}"; tamanho="${tamanho%.png}"
+    mkdir -p "$ICON_DIR/${tamanho}x${tamanho}/apps"
+    install -m 644 "$png" "$ICON_DIR/${tamanho}x${tamanho}/apps/ditador.png"
+done
+# Os símbolos da barra superior. Ficam em symbolic/apps para o GTK recolori-los
+# conforme o tema em vez de deixá-los cinza-chumbo.
+install -m 644 assets/simbolicos/*.svg "$ICON_DIR/symbolic/apps/"
+gtk-update-icon-cache -f -t "$ICON_DIR" 2>/dev/null || true
+
+echo "==> Instalando o atalho do aplicativo"
 mkdir -p "$DESKTOP_DIR"
 install -m 644 assets/ditador.desktop "$DESKTOP_DIR/ditador.desktop"
 update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true

@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Ditador</title>
+  <!--
+    O ícone é a mesma peça de vidro do aplicativo: silhueta de squircle (quartos
+    de superelipse |x/r|^4,2 + |y/r|^4,2 = 1, o mesmo expoente de src/glass.rs),
+    corpo escuro translúcido, brilho descendo do topo e borda especular que
+    acende em cima e esfria embaixo. O caminho é uma polilinha porque a
+    superelipse não tem forma exata em Bézier; com 20 pontos por canto o desvio
+    fica abaixo de um décimo de pixel mesmo em 1024 px.
+  -->
+  <defs>
+    <path id="tile" d="M26.00,130.00 L26.15,99.05 L26.61,87.01 L27.38,77.98 L28.46,70.55 L29.85,64.18 L31.56,58.60 L33.60,53.65 L35.98,49.25 L38.72,45.32 L41.82,41.82 L45.32,38.72 L49.25,35.98 L53.65,33.60 L58.60,31.56 L64.18,29.85 L70.55,28.46 L77.98,27.38 L87.01,26.61 L99.05,26.15 L130.00,26.00 L382.00,26.00 L412.95,26.15 L424.99,26.61 L434.02,27.38 L441.45,28.46 L447.82,29.85 L453.40,31.56 L458.35,33.60 L462.75,35.98 L466.68,38.72 L470.18,41.82 L473.28,45.32 L476.02,49.25 L478.40,53.65 L480.44,58.60 L482.15,64.18 L483.54,70.55 L484.62,77.98 L485.39,87.01 L485.85,99.05 L486.00,130.00 L486.00,382.00 L485.85,412.95 L485.39,424.99 L484.62,434.02 L483.54,441.45 L482.15,447.82 L480.44,453.40 L478.40,458.35 L476.02,462.75 L473.28,466.68 L470.18,470.18 L466.68,473.28 L462.75,476.02 L458.35,478.40 L453.40,480.44 L447.82,482.15 L441.45,483.54 L434.02,484.62 L424.99,485.39 L412.95,485.85 L382.00,486.00 L130.00,486.00 L99.05,485.85 L87.01,485.39 L77.98,484.62 L70.55,483.54 L64.18,482.15 L58.60,480.44 L53.65,478.40 L49.25,476.02 L45.32,473.28 L41.82,470.18 L38.72,466.68 L35.98,462.75 L33.60,458.35 L31.56,453.40 L29.85,447.82 L28.46,441.45 L27.38,434.02 L26.61,424.99 L26.15,412.95 L26.00,382.00 Z"/>
+    <path id="tile-interno" d="M35.00,130.00 L35.14,101.73 L35.56,90.73 L36.26,82.48 L37.24,75.69 L38.51,69.87 L40.08,64.78 L41.94,60.26 L44.12,56.24 L46.62,52.65 L49.45,49.45 L52.65,46.62 L56.24,44.12 L60.26,41.94 L64.78,40.08 L69.87,38.51 L75.69,37.24 L82.48,36.26 L90.73,35.56 L101.73,35.14 L130.00,35.00 L382.00,35.00 L410.27,35.14 L421.27,35.56 L429.52,36.26 L436.31,37.24 L442.13,38.51 L447.22,40.08 L451.74,41.94 L455.76,44.12 L459.35,46.62 L462.55,49.45 L465.38,52.65 L467.88,56.24 L470.06,60.26 L471.92,64.78 L473.49,69.87 L474.76,75.69 L475.74,82.48 L476.44,90.73 L476.86,101.73 L477.00,130.00 L477.00,382.00 L476.86,410.27 L476.44,421.27 L475.74,429.52 L474.76,436.31 L473.49,442.13 L471.92,447.22 L470.06,451.74 L467.88,455.76 L465.38,459.35 L462.55,462.55 L459.35,465.38 L455.76,467.88 L451.74,470.06 L447.22,471.92 L442.13,473.49 L436.31,474.76 L429.52,475.74 L421.27,476.44 L410.27,476.86 L382.00,477.00 L130.00,477.00 L101.73,476.86 L90.73,476.44 L82.48,475.74 L75.69,474.76 L69.87,473.49 L64.78,471.92 L60.26,470.06 L56.24,467.88 L52.65,465.38 L49.45,462.55 L46.62,459.35 L44.12,455.76 L41.94,451.74 L40.08,447.22 L38.51,442.13 L37.24,436.31 L36.26,429.52 L35.56,421.27 L35.14,410.27 L35.00,382.00 Z"/>
+
+    <clipPath id="dentro"><use href="#tile"/></clipPath>
+
+    <!-- Corpo: azul profundo entrando pela quina de cima à esquerda. -->
+    <linearGradient id="corpo" x1="0.08" y1="0" x2="0.92" y2="1">
+      <stop offset="0" stop-color="#46578F"/>
+      <stop offset="0.42" stop-color="#232D54"/>
+      <stop offset="1" stop-color="#0D101C"/>
+    </linearGradient>
+    <!-- Luz entrando pela quina de cima. -->
+    <linearGradient id="brilho" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Borda especular: acende no topo, esfria e azula na base. -->
+    <linearGradient id="aro" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.92"/>
+      <stop offset="0.42" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#A9C8FF" stop-opacity="0.42"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.44" r="0.52">
+      <stop offset="0" stop-color="#7AADFF" stop-opacity="0.50"/>
+      <stop offset="0.55" stop-color="#6E8CFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#6E8CFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="capsula" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.55" stop-color="#EDF3FF"/>
+      <stop offset="1" stop-color="#B7CFFF"/>
+    </linearGradient>
+    <linearGradient id="arco" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EAF1FF"/>
+      <stop offset="1" stop-color="#9FBEFB"/>
+    </linearGradient>
+
+    <filter id="borrar" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="13"/>
+    </filter>
+    <filter id="borrar-pouco" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+  </defs>
+
+  <!-- Sombra projetada, para a peça pousar sobre qualquer fundo. -->
+  <use href="#tile" fill="#05070E" opacity="0.42" transform="translate(0,12)" filter="url(#borrar)"/>
+
+  <use href="#tile" fill="url(#corpo)"/>
+
+  <g clip-path="url(#dentro)">
+    <!-- Luz de topo e halo por trás do microfone. -->
+    <rect x="26" y="26" width="460" height="230" fill="url(#brilho)"/>
+    <circle cx="256" cy="248" r="205" fill="url(#halo)"/>
+
+    <!-- Microfone. A cápsula tem seu próprio reflexo, como uma conta de vidro.
+         O pé é um retângulo, e não uma linha: um traço vertical tem caixa de
+         largura zero, e aí o SVG manda não desenhar nada pintado com gradiente
+         em coordenadas do objeto. -->
+    <g>
+      <path d="M156,266 A100,100 0 0 0 356,266" fill="none" stroke="url(#arco)"
+            stroke-width="24" stroke-linecap="round" opacity="0.96"/>
+      <rect x="245" y="354" width="22" height="68" rx="11" fill="url(#arco)" opacity="0.96"/>
+      <rect x="204" y="100" width="104" height="190" rx="52" fill="#0B0E19" opacity="0.5"
+            filter="url(#borrar-pouco)"/>
+      <rect x="204" y="100" width="104" height="190" rx="52" fill="url(#capsula)"/>
+      <rect x="220" y="120" width="22" height="64" rx="11" fill="#FFFFFF" opacity="0.55"/>
+    </g>
+  </g>
+
+  <!-- Bordas: a de fora é a face frontal do vidro, a de dentro é a de trás. -->
+  <use href="#tile" fill="none" stroke="url(#aro)" stroke-width="3"/>
+  <use href="#tile-interno" fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="2"/>
+</svg>

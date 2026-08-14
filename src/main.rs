@@ -9,6 +9,7 @@ mod config;
 mod controller;
 mod glass;
 mod hotkey;
+mod icones;
 mod ipc;
 mod keys;
 mod resample;
@@ -212,6 +213,7 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_app_id("ditador")
             .with_title("Ditador")
+            .with_icon(icones::janela())
             .with_inner_size([440.0, 152.0])
             .with_min_inner_size([320.0, 110.0])
             .with_decorations(false)

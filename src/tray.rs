@@ -9,8 +9,9 @@
 //! registro falha e o programa segue sem ícone — nunca é motivo para não subir.
 
 use crate::controller::IpcCommand;
+use crate::icones::{self, Estado};
 use crate::keys;
-use crate::state::{ModelState, Sinal, SharedState, View, lock};
+use crate::state::{ModelState, SharedState, Sinal, View, lock};
 use crossbeam_channel::Sender;
 use ksni::blocking::TrayMethods;
 use ksni::menu::StandardItem;
@@ -36,14 +37,8 @@ impl Retrato {
         }
     }
 
-    fn icone(&self) -> &'static str {
-        match (self.model, self.view) {
-            (ModelState::Loading, _) => "content-loading-symbolic",
-            (ModelState::Failed, _) => "dialog-warning-symbolic",
-            (_, View::Recording) => "media-record-symbolic",
-            (_, View::Processing) => "content-loading-symbolic",
-            _ => "audio-input-microphone-symbolic",
-        }
+    fn estado(&self) -> Estado {
+        Estado::de(self.model, self.view)
     }
 
     fn resumo(&self) -> String {
@@ -90,15 +85,21 @@ impl ksni::Tray for Icone {
     }
 
     fn icon_name(&self) -> String {
-        self.retrato.icone().to_string()
+        self.retrato.estado().nome().to_string()
+    }
+
+    /// Reserva para quando o tema não tiver os nossos ícones. O protocolo manda
+    /// o hospedeiro preferir o nome e só cair no mapa de bits se não achar.
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        icones::bandeja(self.retrato.estado())
     }
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "Ditador".to_string(),
             description: self.retrato.resumo(),
-            icon_name: self.retrato.icone().to_string(),
-            icon_pixmap: Vec::new(),
+            icon_name: self.retrato.estado().nome().to_string(),
+            icon_pixmap: icones::bandeja(self.retrato.estado()),
         }
     }
 
@@ -123,7 +124,7 @@ impl ksni::Tray for Icone {
                 icon_name: if gravando {
                     "media-playback-stop-symbolic".to_string()
                 } else {
-                    "audio-input-microphone-symbolic".to_string()
+                    Estado::Pronto.nome().to_string()
                 },
                 enabled: pronto,
                 activate: Box::new(|this: &mut Self| this.enviar(IpcCommand::Toggle)),
