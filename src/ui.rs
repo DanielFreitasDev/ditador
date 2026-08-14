@@ -4,7 +4,7 @@
 
 use crate::audio::Levels;
 use crate::glass;
-use crate::state::{ModelState, Repainter, SharedState, UiAction, View, lock};
+use crate::state::{ModelState, Sinal, SharedState, UiAction, View, lock};
 use crate::stt;
 use crate::{clipboard, keys};
 use crossbeam_channel::Sender;
@@ -57,9 +57,9 @@ impl App {
         shared: SharedState,
         actions: Sender<UiAction>,
         levels: Levels,
-        repaint: Repainter,
+        sinal: Sinal,
     ) -> Self {
-        repaint.set(cc.egui_ctx.clone());
+        sinal.ligar_interface(cc.egui_ctx.clone());
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.all_styles_mut(estilo_de_vidro);
 

@@ -103,19 +103,51 @@ pub fn lock(shared: &SharedState) -> std::sync::MutexGuard<'_, Shared> {
     shared.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Canal de repaint: o controlador acorda a interface quando o estado muda.
-/// Só fica disponível depois que o eframe cria o contexto.
+/// Sinal de "o estado mudou": repinta a interface e avisa quem mais estiver
+/// observando — hoje, o ícone da barra superior.
 #[derive(Clone, Default)]
-pub struct Repainter(Arc<Mutex<Option<egui::Context>>>);
+pub struct Sinal {
+    interface: Arc<Mutex<Option<egui::Context>>>,
+    observadores: Arc<Mutex<Vec<crossbeam_channel::Sender<()>>>>,
+}
 
-impl Repainter {
-    pub fn set(&self, ctx: egui::Context) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+impl Sinal {
+    /// Liga a interface ao sinal. Só dá para fazer isso depois que o eframe
+    /// cria o contexto, já lá dentro do laço de eventos.
+    pub fn ligar_interface(&self, ctx: egui::Context) {
+        *self.interface.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
     }
 
-    pub fn wake(&self) {
-        if let Some(ctx) = self.0.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    /// Canal que recebe um aviso a cada mudança de estado.
+    ///
+    /// Capacidade 1 e envio sem bloqueio: avisos em rajada se fundem num só, e
+    /// quem observa lê o estado atual depois de acordar — nunca uma fila de
+    /// estados velhos.
+    pub fn observar(&self) -> crossbeam_channel::Receiver<()> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.observadores
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(tx);
+        rx
+    }
+
+    pub fn mudou(&self) {
+        if let Some(ctx) = self
+            .interface
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             ctx.request_repaint();
+        }
+        for observador in self
+            .observadores
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            let _ = observador.try_send(());
         }
     }
 }

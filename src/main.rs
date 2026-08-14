@@ -14,13 +14,14 @@ mod keys;
 mod resample;
 mod state;
 mod stt;
+mod tray;
 mod ui;
 
 use crate::audio::AudioSettings;
 use crate::config::Config;
 use crate::controller::{Channels, Controller, IpcCommand};
 use crate::hotkey::HotkeyListener;
-use crate::state::{ModelState, Repainter, Shared, SharedState};
+use crate::state::{ModelState, Shared, SharedState, Sinal};
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
 
@@ -126,7 +127,7 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         config.clone(),
         audio::list_input_devices(),
     )));
-    let repaint = Repainter::default();
+    let sinal = Sinal::default();
 
     let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded();
     let (audio_tx, audio_rx) = crossbeam_channel::unbounded();
@@ -182,7 +183,7 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
 
     let controlador = Controller {
         shared: shared.clone(),
-        repaint: repaint.clone(),
+        sinal: sinal.clone(),
         audio,
         stt: stt_cmd_tx,
         hotkey,
@@ -199,6 +200,8 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
             })
         })
         .expect("spawn controller");
+
+    tray::start(shared.clone(), &sinal, ipc_tx.clone());
 
     if let Some(comando) = ao_iniciar {
         let _ = ipc_tx.send(comando);
@@ -230,7 +233,7 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
     let resultado = eframe::run_native(
         "Ditador",
         opcoes,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, shared, ui_tx, levels, repaint)))),
+        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, shared, ui_tx, levels, sinal)))),
     );
 
     ipc::cleanup();

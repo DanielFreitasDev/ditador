@@ -12,15 +12,18 @@ vai para a área de transferência.
 evdev (/dev/input/event*)  ──►  controlador  ──►  cpal (microfone)
    segurar/soltar a tecla         │                    │ 16 kHz mono
                                   │                    ▼
-   interface egui  ◄──────────────┘             whisper.cpp (Vulkan)
-   vidro / animação / resultado                        │
-                                  ◄───────────────────-┘
-                                       texto
+   interface egui  ◄──────────────┤             whisper.cpp (Vulkan)
+   vidro / animação / resultado   │                    │
+                                  │  ◄─────────────────┘
+   ícone da barra  ◄──────────────┘        texto
+   StatusNotifierItem
 ```
 
-Cinco threads conversando por canais: leitura de teclado, áudio, inferência,
-controlador e interface. O estado compartilhado fica num `Mutex` só; o
-controlador acorda a interface com `request_repaint`.
+Seis threads conversando por canais: leitura de teclado, áudio, inferência,
+controlador, interface e ícone. O estado compartilhado fica num `Mutex` só, e
+o `Sinal` avisa a interface (repintando) e o ícone (que relê o estado) a cada
+mudança — um canal de capacidade 1 por observador, para que avisos em rajada
+se fundam num só.
 
 ## Instalação
 
@@ -49,10 +52,29 @@ Depois disso, saia e entre de novo na sessão.
 |---|---|
 | Ditar | Segure **Pause/Break**, fale, solte |
 | Copiar | Botão **Copiar** (ou automático, já vem ligado) |
-| Configurar | Ícone do app → *Configurações*, ou `ditador --configuracoes` |
-| Alternar gravação sem segurar tecla | `ditador --alternar` |
+| Configurar | Ícone da barra → *Configurações*, ou `ditador --configuracoes` |
+| Alternar gravação sem segurar tecla | Ícone da barra → *Ditar agora*, ou `ditador --alternar` |
 | Ver estado | `ditador --status` |
-| Encerrar | `ditador --encerrar` |
+| Encerrar | Ícone da barra → *Encerrar*, ou `ditador --encerrar` |
+
+### Ícone na barra superior
+
+Enquanto o Ditador está no ar, um ícone fica na barra de cima e mostra o estado
+sem precisar abrir nada:
+
+| Ícone | Significa |
+|---|---|
+| microfone | pronto — segure o atalho e fale |
+| ponto de gravação | ouvindo |
+| carregando | transcrevendo, ou carregando o modelo |
+| triângulo de aviso | o modelo não carregou |
+
+Clicar abre o menu: *Ditar agora*, *Configurações*, *Encerrar*.
+
+O GNOME não tem bandeja nativa; o ícone é um **StatusNotifierItem**, exibido
+pela extensão *Ubuntu AppIndicators*, que vem habilitada no Ubuntu. Se ela
+estiver desligada, o Ditador funciona igual — só avisa no log que ficou sem
+ícone.
 
 Nas configurações dá para trocar o atalho (clique no botão e pressione a nova
 tecla ou combinação), o idioma, o microfone, o modelo, e ligar a colagem

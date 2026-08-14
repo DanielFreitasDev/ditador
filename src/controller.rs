@@ -4,7 +4,7 @@ use crate::audio::{AudioCmd, AudioEvent, AudioHandle, AudioSettings};
 use crate::clipboard;
 use crate::config::Config;
 use crate::hotkey::{HotkeyEvent, HotkeyListener};
-use crate::state::{ModelState, Repainter, SharedState, UiAction, View, lock};
+use crate::state::{ModelState, Sinal, SharedState, UiAction, View, lock};
 use crate::stt::{SttCmd, SttEvent, TranscribeOptions};
 use crossbeam_channel::{Receiver, select};
 use std::sync::Arc;
@@ -29,7 +29,7 @@ pub struct Channels {
 
 pub struct Controller {
     pub shared: SharedState,
-    pub repaint: Repainter,
+    pub sinal: Sinal,
     pub audio: AudioHandle,
     pub stt: crossbeam_channel::Sender<SttCmd>,
     pub hotkey: Arc<HotkeyListener>,
@@ -81,7 +81,7 @@ impl Controller {
                     state.draft_revision += 1;
                 }
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             HotkeyEvent::Unavailable(message) => {
@@ -89,7 +89,7 @@ impl Controller {
                 state.message = message;
                 state.view = View::Error;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
         }
     }
@@ -104,7 +104,7 @@ impl Controller {
                 state.message = format!("Não consegui acessar o microfone: {message}");
                 state.view = View::Error;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             AudioEvent::Captured {
@@ -135,7 +135,7 @@ impl Controller {
                     state.view = View::Processing;
                     state.status = format!("{:.1} s de áudio", duration_ms as f64 / 1000.0);
                 }
-                self.repaint.wake();
+                self.sinal.mudou();
 
                 let _ = self.stt.send(SttCmd::Transcribe(samples, options));
             }
@@ -148,7 +148,7 @@ impl Controller {
                 let mut state = lock(&self.shared);
                 state.model = ModelState::Loading;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             SttEvent::Ready => {
@@ -159,7 +159,7 @@ impl Controller {
                     state.message.clear();
                 }
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             SttEvent::LoadFailed(message) => {
@@ -168,7 +168,7 @@ impl Controller {
                 state.message = message;
                 state.view = View::Error;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             SttEvent::Failed(message) => {
@@ -176,7 +176,7 @@ impl Controller {
                 state.message = message;
                 state.view = View::Error;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             SttEvent::Done { text, elapsed_ms } => self.on_transcription(text, elapsed_ms),
@@ -231,11 +231,11 @@ impl Controller {
                 state.result_shown_at = Some(Instant::now());
             }
         }
-        self.repaint.wake();
+        self.sinal.mudou();
 
         if auto_paste && copy_error.is_none() && !text.is_empty() {
             let shared = self.shared.clone();
-            let repaint = self.repaint.clone();
+            let sinal = self.sinal.clone();
             std::thread::spawn(move || {
                 // Espera a nossa janela sumir para o foco voltar ao aplicativo anterior.
                 std::thread::sleep(Duration::from_millis(250));
@@ -244,7 +244,7 @@ impl Controller {
                     state.message = format!("Copiei, mas não consegui colar: {e:#}");
                     state.view = View::Result;
                     drop(state);
-                    repaint.wake();
+                    sinal.mudou();
                 }
             });
         }
@@ -263,7 +263,7 @@ impl Controller {
                 state.devices = crate::audio::list_input_devices();
                 state.view = View::Settings;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             UiAction::CloseSettings => {
@@ -273,7 +273,7 @@ impl Controller {
                 state.capturing_hotkey = false;
                 state.view = View::Hidden;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             UiAction::ApplyDraft => self.apply_draft(),
@@ -283,7 +283,7 @@ impl Controller {
                 let mut state = lock(&self.shared);
                 state.capturing_hotkey = true;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             UiAction::CancelHotkeyCapture => {
@@ -291,7 +291,7 @@ impl Controller {
                 let mut state = lock(&self.shared);
                 state.capturing_hotkey = false;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
 
             UiAction::ReloadModel => self.load_model(),
@@ -300,7 +300,7 @@ impl Controller {
                 let mut state = lock(&self.shared);
                 state.quitting = true;
                 drop(state);
-                self.repaint.wake();
+                self.sinal.mudou();
             }
         }
     }
@@ -339,13 +339,13 @@ impl Controller {
                     state.message = "Carregando o modelo, só um instante…".to_string();
                     state.view = View::Error;
                     drop(state);
-                    self.repaint.wake();
+                    self.sinal.mudou();
                     return;
                 }
                 ModelState::Failed => {
                     state.view = View::Error;
                     drop(state);
-                    self.repaint.wake();
+                    self.sinal.mudou();
                     return;
                 }
                 ModelState::Ready => {}
@@ -358,7 +358,7 @@ impl Controller {
             state.view = View::Recording;
         }
         self.audio.send(AudioCmd::Start);
-        self.repaint.wake();
+        self.sinal.mudou();
     }
 
     fn stop_recording(&self) {
@@ -371,7 +371,7 @@ impl Controller {
             state.view = View::Processing;
         }
         self.audio.send(AudioCmd::Stop);
-        self.repaint.wake();
+        self.sinal.mudou();
     }
 
     // ---------------------------------------------------------------- apoio
@@ -396,11 +396,11 @@ impl Controller {
                 state.message = format!("Não consegui copiar: {e:#}");
             }
         }
-        self.repaint.wake();
+        self.sinal.mudou();
 
         if then_paste {
             let shared = self.shared.clone();
-            let repaint = self.repaint.clone();
+            let sinal = self.sinal.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(250));
                 if let Err(e) = clipboard::paste() {
@@ -408,7 +408,7 @@ impl Controller {
                     state.message = format!("Copiei, mas não consegui colar: {e:#}");
                     state.view = View::Result;
                     drop(state);
-                    repaint.wake();
+                    sinal.mudou();
                 }
             });
         }
@@ -424,7 +424,7 @@ impl Controller {
             let mut state = lock(&self.shared);
             state.message = format!("Não consegui gravar a configuração: {e:#}");
             drop(state);
-            self.repaint.wake();
+            self.sinal.mudou();
             return;
         }
 
@@ -448,7 +448,7 @@ impl Controller {
         if reload_model {
             self.load_model();
         }
-        self.repaint.wake();
+        self.sinal.mudou();
     }
 
     fn apply_audio_settings(&self) {
@@ -466,7 +466,7 @@ impl Controller {
             state.model = ModelState::Loading;
             (state.config.model_path.clone(), state.config.use_gpu)
         };
-        self.repaint.wake();
+        self.sinal.mudou();
         let _ = self.stt.send(SttCmd::Load {
             model_path,
             use_gpu,
@@ -475,6 +475,6 @@ impl Controller {
 
     fn set_view(&self, view: View) {
         lock(&self.shared).view = view;
-        self.repaint.wake();
+        self.sinal.mudou();
     }
 }
