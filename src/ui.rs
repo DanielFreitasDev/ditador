@@ -20,6 +20,14 @@ use egui::{
 };
 use std::time::Duration;
 
+/// Folga a mais embaixo da fileira de botões que fecha uma tela.
+///
+/// A margem da janela é a mesma dos quatro lados, mas embaixo ela não basta: o
+/// canto arredondado come parte do espaço, e um botão que é a última coisa da
+/// tela pede mais ar do que um rótulo encostado na lateral. Somada à margem, dá
+/// cerca do dobro do que sobra dos lados.
+const RESPIRO: f32 = 16.0;
+
 const IDIOMAS: &[(&str, &str)] = &[
     ("pt", "Português"),
     ("en", "Inglês"),
@@ -583,7 +591,9 @@ impl App {
 
         ui.add_space(8.0);
 
-        let altura_texto = ui.available_height() - 58.0;
+        // O que sobra depois do cartão: o espaço, a fileira de botões e o mesmo
+        // respiro embaixo deles que as configurações têm.
+        let altura_texto = ui.available_height() - (10.0 + 36.0 + 12.0 + RESPIRO);
         widgets::cartao(ui, |ui| {
             ui.set_min_height(altura_texto - 24.0);
             if state.config.editable_result {
@@ -777,9 +787,9 @@ impl App {
 
         // O rodapé é fixo e a lista fica com o resto. A conta é a altura de tudo
         // que vem depois da lista: o espaço antes da linha, a linha, o espaço
-        // depois dela, os botões — e mais um espaçamento, que o egui insere
-        // sozinho ao fechar a área de rolagem.
-        let rodape = 10.0 + 1.0 + 14.0 + 36.0 + ui.spacing().item_spacing.y;
+        // depois dela, os botões — mais um espaçamento, que o egui insere
+        // sozinho ao fechar a área de rolagem, e o respiro embaixo dos botões.
+        let rodape = 10.0 + 1.0 + 14.0 + 36.0 + ui.spacing().item_spacing.y + RESPIRO;
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - rodape)
             .show(ui, |ui| {
