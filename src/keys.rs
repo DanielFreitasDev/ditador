@@ -83,3 +83,44 @@ pub fn sort_combo(keys: &mut [String]) {
         (!is_mod, code.map(|c| c.code()).unwrap_or(u16::MAX))
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn os_nomes_do_evdev_vao_e_voltam() {
+        // `name` sai do Debug do evdev e `parse` volta pelo FromStr dele. São
+        // dois lados da crate, e nada promete que continuem combinando: é a
+        // configuração gravada de todo mundo que depende disso. Se uma
+        // atualização mudar a grafia, o teste avisa antes do usuário.
+        for code in [
+            KeyCode::KEY_PAUSE,
+            KeyCode::KEY_LEFTMETA,
+            KeyCode::KEY_SPACE,
+            KeyCode::KEY_F13,
+            KeyCode::KEY_A,
+        ] {
+            let nome = name(code);
+            assert!(nome.starts_with("KEY_"), "grafia inesperada: {nome}");
+            assert_eq!(parse(&nome), Some(code), "não voltou: {nome}");
+        }
+        assert_eq!(parse("KEY_QUE_NAO_EXISTE"), None);
+    }
+
+    #[test]
+    fn a_combinacao_sai_com_os_modificadores_na_frente() {
+        let mut combo = vec!["KEY_SPACE".to_string(), "KEY_LEFTMETA".to_string()];
+        sort_combo(&mut combo);
+        assert_eq!(combo, ["KEY_LEFTMETA", "KEY_SPACE"]);
+        assert_eq!(combo_label(&combo), "Super esquerdo + Espaço");
+    }
+
+    #[test]
+    fn a_tecla_sem_nome_proprio_perde_o_prefixo() {
+        assert_eq!(label("KEY_PAUSE"), "Pause/Break");
+        assert_eq!(label("KEY_F13"), "F13");
+        assert_eq!(label("KEY_KP0"), "KP0");
+        assert_eq!(combo_label(&[]), "(nenhum)");
+    }
+}
