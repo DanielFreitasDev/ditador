@@ -47,6 +47,7 @@ def main() -> None:
     saida = pathlib.Path(__file__).resolve().parent / "capturas"
     saida.mkdir(parents=True, exist_ok=True)
 
+    faltou = False
     for nome, captura, temas, folga, largura_final in CENAS:
         partes = []
         for tema in temas:
@@ -56,6 +57,10 @@ def main() -> None:
                 break
             partes.append(pousar(Image.open(origem).convert("RGBA"), tema, folga))
         if len(partes) != len(temas):
+            # Sair com zero aqui fazia o gerar-imagens.sh anunciar sucesso sem
+            # ter refeito imagem nenhuma — e o README seguia com as capturas
+            # velhas, que é justamente o que este script existe para evitar.
+            faltou = True
             continue
 
         # Com dois temas as duas metades ficam encostadas, sem nada entre elas:
@@ -72,6 +77,9 @@ def main() -> None:
         destino = saida / f"{nome}.png"
         cena.save(destino, optimize=True)
         print(f"{destino}  {alvo[0]}×{alvo[1]}  {destino.stat().st_size // 1024} KB")
+
+    if faltou:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

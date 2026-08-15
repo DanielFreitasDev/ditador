@@ -84,11 +84,19 @@ if command -v dpkg-shlibdeps >/dev/null; then
     mkdir -p "$RAIZ/debian"
     printf 'Source: %s\nPackage: %s\nArchitecture: %s\n' "$PACOTE" "$PACOTE" "$ARQ" \
         > "$RAIZ/debian/control"
-    if (cd "$RAIZ" && dpkg-shlibdeps -O --ignore-missing-info usr/bin/ditador 2>/dev/null) \
+    # Os avisos não vão mais para /dev/null: o `-O --ignore-missing-info`
+    # transforma "não sei de que pacote vem esta biblioteca" em omissão
+    # silenciosa, e engolir a explicação junto produzia um Depends incompleto
+    # com o script anunciando "Pronto".
+    if (cd "$RAIZ" && dpkg-shlibdeps -O --ignore-missing-info usr/bin/ditador 2>"$AQUI/$RAIZ/deps.err") \
         > "$RAIZ/deps.txt"; then
         LIGADAS="$(sed 's/^shlibs:Depends=//' "$RAIZ/deps.txt")"
     fi
-    rm -rf "$RAIZ/debian" "$RAIZ/deps.txt"
+    if [ -s "$RAIZ/deps.err" ]; then
+        echo "    dpkg-shlibdeps reclamou (bibliotecas sem pacote conhecido):"
+        sed 's/^/      /' "$RAIZ/deps.err"
+    fi
+    rm -rf "$RAIZ/debian" "$RAIZ/deps.txt" "$RAIZ/deps.err"
 fi
 if [ -z "$LIGADAS" ]; then
     echo "    (dpkg-shlibdeps não respondeu; usando a lista de reserva)"
@@ -97,6 +105,9 @@ fi
 
 DEPS="$LIGADAS, $DLABERTAS"
 [ -n "$DEPS_BACKEND" ] && DEPS="$DEPS, $DEPS_BACKEND"
+# O wl-clipboard não vem por padrão no Ubuntu, e o wl-copy é o caminho confiável
+# da cópia no Wayland (o arboard é só a reserva pelo XWayland). O ydotool é o
+# que faz a colagem automática, que é opcional — daí Suggests e não Recommends.
 # O dpkg-shlibdeps pode já ter encontrado a biblioteca do backend; repetir o
 # nome no Depends não quebra nada, mas suja a saída do `apt show`.
 DEPS="$(printf '%s' "$DEPS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' \
@@ -112,7 +123,8 @@ Priority: optional
 Architecture: $ARQ
 Maintainer: Daniel Freitas <danielsfreitas97@gmail.com>
 Depends: $DEPS
-Recommends: curl | wget${SUGERE:+, $SUGERE}
+Recommends: curl | wget, wl-clipboard${SUGERE:+, $SUGERE}
+Suggests: ydotool
 Provides: ditador-backend
 Conflicts: ditador-backend
 Replaces: ditador-backend
@@ -133,10 +145,22 @@ if [ "$1" = configure ]; then
     gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
     update-desktop-database /usr/share/applications 2>/dev/null || true
 
+    QUEM="${SUDO_USER:-${PKEXEC_UID:+$(id -nu "$PKEXEC_UID" 2>/dev/null)}}"
+
+    # Numa atualização ($2 = versão anterior) o prerm encerrou a instância que
+    # estava rodando. Como o encerramento pelo IPC sai com código zero e a
+    # unidade é Restart=on-failure, o systemd a deixa parada — e o ícone some da
+    # barra, o atalho para de responder e nada volta até o próximo login. Quem
+    # parou tem de religar.
+    if [ -n "$2" ] && [ -n "$QUEM" ] && [ -f /run/ditador.estava-ativo ]; then
+        rm -f /run/ditador.estava-ativo
+        su - "$QUEM" -c 'systemctl --user daemon-reload && systemctl --user restart ditador' \
+            >/dev/null 2>&1 || echo "Ditador: reinicie com  systemctl --user restart ditador"
+    fi
+
     # O atalho global lê o teclado direto do /dev/input, o que exige estar no
     # grupo "input". Só o dono da sessão pode decidir isso, então aqui vai só o
     # aviso — mexer no grupo de um usuário por conta própria seria demais.
-    QUEM="${SUDO_USER:-${PKEXEC_UID:+$(id -nu "$PKEXEC_UID" 2>/dev/null)}}"
     if [ -n "$QUEM" ] && ! id -nG "$QUEM" 2>/dev/null | tr ' ' '\n' | grep -qx input; then
         echo ""
         echo "Ditador: falta um passo para o atalho global funcionar:"
@@ -144,8 +168,11 @@ if [ "$1" = configure ]; then
         echo "  (depois saia da sessão e entre de novo)"
         echo ""
     fi
-    echo "Ditador instalado. Abra pelo menu de aplicativos, ou:"
-    echo "  systemctl --user enable --now ditador   # subir junto com a sessão"
+    if [ -z "$2" ]; then
+        echo "Ditador instalado. Abra pelo menu de aplicativos, ou:"
+        echo "  systemctl --user enable --now ditador   # subir junto com a sessão"
+        echo "  ditador --diagnostico                   # conferir o que falta"
+    fi
 fi
 exit 0
 FIM
@@ -154,8 +181,16 @@ cat > "$RAIZ/DEBIAN/prerm" <<'FIM'
 #!/bin/sh
 set -e
 # Para a instância de quem está removendo, senão o binário some por baixo dela.
+# Numa atualização, deixa o bilhete para o postinst religar o que estava de pé.
 if [ "$1" = remove ] || [ "$1" = upgrade ]; then
-    [ -n "${SUDO_USER:-}" ] && su - "$SUDO_USER" -c 'ditador --encerrar' >/dev/null 2>&1 || true
+    if [ -n "${SUDO_USER:-}" ]; then
+        if [ "$1" = upgrade ] \
+            && su - "$SUDO_USER" -c 'systemctl --user is-active --quiet ditador' 2>/dev/null; then
+            : > /run/ditador.estava-ativo 2>/dev/null || true
+        fi
+        # `timeout` porque o dpkg não pode ficar pendurado por causa disto.
+        timeout 10 su - "$SUDO_USER" -c 'ditador --encerrar' >/dev/null 2>&1 || true
+    fi
 fi
 exit 0
 FIM

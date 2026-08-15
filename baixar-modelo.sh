@@ -35,15 +35,32 @@ echo "  de   $URL"
 echo "  para $ARQUIVO"
 echo
 
+# O temporário leva o PID: com um nome fixo, este script e o botão da janela
+# apontavam para o mesmo arquivo e um sobrescrevia o download do outro.
+PARCIAL="$ARQUIVO.$$.parcial"
+# Sai limpo em qualquer caminho — sem isto, um Ctrl-C no meio deixava centenas
+# de megabytes esquecidos na pasta dos modelos.
+trap 'rm -f "$PARCIAL"' EXIT
+
 if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --progress-bar -o "$ARQUIVO.parcial" "$URL"
+    curl -L --fail --progress-bar --connect-timeout 20 \
+        --speed-limit 1024 --speed-time 60 --retry 2 -o "$PARCIAL" "$URL"
 elif command -v wget >/dev/null 2>&1; then
-    wget --show-progress -O "$ARQUIVO.parcial" "$URL"
+    wget --show-progress --timeout=20 --read-timeout=60 --tries=3 -O "$PARCIAL" "$URL"
 else
     echo "Erro: preciso de curl ou wget." >&2
     exit 1
 fi
 
-mv "$ARQUIVO.parcial" "$ARQUIVO"
+# Confere antes de dar o arquivo por bom. Um modelo truncado, ou a página de
+# erro de um proxy, trancava a instalação inteira: a partir daí tudo respondia
+# "já existe" e o único caminho de volta era apagar o arquivo à mão.
+if [ "$(head -c 4 "$PARCIAL")" != "ggml" ]; then
+    echo "Erro: o arquivo baixado não é um modelo do Whisper." >&2
+    echo "      A rede pode ter devolvido uma página no lugar dele." >&2
+    exit 1
+fi
+
+mv "$PARCIAL" "$ARQUIVO"
 echo
 echo "Pronto: $ARQUIVO ($(du -h "$ARQUIVO" | cut -f1))"

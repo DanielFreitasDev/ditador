@@ -6,7 +6,7 @@ de ferramenta nenhuma:
 
   png/ditador-<tamanho>.png      o ícone colorido, para o tema hicolor
   png/bandeja-<estado>.png       os símbolos em branco, embutidos no binário
-                                 (src/tray.rs) como reserva quando o tema do
+                                 (src/icones.rs) como reserva quando o tema do
                                  sistema não tem os nossos ícones instalados
 
 Precisa do librsvg pelo GdkPixbuf, que já vem no GNOME:
@@ -29,7 +29,7 @@ SAIDA = AQUI / "png"
 # atividades em telas grandes.
 TAMANHOS = [16, 24, 32, 48, 64, 128, 256, 512]
 
-# Estados da barra superior. O nome do arquivo vira o nome no `tray.rs`.
+# Estados da barra superior. O nome do arquivo vira o nome no `icones.rs`.
 ESTADOS = {
     "pronto": "ditador-symbolic.svg",
     "gravando": "ditador-gravando-symbolic.svg",

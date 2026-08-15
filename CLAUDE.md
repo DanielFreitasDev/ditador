@@ -23,12 +23,16 @@ Nesta ordem, e todos precisam passar:
 ```
 cargo fmt                 # rustfmt padrão, sem config própria
 cargo test
-cargo clippy              # sem warnings
+cargo clippy              # sem warnings — o [lints.clippy] do Cargo.toml os trata como erro
 cargo build --release
 ```
 
 `cargo test` com as features padrão compila o whisper.cpp com Vulkan. Para iterar rápido:
 `cargo test --no-default-features --features cpu`.
+
+As três features de backend são mutuamente exclusivas e há `compile_error!` no topo do
+`src/main.rs` garantindo isso — esquecer o `--no-default-features` falha em segundos, com a
+receita certa na mensagem, em vez de compilar o Vulkan junto em silêncio.
 
 ## Build e empacotamento
 
@@ -60,10 +64,17 @@ librsvg) e commite os PNGs — senão o binário continua com os ícones antigos
 `env!("CARGO_PKG_VERSION")`). Ao subir a versão, atualize também:
 
 1. `Cargo.lock` — é versionado; qualquer comando cargo atualiza, mas precisa ser commitado
-2. `README.md` linhas 25, 47 e 48 — os nomes dos `.deb` estão escritos à mão
 
-Depois: commit `Versão X.Y.Z` (ou `Versão X.Y.Z: <o bug corrigido>`), `git tag vX.Y.Z`, `./empacotar.sh`, e
-GitHub Release com o `.deb` como asset (`gh release create`).
+O README não tem mais nenhuma versão escrita à mão: os nomes dos `.deb` viraram `ditador_*_amd64.deb` e o
+link aponta para `releases/latest`. Não reintroduza o número lá — era um passo que já foi esquecido.
+
+Depois: `cargo audit` (se instalado), commit `Versão X.Y.Z` (ou `Versão X.Y.Z: <o bug corrigido>`),
+**`git tag vX.Y.Z`**, `./empacotar.sh && ./empacotar.sh cpu`, e GitHub Release com os `.deb` como assets
+(`gh release create`).
+
+⚠️ O `git tag` é o passo que já foi pulado em quatro das cinco versões: o repositório chegou à 0.4.2 com
+`v0.2.0` como única tag, e o único release publicado ainda mostrava a interface de vidro que o README já
+dizia ter removido. Confira com `git tag -l` **antes** de fechar.
 
 ## Commits
 
@@ -73,25 +84,41 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 
 ## Armadilhas — não "consertar"
 
-- **`_exit(0)` em `src/main.rs:280`** pula os destrutores de propósito: desmontar os buffers do ggml/Vulkan dá
-  SIGSEGV no driver NVIDIA, e o systemd trataria isso como falha e reiniciaria o app.
-- **`clipboard::remember_environment()` é a primeira linha de `main()`** (`src/main.rs:35`). O modo X11
-  (`force_x11: true` por padrão) remove `WAYLAND_DISPLAY` do ambiente em `src/main.rs:130`; sem o snapshot
+- **`_exit(codigo)` em `src/main.rs:369`** pula os destrutores de propósito: desmontar os buffers do
+  ggml/Vulkan dá SIGSEGV no driver NVIDIA, e o systemd trataria isso como falha e reiniciaria o app.
+  Todo caminho de saída passa por ele, inclusive o de erro da interface — devolver o erro com `?` faria o
+  processo terminar pelo runtime do Rust, que é exatamente o que se quer evitar.
+- **`clipboard::remember_environment()` é a primeira linha de `main()`** (`src/main.rs:78`). O modo X11
+  (`force_x11: true` por padrão) remove `WAYLAND_DISPLAY` do ambiente em `src/main.rs:196`; sem o snapshot
   anterior o `wl-copy` para de funcionar. Não reordene.
-- **Renderer glow com `multisampling: 0`** (`src/main.rs:242`): o wgpu recusou transparência e nenhuma config do
+- **Renderer glow com `multisampling: 0`** (`src/main.rs:323`): o wgpu recusou transparência e nenhuma config do
   glutin combina alpha com MSAA. Mudar qualquer um dos dois quebra os cantos arredondados ou a criação da janela.
-- **Quem diz se o microfone está aberto é `recording_since`, nunca `state.view`** (`src/controller.rs`). Falar de
-  novo enquanto a frase anterior é transcrita é o uso normal do programa, e nesse intervalo a janela do resultado
-  anterior pode tomar a tela por cima de um ditado em andamento. Decidindo pela tela, o `stop_recording` desistia
-  e o microfone ficava aberto para sempre. Pelo mesmo motivo os eventos do áudio carregam o número do ditado
-  (`AudioCmd::Start { ditado }`): é ele que separa o que é da gravação de agora do que é de uma anterior que
-  ainda estava a caminho.
+- **Quem diz se o microfone está aberto é `recording_since`, nunca `state.view`** — use `Shared::gravando()`
+  (`src/state.rs:133`), que existe para não haver duas maneiras de perguntar. Falar de novo enquanto a frase
+  anterior é transcrita é o uso normal do programa, e nesse intervalo a janela do resultado anterior pode tomar
+  a tela por cima de um ditado em andamento. Decidindo pela tela, o `stop_recording` desistia e o microfone
+  ficava aberto para sempre; a bandeja, que decidia igual, oferecia "Ditar agora" num item que parava a
+  gravação. Pelo mesmo motivo os eventos do áudio e da transcrição carregam o número do ditado
+  (`AudioCmd::Start { ditado }`, `SttCmd::Transcribe { ditado, .. }`): é ele que separa o que é da gravação de
+  agora do que é de uma anterior que ainda estava a caminho.
+- **Texto de interface não guarda estado.** O fechamento da tela de erro já foi decidido comparando
+  `state.message.starts_with("Carregando")`, e o caminho do download escrevia outra frase — a janela ficava
+  presa com o emblema de erro ao lado de uma mensagem de sucesso. Quem decide agora é `erro_e_so_espera`
+  (`src/state.rs`). Não volte a ler mensagem para tomar decisão.
+- **A reamostragem mora em `src/stt.rs`, não em `src/audio.rs`.** São ~100 multiplicações por amostra de
+  saída, e fazê-las na thread de áudio prendia a mesma thread que precisa estar livre para abrir o microfone
+  do ditado seguinte. `AudioEvent::Captured` entrega o áudio na taxa do dispositivo, de propósito.
 - **Bandeja (`src/tray.rs`)**: o app sobe antes das extensões do GNOME Shell, então um StatusNotifierWatcher
   ausente significa "esperar", não "erro".
 - **`Config` usa `#[serde(default)]`** e há testes garantindo que configs antigas continuam carregando. Ao mexer
-  em `src/config.rs`, preserve isso.
+  em `src/config.rs`, preserve isso. E só a **ausência** do arquivo autoriza gravar os padrões por cima: qualquer
+  outro erro de leitura segue com os padrões em memória, sem tocar no que está no disco.
 - O atalho global lê `/dev/input/event*` via evdev: sem o usuário no grupo `input` ele silenciosamente não
-  funciona. `instalar.sh` e o postinst do `.deb` apenas avisam.
+  funciona. `instalar.sh` e o postinst do `.deb` apenas avisam, e `ditador --diagnostico` diz na cara.
+  O aviso disso mora em `Shared::aviso_atalho`, com campo próprio — dividindo o `message` com o aviso do
+  modelo faltando, um dos dois sumia antes de ser lido.
+- **`pressed`, em `src/hotkey.rs`, conta origens por dispositivo.** Guardando só o código da tecla, o teclado
+  virtual que o `ydotool` cria para a colagem automática soltava a tecla que a pessoa ainda segurava.
 
 ## Variáveis de diagnóstico
 
@@ -104,7 +131,15 @@ Combináveis, lidas em `src/main.rs` e `src/ui.rs`:
 | `DITADOR_TEMA=claro\|escuro` | ignora o tema configurado |
 | `DITADOR_ZOOM=1.5` | fator de zoom, limitado entre 0.5 e 3.0 |
 | `DITADOR_QUADROS=1` | desliga o vsync e loga FPS a cada 2 s |
-| `RUST_LOG=debug` | inclui o texto transcrito no log |
+| `RUST_LOG=ditador=debug` | inclui o texto transcrito no log |
+
+`RUST_LOG=debug` seco também funciona, mas traz junto o aperto de mão do zbus e o C do
+ggml — que o filtro padrão (`FILTRO_PADRAO`, em `src/main.rs`) mantém em `warn` justamente
+porque ocupavam três quartos do journal.
+
+`ditador --diagnostico` confere de uma vez o grupo `input`, o modelo, o microfone, o
+`wl-copy`, o `ydotool`, o `curl` e a instância em execução. É a primeira coisa a rodar
+quando alguém disser que "não acontece nada".
 
 ## Instância única
 

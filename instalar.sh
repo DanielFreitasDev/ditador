@@ -25,7 +25,15 @@ cargo build --release "${FEATURES[@]}"
 echo "==> Instalando o binário em $BIN_DIR"
 mkdir -p "$BIN_DIR"
 # Para se o programa estiver rodando: não dá para sobrescrever um binário em uso.
-if ditador --encerrar >/dev/null 2>&1; then sleep 1; fi
+#
+# O caminho absoluto vem primeiro porque o PATH pode ainda não ter o $BIN_DIR —
+# no Ubuntu o ~/.profile só o acrescenta se a pasta já existir no login, e é
+# este script que a cria. Sem isto, na primeira instalação o `ditador` do PATH
+# não resolvia, a versão velha continuava rodando, e o script anunciava
+# "Instalado" mesmo assim.
+if "$BIN_DIR/ditador" --encerrar >/dev/null 2>&1 || ditador --encerrar >/dev/null 2>&1; then
+    sleep 1
+fi
 install -m 755 target/release/ditador "$BIN_DIR/ditador"
 
 echo "==> Instalando os ícones"
@@ -77,9 +85,10 @@ cat <<FIM
 
 Instalado.
 
-  Iniciar agora:            systemctl --user start ditador
+  Conferir o que falta:       ditador --diagnostico
+  Iniciar agora:              systemctl --user start ditador
   Iniciar junto com a sessão: systemctl --user enable --now ditador
   Ver o que está acontecendo: journalctl --user -u ditador -f
-  Parar:                    systemctl --user stop ditador
+  Parar:                      systemctl --user stop ditador
 
 FIM

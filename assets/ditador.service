@@ -1,6 +1,6 @@
 [Unit]
 Description=Ditador — ditado por voz offline com Whisper
-Documentation=file:%h/.local/share/ditador
+Documentation=https://github.com/DanielFreitasDev/ditador
 PartOf=graphical-session.target
 After=graphical-session.target
 

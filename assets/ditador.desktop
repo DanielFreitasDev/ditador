@@ -6,9 +6,14 @@ Comment=Transcreve sua fala em texto, sem enviar nada para a internet
 Exec=ditador --alternar
 Icon=ditador
 Terminal=false
-Categories=Utility;AudioVideo;Accessibility;
+Categories=Utility;Accessibility;
 Keywords=ditado;voz;transcrição;whisper;speech;
 StartupNotify=false
+# O casamento entre a janela e este atalho funcionava por coincidência entre o
+# nome do binário e o do arquivo. O `with_app_id` do main.rs só vale no Wayland
+# nativo, e o padrão do Ditador é desenhar pelo XWayland — onde o WM_CLASS vem
+# do argv[0]. Declarar resolve nos dois.
+StartupWMClass=ditador
 X-GNOME-UsesNotifications=false
 Actions=Configuracoes;Encerrar;
 

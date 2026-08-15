@@ -22,9 +22,13 @@
 **Com o pacote pronto** (Ubuntu 24.04 ou mais novo):
 
 ```bash
-sudo apt install ./ditador_0.4.2_amd64.deb      # ou ditador-cpu_… se a máquina não tem GPU
+sudo apt install ./ditador_*_amd64.deb          # ou ditador-cpu_… se a máquina não tem GPU
 sudo usermod -aG input $USER                    # para o atalho global ler o teclado
 ```
+
+O `.deb` sai da [página de versões](https://github.com/DanielFreitasDev/ditador/releases/latest).
+Se algo não funcionar, `ditador --diagnostico` confere, um a um, tudo de que o
+programa depende e diz o que está faltando.
 
 Saia da sessão e entre de novo. Abra o **Ditador** pelo menu de aplicativos: na
 primeira vez ele oferece baixar o modelo de transcrição (~574 MB) ali mesmo, com
@@ -36,16 +40,20 @@ ligue e o Ditador sobe sozinho toda vez que você entrar, já em segundo plano.
 **Compilando você mesmo:**
 
 ```bash
-sudo apt install -y cmake libasound2-dev libvulkan-dev glslc wl-clipboard
+sudo apt install -y build-essential cmake libasound2-dev libvulkan-dev glslc wl-clipboard
 ./instalar.sh                 # ou: ./instalar.sh cpu   |   ./instalar.sh cuda
 ditador --baixar-modelo
 ```
 
+O `build-essential` é o que traz o compilador de C++ que o cmake do whisper.cpp
+procura; sem ele a compilação para logo no começo, em *No CMAKE_CXX_COMPILER
+could be found*.
+
 **Gerando o pacote para outra máquina:**
 
 ```bash
-./empacotar.sh                # target/deb/ditador_0.4.2_amd64.deb  (Vulkan)
-./empacotar.sh cpu            # target/deb/ditador-cpu_0.4.2_amd64.deb
+./empacotar.sh                # target/deb/ditador_<versão>_amd64.deb  (Vulkan)
+./empacotar.sh cpu            # target/deb/ditador-cpu_<versão>_amd64.deb
 ```
 
 O pacote leva o programa, os ícones, o atalho do menu e o serviço de usuário do
@@ -230,11 +238,32 @@ ficam como estavam.
 
 ## Desenvolvimento
 
+O portão, nesta ordem, e todos precisam passar:
+
 ```bash
-cargo test                       # config, reamostragem, texto, controlador
-RUST_LOG=debug cargo run         # inclui o texto transcrito no log
-./gerar-imagens.sh               # refaz as imagens deste README
+cargo fmt
+cargo test
+cargo clippy                     # sem warnings; o Cargo.toml os trata como erro
+cargo build --release
 ```
+
+`cargo test` com as features padrão compila o whisper.cpp com Vulkan, o que é
+lento. Para iterar:
+
+```bash
+cargo test --no-default-features --features cpu
+```
+
+Outros comandos úteis:
+
+```bash
+RUST_LOG=ditador=debug cargo run  # inclui o texto transcrito no log
+./gerar-imagens.sh                # refaz as imagens deste README
+```
+
+O porquê de cada decisão difícil está nos blocos `//!` que abrem os módulos —
+começar por `src/controller.rs` e `src/state.rs` é o caminho mais curto para
+entender o programa.
 
 E as variáveis de diagnóstico da interface, que se combinam:
 
