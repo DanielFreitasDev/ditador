@@ -9,9 +9,10 @@ da raiz.
 > de gravação na tela e abre o painel de status. Instala-se com um comando e sem
 > pedir senha.
 >
-> **O lado Linux não foi recompilado depois desta portabilidade.** Ela mexeu em
-> código compartilhado, e a máquina onde foi feita é Windows. É o primeiro item
-> da lista no fim deste arquivo.
+> **O lado Linux compila e passa nos testes** — pela CI, que roda a régua inteira
+> no `ubuntu-latest` a cada push e passou. O que ainda não aconteceu é alguém
+> **usar** o Ditador num Linux depois desta portabilidade, com GNOME e Plasma de
+> verdade; isso a CI não faz, e está no fim deste arquivo.
 
 ## As duas metades
 
@@ -115,7 +116,13 @@ troca não vale a pena.
 .\windows-integration\scripts\build.ps1 -Backend cpu
 .\windows-integration\scripts\build.ps1 -SomenteFrontend
 .\windows-integration\scripts\build.ps1 -Testar         # fmt, testes e clippy antes
+dotnet test windows-integration\Ditador.Windows.sln     # os testes do frontend
 ```
+
+Há CI desde esta versão (`.github/workflows/ci.yml`): a régua do `CLAUDE.md` roda
+no `ubuntu-latest` e no `windows-latest` a cada push, mais o build e os testes do
+frontend. Ela existe por um motivo específico — o porte para Windows foi feito
+numa máquina sem Linux, e o lado de lá ficou meses sem ver um compilador.
 
 Requisitos:
 
@@ -543,7 +550,7 @@ O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
 
 - [x] `cargo fmt`, `cargo test` (84) e `cargo clippy` limpos
 - [x] `dotnet build` Debug e Release, **zero avisos** (o projeto trata aviso como
-      erro)
+      erro), e `dotnet test` com 22 testes da leitura do protocolo
 - [x] o atalho global **com um teclado de verdade**: segurar `Pause` com outra
       janela em foco abre o microfone, soltar transcreve, e o texto chega à área
       de transferência. Não há como automatizar isto — veja acima por que a tecla
@@ -601,23 +608,24 @@ O que **não** foi verificado, e por quê:
 
 ## O que falta
 
-- [ ] **Compilar e testar no Linux.** A portabilidade mexeu em código
-      compartilhado: `dbus.rs` e `tray.rs` mudaram de lugar, o `hotkey.rs` foi
-      partido entre a máquina de teclas e a leitura do evdev, o `Retrato` saiu do
-      `dbus.rs` para `src/retrato.rs`, e `state.rs`, `ipc.rs`, `icones.rs`,
-      `stt.rs`, `keys.rs`, `clipboard.rs`, `autostart.rs`, `ui.rs` e `main.rs`
-      foram editados. **Nada disso foi compilado no Linux** — a máquina onde o
-      porte foi feito é Windows e não tem WSL. Houve revisão estática e mais nada.
+- [ ] **Usar o Ditador numa máquina Linux de verdade.** O que já **não** falta
+      mais: a CI compila e testa o lado Linux a cada push, e passou — `cargo fmt`,
+      os 84 testes, o clippy e o build de release, tudo no `ubuntu-latest`. Entre
+      esses testes está o `o_contrato_canonico_bate_com_os_tres_lados`, que só
+      existe no build Linux e é quem garante que o XML canônico, o que o zbus
+      publica e o cliente da extensão do GNOME continuam dizendo a mesma coisa.
+      Ou seja: a portabilidade não quebrou a compilação nem o contrato, e isso
+      deixou de ser opinião.
 
-      O que confere de uma vez: `cargo fmt --check`, `cargo test`,
-      `cargo clippy`, `cargo build --release` e o
-      `o_contrato_canonico_bate_com_os_tres_lados`, que só existe no build Linux
-      e é quem garante que o XML, o zbus e os dois clientes continuam dizendo a
-      mesma coisa. Depois, `./gnome-extension/scripts/testar.sh` e
-      `./kde-plasma/testar.sh`.
+      O que ainda falta é o que uma máquina de CI não tem: sessão gráfica,
+      barramento de sessão, GNOME Shell e plasmashell. Numa máquina Ubuntu real,
+      rodar `./gnome-extension/scripts/testar.sh`, `./kde-plasma/testar.sh` e o
+      programa em si — segurar o Pause, falar, soltar, e ver o ícone na barra
+      superior e o OSD do Shell.
 
       As pastas `gnome-extension/`, `kde-plasma/` e o `dbus/contrato.xml` não
-      foram tocados — verificado por `git diff --name-only`.
+      foram tocados por esta portabilidade — verificado por
+      `git diff --name-only`.
 
 - [ ] os testes que a máquina não permitiu: DPI misto, multimonitor, suspender e
       retomar, VM limpa, Narrator

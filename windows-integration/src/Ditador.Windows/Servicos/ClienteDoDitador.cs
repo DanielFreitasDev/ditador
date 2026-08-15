@@ -219,60 +219,30 @@ public sealed class ClienteDoDitador : IDisposable
 
     private void Interpretar(string linha)
     {
-        try
+        switch (MensagemDoDitador.Ler(linha))
         {
-            using var documento = JsonDocument.Parse(linha);
-            var raiz = documento.RootElement;
-            switch (raiz.GetProperty("t").GetString())
-            {
-                case "ola":
-                    var protocolo = raiz.TryGetProperty("protocolo", out var p) ? p.GetInt32() : 0;
-                    if (protocolo != ProtocoloConhecido)
-                    {
-                        // Falar mesmo assim é melhor do que desistir: os campos
-                        // do estado só crescem, pela regra de "acrescentar, nunca
-                        // renomear", e o que não for entendido é ignorado abaixo.
-                        // O aviso fica no log para quando alguém investigar.
-                        Registro.Aviso(
-                            $"o Ditador fala o protocolo {protocolo} e este frontend conhece o " +
-                            $"{ProtocoloConhecido}; atualize os dois lados juntos.");
-                    }
-                    break;
+            case MensagemDoDitador.Ola ola when ola.Protocolo != ProtocoloConhecido:
+                // Falar mesmo assim é melhor do que desistir: os campos do estado
+                // só crescem, pela regra de "acrescentar, nunca renomear", e o que
+                // não for entendido vira vazio em vez de exceção. O aviso fica no
+                // log para quando alguém investigar.
+                Registro.Aviso(
+                    $"o Ditador fala o protocolo {ola.Protocolo} e este frontend conhece o "
+                    + $"{ProtocoloConhecido}; atualize os dois lados juntos.");
+                break;
 
-                case "estado":
-                    Publicar(new RetratoDoDitador(
-                        RetratoDoDitador.EstadoDoTexto(Texto(raiz, "estado")),
-                        Texto(raiz, "mensagem"),
-                        raiz.TryGetProperty("gravandoDesde", out var g) ? g.GetInt64() : 0,
-                        Texto(raiz, "modelo"),
-                        Texto(raiz, "idioma"),
-                        Texto(raiz, "atalho")));
-                    break;
+            case MensagemDoDitador.Estado estado:
+                Publicar(estado.Retrato);
+                break;
 
-                case "nivel":
-                    if (raiz.TryGetProperty("valor", out var v))
-                    {
-                        var valor = v.GetDouble();
-                        _interface.TryEnqueue(() => Nivel?.Invoke(valor));
-                    }
-                    break;
-            }
-        }
-        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
-        {
-            // Uma linha malformada não derruba a conexão. O canal é local e o
-            // único que escreve nele é o nosso backend, então isto é defesa
-            // contra versão incompatível, não contra ataque — e a resposta certa
-            // a uma mensagem que não se entende é ignorá-la.
-            Registro.Aviso($"linha que não entendi: {e.Message}");
+            case MensagemDoDitador.Nivel nivel:
+                _interface.TryEnqueue(() => Nivel?.Invoke(nivel.Valor));
+                break;
         }
     }
 
     /// <summary>A versão do protocolo que este frontend sabe ler.</summary>
     private const int ProtocoloConhecido = 1;
-
-    private static string Texto(JsonElement raiz, string campo) =>
-        raiz.TryGetProperty(campo, out var valor) ? valor.GetString() ?? string.Empty : string.Empty;
 
     private void Publicar(RetratoDoDitador retrato)
     {

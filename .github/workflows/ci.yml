@@ -105,6 +105,14 @@ jobs:
           dotnet-version: '10.0.x'
 
       # O projeto trata aviso como erro (`TreatWarningsAsErrors`), então não há o
-      # que acrescentar aqui: se compilou, está limpo.
+      # que acrescentar ao build: se compilou, está limpo.
       - name: Compilar
         run: dotnet build windows-integration/Ditador.Windows.sln -c Release --nologo
+
+      # Os testes cobrem a leitura do protocolo do canal de controle, que é a
+      # única parte do frontend com regra em vez de desenho — e é um contrato com
+      # o backend em Rust, que tem os testes da escrita das mesmas linhas. O
+      # resto (janela, ícone, menu, posição) precisa de sessão gráfica e continua
+      # nos roteiros manuais do README.
+      - name: Testes
+        run: dotnet test windows-integration/Ditador.Windows.sln -c Release --nologo

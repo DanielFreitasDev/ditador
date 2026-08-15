@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Os testes do frontend.
+    ======================
+    Cobrem a única parte dele que tem regra em vez de desenho: a leitura do
+    protocolo do canal de controle. O resto — janela, ícone, menu, posição — é
+    interação com o Windows, e testá-lo exigiria uma sessão gráfica de verdade;
+    esses continuam sendo os roteiros manuais listados no README.
+
+    Vale a pena porque o protocolo é um **contrato** com o backend em Rust, e um
+    contrato lido errado falha em silêncio: um campo que vira vazio, um estado
+    que vira "pronto" quando devia ser "erro". O lado de lá tem teste para a
+    escrita das mesmas linhas (`retrato::tests`); este é o lado da leitura.
+
+    O projeto não referencia WinUI: ele aponta para o `Ditador.Windows.csproj`
+    mas só toca em `Modelos`, que é C# puro. É por isso que ele roda num
+    executor de testes comum, sem janela nenhuma.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Ditador.Windows\Ditador.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

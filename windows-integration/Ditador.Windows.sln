@@ -4,6 +4,8 @@ VisualStudioVersion = 18.0.0.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Ditador.Windows", "src\Ditador.Windows\Ditador.Windows.csproj", "{4C1F0B21-9E7A-4D5E-B3C2-8A6D0F51E7A4}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Ditador.Windows.Testes", "testes\Ditador.Windows.Testes\Ditador.Windows.Testes.csproj", "{B7E4D2A9-3C51-4F08-9D6B-1A2E5C7F4B30}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -14,6 +16,10 @@ Global
 		{4C1F0B21-9E7A-4D5E-B3C2-8A6D0F51E7A4}.Debug|x64.Build.0 = Debug|x64
 		{4C1F0B21-9E7A-4D5E-B3C2-8A6D0F51E7A4}.Release|x64.ActiveCfg = Release|x64
 		{4C1F0B21-9E7A-4D5E-B3C2-8A6D0F51E7A4}.Release|x64.Build.0 = Release|x64
+		{B7E4D2A9-3C51-4F08-9D6B-1A2E5C7F4B30}.Debug|x64.ActiveCfg = Debug|x64
+		{B7E4D2A9-3C51-4F08-9D6B-1A2E5C7F4B30}.Debug|x64.Build.0 = Debug|x64
+		{B7E4D2A9-3C51-4F08-9D6B-1A2E5C7F4B30}.Release|x64.ActiveCfg = Release|x64
+		{B7E4D2A9-3C51-4F08-9D6B-1A2E5C7F4B30}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
