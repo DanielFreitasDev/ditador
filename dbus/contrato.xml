@@ -1,0 +1,115 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- ↑ numa linha só: o `qdbusxml2cpp` do Qt 6 não aceita o DOCTYPE quebrado em
+     duas, e é assim que o próprio KDE o escreve (veja
+     /usr/share/dbus-1/interfaces/kf6_org.kde.krunner1.xml). O `gdbus
+     introspect` quebra em duas ao imprimir; não copie a saída dele por cima
+     deste cabeçalho. -->
+
+<!--
+  O contrato D-Bus do Ditador, num arquivo só.
+
+  Não é ele que cria a interface: quem a publica é o `src/dbus.rs`, e o zbus a
+  monta a partir do código Rust. Este arquivo é a cópia canônica do que já
+  existe — a forma escrita do acordo, para os clientes poderem ser gerados a
+  partir dele em vez de reescreverem os nomes à mão.
+
+  Hoje há três lados falando esta língua:
+
+    src/dbus.rs                          — quem publica (zbus, em Rust)
+    gnome-extension/src/backend.js       — quem consome no GNOME (GJS)
+    kde-plasma/plugin/                   — quem consome no Plasma (qt_add_dbus_interface)
+
+  O lado do Plasma é gerado *deste arquivo* em tempo de compilação; os outros
+  dois têm a interface escrita neles. Para que as três não se separem em
+  silêncio, há um teste em `src/dbus.rs`
+  (`o_contrato_canonico_bate_com_os_tres_lados`) que lê este XML e o compara com
+  o que o Rust publica e com o XML embutido na extensão do GNOME. Mexer aqui sem
+  mexer lá — ou o contrário — falha o `cargo test`.
+
+  ## Como conferir contra o serviço vivo
+
+  A linha de `gdbus introspect` está em `kde-plasma/README.md`, na seção de
+  diagnóstico. Ela não cabe aqui: um comentário XML não pode conter dois hifens
+  seguidos, e a metade dela são opções longas.
+
+  ## Regra de evolução
+
+  Acrescentar, nunca renomear. Um método, uma propriedade ou um sinal a mais é
+  invisível para quem não o conhece; um renomeado quebra a extensão do GNOME que
+  já está instalada na máquina de alguém, e que não é atualizada junto com o
+  aplicativo.
+-->
+<node>
+  <interface name="io.github.danielfreitasdev.Ditador">
+
+    <!-- Grava se estiver parado, para se estiver gravando. -->
+    <method name="Alternar"/>
+
+    <!-- Começa a gravar. Não faz nada se o microfone já estiver aberto. -->
+    <method name="IniciarGravacao"/>
+
+    <!-- Para de gravar e manda transcrever. Não faz nada se não estiver gravando. -->
+    <method name="PararGravacao"/>
+
+    <!-- Abre a janela de configurações do próprio Ditador. -->
+    <method name="AbrirConfiguracoes"/>
+
+    <!-- Encerra o Ditador. -->
+    <method name="Encerrar"/>
+
+    <!--
+      `carregando`, `pronto`, `gravando`, `transcrevendo` ou `erro`.
+
+      Estes cinco textos são o protocolo, e não rótulos de interface: quem
+      desenha os compara. Nascem em `EstadoPublico::nome`, e há um teste
+      guardando cada um deles.
+
+      Não existe `indisponivel` aqui — essa é a ausência do nome no barramento,
+      e quem a percebe é quem pergunta.
+    -->
+    <property name="Estado" type="s" access="read"/>
+
+    <!-- A última mensagem de erro ou aviso, vazia quando não há nenhuma. -->
+    <property name="Mensagem" type="s" access="read"/>
+
+    <!--
+      Quando a gravação em curso começou, em milissegundos desde a época; zero
+      quando não há gravação.
+
+      É a fonte da verdade do cronômetro: quem desenha subtrai deste número e
+      nunca conta o tempo por conta própria. Enquanto a gravação é a mesma, o
+      valor publicado não muda — recalculá-lo daria um número ligeiramente
+      diferente a cada vez e o contador na tela voltaria para zero no meio da
+      frase.
+    -->
+    <property name="GravandoDesde" type="t" access="read"/>
+
+    <!-- O modelo em uso, pelo nome curto (`large-v3-turbo-q5_0`). -->
+    <property name="Modelo" type="s" access="read"/>
+
+    <!-- O idioma configurado, por extenso (`Português`). -->
+    <property name="Idioma" type="s" access="read"/>
+
+    <!-- O atalho global, como se escreve numa frase (`Pause`). -->
+    <property name="Atalho" type="s" access="read"/>
+
+    <!--
+      O pico do microfone agora, de 0 a 1.
+
+      É um sinal, e não uma propriedade, porque não é um estado: é um fio de
+      água passando. Uma propriedade guardaria o último valor para sempre —
+      inclusive depois que o microfone fechou — e faria o barramento anunciar
+      `PropertiesChanged` quinze vezes por segundo, que é o oposto do que
+      `PropertiesChanged` existe para dizer.
+
+      Sai cru, sem correção nenhuma: a raiz quadrada que dá presença visual aos
+      sons baixos é escolha de quem desenha, e cada superfície faz a sua.
+
+      Só é emitido enquanto se grava, a 15 Hz, e nunca fora disso.
+    -->
+    <signal name="Nivel">
+      <arg name="valor" type="d"/>
+    </signal>
+
+  </interface>
+</node>

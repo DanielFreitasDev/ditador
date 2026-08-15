@@ -527,7 +527,47 @@ fn diagnostico() -> Result<()> {
         },
     );
 
-    // 6. A instância em execução, se houver.
+    // 6. A integração da área de trabalho. Não entra no veredito: ditar
+    // funciona sem nenhuma delas, e a bandeja é a reserva de todo mundo. Está
+    // aqui porque a pergunta que ela responde — "por que o ícone do Ditador
+    // sumiu da barra?" — não tem outro lugar onde ser respondida.
+    match dbus::integracoes_no_ar() {
+        Some(integracoes) => println!(
+            "{}   Integração da área de trabalho\n    {}",
+            if integracoes.mostram_o_icone() {
+                "ok"
+            } else {
+                "--"
+            },
+            match (integracoes.gnome, integracoes.plasma) {
+                (true, true) => "extensão do GNOME e widget do Plasma, os dois no ar. \
+                     O ícone da bandeja fica recolhido."
+                    .to_string(),
+                (true, false) => "extensão do GNOME Shell no ar. O ícone da bandeja fica \
+                     recolhido e o aviso de gravação é o OSD do Shell."
+                    .to_string(),
+                (false, true) => "widget do Plasma no ar. O ícone da bandeja fica recolhido; \
+                     o aviso de gravação continua sendo a janela do Ditador."
+                    .to_string(),
+                (false, false) => format!(
+                    "nenhuma. O Ditador aparece pelo ícone da bandeja, que funciona \
+                     em toda área de trabalho que tenha um. Para instalar a do seu \
+                     desktop: {}",
+                    match std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default() {
+                        d if d.contains("KDE") => "./kde-plasma/instalar.sh",
+                        d if d.contains("GNOME") => "./gnome-extension/instalar.sh",
+                        _ => "veja o README",
+                    }
+                ),
+            }
+        ),
+        None => println!(
+            "--   Integração da área de trabalho\n    \
+             sem barramento de sessão; não há como perguntar daqui."
+        ),
+    }
+
+    // 7. A instância em execução, se houver.
     match ipc::send("status") {
         Some(resposta) => println!("ok   Instância em execução\n    {resposta}"),
         None => println!(

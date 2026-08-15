@@ -1,0 +1,4 @@
+# Saída do CMake: o plugin compilado, o proxy D-Bus gerado do contrato e a
+# árvore de import QML que o `qmllint` e o `plasmawindowed` usam durante o
+# desenvolvimento. Tudo sai de novo a cada `./testar.sh` ou `./instalar.sh`.
+/build/

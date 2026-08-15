@@ -113,10 +113,10 @@ sem precisar abrir nada:
 
 Clicar abre o menu: *Ditar agora*, *Configurações*, *Encerrar*.
 
-O GNOME não tem bandeja nativa; o ícone é um **StatusNotifierItem**, exibido
-pela extensão *Ubuntu AppIndicators*, que vem habilitada no Ubuntu. Se ela
-estiver desligada, o Ditador funciona igual — só avisa no log que ficou sem
-ícone.
+O ícone é um **StatusNotifierItem**. No GNOME, que não tem bandeja nativa, quem
+o exibe é a extensão *Ubuntu AppIndicators*, que vem habilitada no Ubuntu; no
+KDE Plasma a bandeja do sistema o mostra sem precisar de nada. Onde não houver
+nenhum dos dois, o Ditador funciona igual — só avisa no log que ficou sem ícone.
 
 ### Integração com o GNOME Shell
 
@@ -155,6 +155,50 @@ falar" não existe.
 
 Os detalhes técnicos — interface D-Bus, ciclo de vida, testes, diagnóstico —
 estão em [`gnome-extension/README.md`](gnome-extension/README.md).
+
+### Integração com o KDE Plasma
+
+Também opcional, e também oficial: um **widget do Plasma** para o KDE Plasma 6
+(feito e testado no Kubuntu 26.04, Plasma 6.6.6, Qt 6.10.2, KDE Frameworks
+6.24.0, Wayland). Ele põe o Ditador na bandeja do sistema como um componente do
+Plasma — ícone que segue o estado, popup nativo com o botão de ditar, o
+cronômetro da gravação, o nível do microfone e o que está em uso.
+
+```bash
+./instalar.sh                 # o aplicativo primeiro
+./kde-plasma/instalar.sh      # depois o widget
+```
+
+Depois, botão direito na bandeja → *Configurar a Bandeja do Sistema* →
+*Entradas*, e ponha "Ditador" em *Mostrado*. O widget só aparece com o Ditador em
+execução: ele se declara pelo `X-Plasma-DBusActivationService`, e o
+`plasmashell` o carrega quando o serviço aparece no barramento.
+
+É a **mesma interface D-Bus** da extensão do GNOME — não há uma API para cada
+área de trabalho. A cópia canônica do contrato está em
+[`dbus/contrato.xml`](dbus/contrato.xml), e o cliente Qt é gerado dela em tempo
+de compilação; um teste do `cargo test` confere que os três lados (Rust, GNOME,
+Plasma) continuam dizendo a mesma coisa.
+
+Como no GNOME, o ícone do StatusNotifierItem sai de cena enquanto o widget está
+carregado, pelo mesmo mecanismo: o widget segura um nome no barramento, e o
+barramento o solta sozinho se o `plasmashell` cair ou o widget for removido — aí
+o ícone volta, sem reiniciar nada.
+
+O que **não** muda no Plasma é o aviso de gravação: ele continua sendo a janela
+do próprio Ditador. Não é trabalho pela metade — no Plasma 6.6 não existe API
+pública que desenhe um aviso passivo por cima da cena, e a explicação por
+extenso, com o código do KWin que a sustenta, está no
+[`kde-plasma/README.md`](kde-plasma/README.md). Ali também estão a instalação
+detalhada, a atualização, a remoção só da integração e os comandos de
+diagnóstico.
+
+Uma diferença de forma em relação ao GNOME: metade do widget é um plugin C++
+compilado (o QML do Plasma 6 não fala D-Bus sozinho, e o atalho para isso seria
+carregar a camada de compatibilidade do Plasma 5). Por isso a instalação pede a
+senha **uma vez**, para pôr o plugin no diretório de módulos QML do Qt, e por
+isso ele não é distribuível pela KDE Store como um widget puro. Nada disso vale
+em execução: a integração nunca chama `sudo`, `pkexec` nem shell nenhum.
 
 Nas configurações dá para trocar o atalho (clique no botão e pressione a nova
 tecla ou combinação), o idioma, o microfone, o modelo, ligar a colagem
@@ -294,6 +338,14 @@ lento. Para iterar:
 cargo test --no-default-features --features cpu
 ```
 
+Esse portão é do Rust. As duas integrações de área de trabalho são
+independentes, não entram no `.deb` e têm portão próprio:
+
+```bash
+cd gnome-extension && npm run lint && ./scripts/testar.sh
+./kde-plasma/testar.sh
+```
+
 Outros comandos úteis:
 
 ```bash
@@ -325,7 +377,11 @@ clone, sem microfone, sem o modelo baixado e sem ninguém falar na hora certa.
 preta, em silhueta de squircle, com o microfone branco dentro — quatro formas
 sólidas, nenhum degradê. `assets/simbolicos/` traz os quatro estados
 da barra superior (pronto, gravando, trabalhando, falhou), só com formas
-preenchidas, que é o que o GTK consegue recolorir. Depois de mexer neles:
+preenchidas, que é o que o GTK consegue recolorir — o `fill` escuro que eles
+carregam é a convenção de lá, onde o tema o sobrescreve. O Qt não faz isso, e
+por isso o widget do Plasma os desenha como máscara (`isMask`), na cor de texto
+do tema; as quatro formas são distintas entre si de propósito, para o estado não
+depender de cor para ser lido. Depois de mexer neles:
 
 ```bash
 python3 assets/gerar-icones.py    # rasteriza assets/png/ (usa o librsvg do GNOME)

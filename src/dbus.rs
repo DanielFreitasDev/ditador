@@ -1,5 +1,12 @@
-//! Interface D-Bus de sessão: a porta pela qual a extensão do GNOME Shell fala
-//! com o Ditador.
+//! Interface D-Bus de sessão: a porta pela qual as integrações de área de
+//! trabalho falam com o Ditador — a extensão do GNOME Shell e o widget do
+//! Plasma.
+//!
+//! Uma porta só para as duas, e é regra: a cópia canônica do contrato está em
+//! `dbus/contrato.xml`, o lado do Plasma é *gerado* dela em tempo de compilação,
+//! e um teste aqui embaixo confere que os três lados continuam dizendo a mesma
+//! coisa. Duas APIs paralelas seriam duas chances de o mesmo estado ser
+//! publicado de dois jeitos.
 //!
 //! O socket Unix (`ipc.rs`) continua sendo o caminho da linha de comando, e não
 //! sai daqui. Os dois existem porque servem a públicos diferentes: o socket
@@ -52,7 +59,18 @@ pub const CAMINHO: &str = "/io/github/danielfreitasdev/Ditador";
 /// nome no barramento é uma *conexão*, e o barramento o solta sozinho quando ela
 /// cai. Shell reiniciado, extensão desabilitada, GJS que morreu no meio de um
 /// `disable()` — os três terminam em conexão fechada, e nos três o ícone volta.
-pub const NOME_DA_EXTENSAO: &str = "io.github.danielfreitasdev.Ditador.GnomeExtension";
+pub const NOME_DA_EXTENSAO_GNOME: &str = "io.github.danielfreitasdev.Ditador.GnomeExtension";
+
+/// O mesmo, para o widget do Plasma (`kde-plasma/`).
+///
+/// Quem o segura é o plugin C++ do widget, e a mesma promessa vale palavra por
+/// palavra: `plasmashell` que caiu, widget removido do painel, plugin que não
+/// carregou, sessão encerrada — em todos a conexão morre e o nome se solta.
+///
+/// Um nome só, mesmo que o usuário ponha dois widgets no painel: quem o detém é
+/// a primeira instância a chegar, e as outras seguem funcionando sem ele. É por
+/// isso que este lado pergunta "alguém detém o nome?", e nunca "quantos são".
+pub const NOME_DA_INTEGRACAO_PLASMA: &str = "io.github.danielfreitasdev.Ditador.PlasmaIntegration";
 
 /// O que a interface publica, tirado do estado compartilhado.
 ///
@@ -226,7 +244,7 @@ impl Servico {
 }
 
 /// Publica a interface e a mantém em dia. Como a bandeja, não devolve erro:
-/// ficar sem D-Bus custa a integração com o GNOME, não o ditado.
+/// ficar sem D-Bus custa as integrações de desktop, não o ditado.
 pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>, niveis: Levels) {
     let mudancas = sinal.observar();
     let retrato = Retrato::tirar(&shared, None);
@@ -247,13 +265,13 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>, n
         Ok(conexao) => conexao,
         Err(e) => {
             log::warn!(
-                "sem a interface D-Bus ({e}); a extensão do GNOME não vai enxergar o Ditador"
+                "sem a interface D-Bus ({e}); as integrações do desktop não vão enxergar o Ditador"
             );
             return;
         }
     };
 
-    vigiar_a_extensao(&conexao, shared.clone(), sinal.clone());
+    vigiar_as_integracoes(&conexao, shared.clone(), sinal.clone());
     emitir_niveis(&conexao, shared.clone(), sinal, niveis);
 
     std::thread::Builder::new()
@@ -344,8 +362,8 @@ fn publicar(
 /// Quinze por segundo: o bastante para as barras parecerem acompanhar a voz, e
 /// pouco o suficiente para não ser um assunto. A janela do egui desenha a
 /// sessenta porque ela já está desenhando de qualquer jeito; aqui cada quadro é
-/// uma mensagem atravessando o barramento e entrando no laço do GNOME Shell,
-/// que é o processo que desenha a área de trabalho inteira.
+/// uma mensagem atravessando o barramento e entrando no laço do GNOME Shell ou
+/// do `plasmashell` — o processo que desenha a área de trabalho inteira.
 const INTERVALO_DO_NIVEL: std::time::Duration = std::time::Duration::from_millis(66);
 
 /// Publica o nível do microfone enquanto ele estiver aberto.
@@ -400,62 +418,143 @@ fn emitir_niveis(
         .expect("spawn dbus-nivel thread");
 }
 
-/// Fica de olho no nome da extensão do GNOME e anota no estado compartilhado se
-/// ela está no ar.
+/// Pergunta ao barramento quais integrações estão no ar agora, sem depender do
+/// Ditador estar rodando. É o que o `--diagnostico` conta.
 ///
-/// Quem lê essa anotação é o `tray.rs` (que recolhe o ícone) e o `ui.rs` (que
-/// deixa a sobreposição de gravação para o OSD do Shell).
-fn vigiar_a_extensao(conexao: &zbus::blocking::Connection, shared: SharedState, sinal: Sinal) {
+/// Devolve `None` quando não há barramento de sessão nenhum — numa sessão por
+/// SSH, por exemplo, onde a resposta certa não é "não há integração" e sim "não
+/// há como saber".
+pub fn integracoes_no_ar() -> Option<crate::state::Integracoes> {
+    let conexao = zbus::blocking::Connection::session().ok()?;
+    let proxy = zbus::blocking::fdo::DBusProxy::new(&conexao).ok()?;
+    let tem = |nome: &str| {
+        nome.try_into()
+            .ok()
+            .and_then(|nome| proxy.name_has_owner(nome).ok())
+            .unwrap_or(false)
+    };
+    Some(crate::state::Integracoes {
+        gnome: tem(NOME_DA_EXTENSAO_GNOME),
+        plasma: tem(NOME_DA_INTEGRACAO_PLASMA),
+    })
+}
+
+/// Fica de olho nos nomes das integrações nativas e anota no estado
+/// compartilhado quais estão no ar.
+///
+/// Quem lê essa anotação é o `tray.rs` (que recolhe o ícone) e o `state.rs` (que
+/// decide, em `tela_visivel`, se a sobreposição de gravação ainda é nossa).
+///
+/// São duas vigílias e não uma porque uma regra de correspondência do barramento
+/// filtra por *um* valor de argumento: não existe "me avise sobre este nome ou
+/// aquele". Duas assinaturas custam duas threads paradas num `recv`, que é o
+/// preço de não receber o vaivém de nomes alheios da sessão inteira.
+fn vigiar_as_integracoes(conexao: &zbus::blocking::Connection, shared: SharedState, sinal: Sinal) {
     let proxy = match zbus::blocking::fdo::DBusProxy::new(conexao) {
         Ok(proxy) => proxy,
         Err(e) => {
-            log::warn!("não consigo vigiar a extensão do GNOME ({e}); o ícone da bandeja fica");
+            log::warn!(
+                "não consigo vigiar as integrações do desktop ({e}); o ícone da bandeja fica"
+            );
             return;
         }
     };
+
+    vigiar(
+        &proxy,
+        Qual::Gnome,
+        shared.clone(),
+        sinal.clone(),
+        "dbus-gnome",
+    );
+    vigiar(&proxy, Qual::Plasma, shared, sinal, "dbus-plasma");
+}
+
+/// Qual integração, para os dois lugares em que isso importa: o nome que ela
+/// segura no barramento e o campo em que a presença dela é anotada.
+#[derive(Clone, Copy)]
+enum Qual {
+    Gnome,
+    Plasma,
+}
+
+impl Qual {
+    fn nome_no_barramento(self) -> &'static str {
+        match self {
+            Self::Gnome => NOME_DA_EXTENSAO_GNOME,
+            Self::Plasma => NOME_DA_INTEGRACAO_PLASMA,
+        }
+    }
+
+    fn como_se_chama(self) -> &'static str {
+        match self {
+            Self::Gnome => "extensão do GNOME",
+            Self::Plasma => "widget do Plasma",
+        }
+    }
+}
+
+fn vigiar(
+    proxy: &zbus::blocking::fdo::DBusProxy<'_>,
+    qual: Qual,
+    shared: SharedState,
+    sinal: Sinal,
+    thread: &str,
+) {
+    let nome = qual.nome_no_barramento();
 
     // A assinatura vem antes da pergunta, e não depois: entre "ela está no ar?"
-    // e "me avise quando mudar" cabe a extensão inteira ser habilitada, e a
+    // e "me avise quando mudar" cabe a integração inteira ser habilitada, e a
     // mudança que caísse nessa fresta não chegaria nunca. O filtro por argumento
     // é do próprio barramento — não recebemos o vaivém de nomes alheios.
-    let avisos = match proxy.receive_name_owner_changed_with_args(&[(0, NOME_DA_EXTENSAO)]) {
+    let avisos = match proxy.receive_name_owner_changed_with_args(&[(0, nome)]) {
         Ok(avisos) => avisos,
         Err(e) => {
-            log::warn!("não consigo vigiar a extensão do GNOME ({e}); o ícone da bandeja fica");
+            log::warn!(
+                "não consigo vigiar a {} ({e}); o ícone da bandeja fica",
+                qual.como_se_chama()
+            );
             return;
         }
     };
 
-    // A extensão pode já estar de pé quando o Ditador sobe: é o caso normal de
-    // quem entra na sessão com as duas coisas habilitadas.
+    // Ela pode já estar de pé quando o Ditador sobe: é o caso normal de quem
+    // entra na sessão com as duas coisas habilitadas.
     let presente = proxy
-        .name_has_owner(NOME_DA_EXTENSAO.try_into().expect("nome válido"))
+        .name_has_owner(nome.try_into().expect("nome válido"))
         .unwrap_or(false);
-    anotar(&shared, &sinal, presente);
+    anotar(&shared, &sinal, qual, presente);
 
     std::thread::Builder::new()
-        .name("dbus-extensao".into())
+        .name(thread.into())
         .spawn(move || {
             for aviso in avisos {
                 let Ok(args) = aviso.args() else { continue };
-                anotar(&shared, &sinal, args.new_owner().is_some());
+                anotar(&shared, &sinal, qual, args.new_owner().is_some());
             }
         })
-        .expect("spawn dbus-extensao thread");
+        .expect("spawn thread de vigília");
 }
 
-fn anotar(shared: &SharedState, sinal: &Sinal, presente: bool) {
+fn anotar(shared: &SharedState, sinal: &Sinal, qual: Qual, presente: bool) {
     {
         let mut estado = lock(shared);
-        if estado.extensao_gnome == presente {
+        let campo = match qual {
+            Qual::Gnome => &mut estado.integracoes.gnome,
+            Qual::Plasma => &mut estado.integracoes.plasma,
+        };
+        if *campo == presente {
             return;
         }
-        estado.extensao_gnome = presente;
+        *campo = presente;
     }
     if presente {
-        log::info!("extensão do GNOME no ar; recolhendo o ícone da bandeja e a sobreposição");
+        log::info!(
+            "{} no ar; recolhendo o ícone da bandeja",
+            qual.como_se_chama()
+        );
     } else {
-        log::info!("extensão do GNOME saiu; o ícone da bandeja e a sobreposição voltam");
+        log::info!("{} saiu; o ícone da bandeja volta", qual.como_se_chama());
     }
     sinal.mudou();
 }
@@ -529,6 +628,135 @@ mod tests {
         let quarto = Retrato::tirar(&shared, Some(&terceiro));
         assert_eq!(quarto.gravando_desde, 0);
         assert_eq!(quarto.estado, EstadoPublico::Pronto);
+    }
+
+    /// Os membros de um XML de introspecção, em texto e em ordem estável.
+    ///
+    /// Um analisador de três linhas em vez de uma dependência de XML: o que se
+    /// compara aqui são três arquivos deste próprio repositório, todos escritos
+    /// à mão em cima do mesmo molde. Os argumentos de um sinal grudam no membro
+    /// anterior, que é o dono deles, para a ordenação não separar `Nivel` do `d`
+    /// que ele carrega.
+    fn membros(xml: &str) -> Vec<String> {
+        fn atributo(tag: &str, qual: &str) -> String {
+            let procurado = format!("{qual}=\"");
+            match tag.find(&procurado) {
+                Some(i) => {
+                    let resto = &tag[i + procurado.len()..];
+                    resto[..resto.find('"').unwrap_or(resto.len())].to_string()
+                }
+                None => String::new(),
+            }
+        }
+
+        let mut fora: Vec<String> = Vec::new();
+        for pedaco in xml.split('<').skip(1) {
+            let tag = &pedaco[..pedaco.find('>').unwrap_or(pedaco.len())];
+            let Some(especie) = tag.split_whitespace().next() else {
+                continue;
+            };
+            match especie {
+                "method" | "signal" => {
+                    fora.push(format!("{especie} {}", atributo(tag, "name")));
+                }
+                "property" => fora.push(format!(
+                    "property {} {} {}",
+                    atributo(tag, "name"),
+                    atributo(tag, "type"),
+                    atributo(tag, "access")
+                )),
+                "arg" => {
+                    if let Some(dono) = fora.last_mut() {
+                        dono.push_str(&format!(
+                            "({}: {})",
+                            atributo(tag, "name"),
+                            atributo(tag, "type")
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        fora.sort();
+        fora
+    }
+
+    #[test]
+    fn o_contrato_canonico_bate_com_os_tres_lados() {
+        // Há três cópias desta interface no repositório, e elas não têm como
+        // ser uma só: o Rust a monta a partir do código, a extensão do GNOME a
+        // leva embutida no ZIP que o Shell carrega, e o Plasma a gera do XML em
+        // tempo de compilação. O que dá para garantir é que ninguém mexa numa
+        // sem mexer nas outras — e é isso que este teste faz.
+        //
+        // O lado do Rust não é uma lista escrita à mão: sai do próprio
+        // `#[zbus::interface]`, pelo `introspect_to_writer`, que não precisa de
+        // barramento nenhum para responder. Acrescentar um método lá e esquecer
+        // o resto falha aqui.
+        use zbus::object_server::Interface as _;
+
+        let (comandos, _) = crossbeam_channel::unbounded();
+        let servico = Servico {
+            comandos,
+            retrato: Retrato::tirar(&bancada(), None),
+        };
+        let mut publicado = String::new();
+        servico.introspect_to_writer(&mut publicado, 0);
+
+        let canonico = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/dbus/contrato.xml"));
+        let extensao = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/gnome-extension/src/backend.js"
+        ));
+        // O XML da extensão mora numa string de template do JavaScript.
+        let embutido = extensao
+            .split_once("const INTERFACE = `")
+            .expect("a extensão do GNOME perdeu a constante INTERFACE")
+            .1;
+        let embutido = &embutido[..embutido.find('`').expect("template sem fim")];
+
+        let publicado = membros(&publicado);
+        assert!(
+            !publicado.is_empty(),
+            "não consegui ler o que o zbus publica"
+        );
+        assert_eq!(
+            membros(canonico),
+            publicado,
+            "dbus/contrato.xml e src/dbus.rs discordam"
+        );
+        assert_eq!(
+            membros(embutido),
+            publicado,
+            "gnome-extension/src/backend.js e src/dbus.rs discordam"
+        );
+    }
+
+    #[test]
+    fn os_nomes_de_presenca_das_integracoes_sao_estaveis() {
+        // Cada integração segura o seu enquanto está carregada, e é a ausência
+        // dele que traz o ícone da bandeja de volta. Quem os escreve do outro
+        // lado é `gnome-extension/src/backend.js` e
+        // `kde-plasma/plugin/presenca.cpp`; errar uma letra não daria erro
+        // nenhum — daria dois ícones do Ditador na barra, para sempre.
+        assert_eq!(
+            NOME_DA_EXTENSAO_GNOME,
+            "io.github.danielfreitasdev.Ditador.GnomeExtension"
+        );
+        assert_eq!(
+            NOME_DA_INTEGRACAO_PLASMA,
+            "io.github.danielfreitasdev.Ditador.PlasmaIntegration"
+        );
+
+        // Os dois pendem do nome do serviço: são ele mais um sufixo. Escrito
+        // assim, um `NOME` renomeado leva os dois junto em vez de deixá-los
+        // apontando para um serviço que não existe mais.
+        for nome in [NOME_DA_EXTENSAO_GNOME, NOME_DA_INTEGRACAO_PLASMA] {
+            assert!(
+                nome.starts_with(&format!("{NOME}.")),
+                "{nome} não pende de {NOME}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,23 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Daniel Freitas"
+            }
+        ],
+        "Category": "Utilities",
+        "Description": "Ditado por voz offline com Whisper, na bandeja do sistema",
+        "EnabledByDefault": true,
+        "Icon": "ditador",
+        "Id": "io.github.danielfreitasdev.ditador",
+        "License": "MIT",
+        "Name": "Ditador",
+        "Version": "0.0.0",
+        "Website": "https://github.com/DanielFreitasDev/ditador"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-DBusActivationService": "io.github.danielfreitasdev.Ditador",
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "ApplicationStatus"
+}

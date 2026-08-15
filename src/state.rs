@@ -89,6 +89,61 @@ impl EstadoPublico {
     }
 }
 
+/// Quais integrações nativas de área de trabalho estão no ar agora.
+///
+/// Cada uma segura um nome próprio no barramento enquanto está carregada, e
+/// quem escreve aqui é o `dbus.rs`, observando esses nomes — nunca a própria
+/// integração mandando avisar. É a diferença que faz o ícone voltar sozinho
+/// quando o Shell reinicia, quando o `plasmashell` cai ou quando o widget é
+/// removido: quem detém um nome é a *conexão*, e o barramento a solta sozinho
+/// quando ela morre, com ou sem despedida.
+///
+/// As duas perguntas abaixo são separadas porque as duas integrações não
+/// entregam a mesma coisa, e tratá-las como uma só apagaria o aviso de gravação
+/// de quem usa o Plasma. Veja `mostram_o_aviso`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Integracoes {
+    /// A extensão do GNOME Shell.
+    pub gnome: bool,
+    /// O widget do Plasma (`kde-plasma/`).
+    pub plasma: bool,
+}
+
+impl Integracoes {
+    /// Alguém já mostra o Ditador na barra — então o nosso StatusNotifierItem
+    /// sai de cena, porque dois ícones do mesmo programa lado a lado é o tipo de
+    /// coisa que ninguém escolhe de propósito.
+    ///
+    /// Vale para as duas: tanto o indicador do Shell quanto o widget do Plasma
+    /// ocupam esse lugar.
+    pub fn mostram_o_icone(self) -> bool {
+        self.gnome || self.plasma
+    }
+
+    /// Alguém já avisa **na tela** que se está gravando — e então a nossa
+    /// sobreposição some, para não dar o mesmo recado duas vezes.
+    ///
+    /// Só o GNOME. Não é esquecimento nem trabalho pela metade: no Plasma 6.6
+    /// não existe API pública que desenhe um aviso passivo por cima da cena.
+    /// O `SceneEffect` do KWin — o único caminho declarativo — herda o
+    /// `paintScreen` do `QuickSceneEffect`, que **não** encadeia
+    /// `effects->paintScreen()`: enquanto ativo, ele substitui a cena inteira,
+    /// e a caixinha de "Gravando" viria acompanhada de todas as janelas
+    /// desaparecendo. O único efeito que faz o que se quer aqui
+    /// (`OutputLocatorEffect`) é C++ compilado dentro do próprio KWin, contra
+    /// uma ABI interna que muda a cada versão. E o `org.kde.osdService`, que
+    /// faria o serviço, é interno do `plasmashell`: não tem XML publicado em
+    /// `/usr/share/dbus-1/interfaces/` nem promessa de estabilidade nenhuma.
+    ///
+    /// Então no Plasma quem avisa continua sendo a janela do próprio Ditador,
+    /// que aliás funciona bem lá — ela sobe pelo XWayland, e o KWin honra o
+    /// "sempre por cima" que o GNOME/Wayland recusa. O widget cuida da barra; a
+    /// sobreposição continua nossa.
+    pub fn mostram_o_aviso(self) -> bool {
+        self.gnome
+    }
+}
+
 /// Ações que a interface pede ao controlador.
 #[derive(Debug, Clone)]
 pub enum UiAction {
@@ -152,17 +207,15 @@ pub struct Shared {
     pub download: Option<crate::modelo::Andamento>,
     /// Pedido de encerramento; a interface fecha a janela ao ver isto.
     pub quitting: bool,
-    /// A extensão do GNOME está no ar, segurando o nome dela no barramento.
+    /// Que integrações nativas estão no ar — a extensão do GNOME, o widget do
+    /// Plasma, as duas ou nenhuma.
     ///
-    /// Quando está, duas coisas nossas saem de cena para não dizer o mesmo
-    /// recado duas vezes: o ícone do StatusNotifierItem (que vira o indicador do
-    /// Shell) e a sobreposição de "gravando"/"transcrevendo" (que vira o OSD do
-    /// Shell). Ver `tela_visivel` e `tray.rs`.
-    ///
-    /// Quem escreve aqui é `dbus.rs`, observando o nome no barramento — e não a
-    /// própria extensão mandando avisar. É a diferença que faz o ícone voltar
-    /// sozinho quando o Shell reinicia ou a extensão morre sem se despedir.
-    pub extensao_gnome: bool,
+    /// Quando há alguma, o que ela já mostra sai de cena do nosso lado, para não
+    /// dizer o mesmo recado duas vezes. *O quê* sai depende de qual é: veja
+    /// `Integracoes::mostram_o_icone` (o StatusNotifierItem, em `tray.rs`) e
+    /// `Integracoes::mostram_o_aviso` (a sobreposição de gravação, em
+    /// `tela_visivel`).
+    pub integracoes: Integracoes,
 }
 
 impl Shared {
@@ -185,7 +238,7 @@ impl Shared {
             devices,
             download: None,
             quitting: false,
-            extensao_gnome: false,
+            integracoes: Integracoes::default(),
         }
     }
 
@@ -206,10 +259,15 @@ impl Shared {
 
     /// A tela que a janela deve desenhar agora.
     ///
-    /// É a `view`, com uma exceção: com a extensão do GNOME no ar, o aviso de
-    /// "gravando" e o de "transcrevendo" passam a ser dela — o OSD do Shell diz
-    /// as duas coisas, no lugar em que o GNOME sempre as diz, e a nossa
-    /// sobreposição por cima seria o mesmo recado duas vezes.
+    /// É a `view`, com uma exceção: quando a integração no ar já avisa na tela
+    /// que se está gravando, o aviso de "gravando" e o de "transcrevendo" passam
+    /// a ser dela — o OSD do Shell diz as duas coisas, no lugar em que o GNOME
+    /// sempre as diz, e a nossa sobreposição por cima seria o mesmo recado duas
+    /// vezes.
+    ///
+    /// Quem responde a essa pergunta é `Integracoes::mostram_o_aviso`, e hoje só
+    /// o GNOME responde que sim — no Plasma não há API pública para desenhar
+    /// isso, e o motivo está escrito lá.
     ///
     /// As outras telas continuam nossas, e de propósito: resultado,
     /// configurações e erro carregam texto para copiar e botões que resolvem o
@@ -221,7 +279,9 @@ impl Shared {
     /// todo o resto do programa. O que muda é só o que a janela desenha.
     pub fn tela_visivel(&self) -> View {
         match self.view {
-            View::Recording | View::Processing if self.extensao_gnome => View::Hidden,
+            View::Recording | View::Processing if self.integracoes.mostram_o_aviso() => {
+                View::Hidden
+            }
             outra => outra,
         }
     }
@@ -321,6 +381,83 @@ mod tests {
     }
 
     #[test]
+    fn o_icone_sai_de_cena_para_as_duas_integracoes() {
+        // A pergunta do `tray.rs`: alguém já está mostrando o Ditador na barra?
+        // As duas integrações ocupam esse lugar, cada uma do seu jeito — o
+        // indicador do Shell e o widget do Plasma.
+        let nenhuma = Integracoes::default();
+        assert!(!nenhuma.mostram_o_icone());
+
+        for integracoes in [
+            Integracoes {
+                gnome: true,
+                plasma: false,
+            },
+            Integracoes {
+                gnome: false,
+                plasma: true,
+            },
+            Integracoes {
+                gnome: true,
+                plasma: true,
+            },
+        ] {
+            assert!(
+                integracoes.mostram_o_icone(),
+                "{integracoes:?} devia recolher o ícone da bandeja"
+            );
+        }
+    }
+
+    #[test]
+    fn so_o_gnome_assume_o_aviso_de_gravacao() {
+        // A outra pergunta, que é outra coisa: alguém já avisa *na tela*?
+        //
+        // Só o GNOME. O widget do Plasma cuida da barra e nada mais, porque no
+        // Plasma 6.6 não há API pública que desenhe um aviso passivo por cima da
+        // cena — o motivo por extenso está em `Integracoes::mostram_o_aviso`.
+        // Se um dia as duas perguntas voltarem a ser uma só, é aqui que quebra:
+        // quem usa Plasma ficaria sem nenhum aviso de que o microfone está
+        // aberto, que é a única coisa que este programa precisa dizer.
+        assert!(
+            Integracoes {
+                gnome: true,
+                plasma: false
+            }
+            .mostram_o_aviso()
+        );
+        assert!(
+            !Integracoes {
+                gnome: false,
+                plasma: true
+            }
+            .mostram_o_aviso(),
+            "o widget do Plasma levou um aviso que ele não desenha"
+        );
+        assert!(!Integracoes::default().mostram_o_aviso());
+    }
+
+    #[test]
+    fn a_tela_de_gravacao_continua_nossa_no_plasma() {
+        let mut s = shared();
+        s.integracoes = Integracoes {
+            gnome: false,
+            plasma: true,
+        };
+
+        // O widget do Plasma recolhe o ícone, mas não a sobreposição: lá ela é
+        // o único aviso de que o microfone está aberto.
+        for view in [View::Recording, View::Processing] {
+            s.view = view;
+            assert_eq!(
+                s.tela_visivel(),
+                view,
+                "a sobreposição sumiu no Plasma, onde nada a substitui"
+            );
+        }
+    }
+
+    #[test]
     fn a_extensao_do_gnome_assume_so_as_telas_que_nao_tem_botao() {
         let mut s = shared();
 
@@ -330,7 +467,7 @@ mod tests {
             assert_eq!(s.tela_visivel(), view, "sem extensão a tela mudou");
         }
 
-        s.extensao_gnome = true;
+        s.integracoes.gnome = true;
 
         // O aviso de gravação e o de transcrição passam a ser do OSD do Shell.
         s.view = View::Recording;

@@ -7,7 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Tudo neste projeto é em português (pt-BR): comentários, doc comments (`//!`, `///`), mensagens de commit,
 strings de interface, logs, ajuda da CLI e README. Só o `LICENSE` é em inglês. Vale também para o
 JavaScript de `gnome-extension/` — os nomes dos arquivos seguem a convenção do GNOME (`extension.js`,
-`prefs.js`, `backend.js`), mas comentários, strings e identificadores nossos são em português.
+`prefs.js`, `backend.js`), mas comentários, strings e identificadores nossos são em português. E para o
+C++/QML de `kde-plasma/`: os nomes que o Qt e o KPackage exigem ficam como são (`metadata.json`,
+`contents/ui/main.qml`, `Q_PROPERTY`, `QML_ELEMENT`), e tudo o que é nosso — classes, propriedades,
+sinais, arquivos QML — é em português (`DitadorBackend`, `RepresentacaoCompleta.qml`, `gravandoDesde`).
 
 **Identificadores novos também são em português** — módulos, funções, variáveis, structs, campos e nomes de
 teste. Campos serde e enums de estado que já existem em inglês (`hotkey`, `auto_copy`, `View::Recording`,
@@ -84,6 +87,47 @@ só, em `_loadExtensions`, e não há vigia de diretório. Habilitar/desabilitar
 Não existe `Alt+F2` + `r` no Wayland.
 
 Documentação técnica: `gnome-extension/README.md`.
+
+## Integração com o KDE Plasma (`kde-plasma/`)
+
+Opcional, alvo **só** Plasma 6.6 / Qt 6 / KF6 / Wayland, independente do `.deb` e do `instalar.sh` da
+raiz. Sem código de Plasma 5, KF5, Qt 5 nem `metadata.desktop`. Portão próprio:
+
+```
+./kde-plasma/testar.sh              # qmllint + compila + testes + plasmawindowed
+./kde-plasma/testar.sh --contrato   # o XML canônico contra o Ditador em execução
+./kde-plasma/testar.sh --backend    # o plugin conversando com o Ditador de verdade
+./kde-plasma/instalar.sh            # pede sudo uma vez, para o plugin C++
+```
+
+São **duas metades**: o widget (QML + JSON, instalado pelo `kpackagetool6` no escopo do usuário, sem
+senha) e o plugin C++ (módulo QML, precisa ir para `qmake6 -query QT_INSTALL_QML`, que é do sistema — o
+Qt 6 não tem diretório de módulos QML por usuário). O C++ existe porque o QML do Plasma 6 não fala D-Bus
+sozinho, e o atalho seria carregar o `org.kde.plasma.plasma5support`, que é a camada de compatibilidade
+do Plasma 5.
+
+**A fonte da verdade das APIs é o Plasma instalado**, como no GNOME:
+
+```
+ls /usr/share/plasma/plasmoids/                                    # widgets de verdade, para copiar o idioma
+cat /usr/share/plasma/plasmoids/org.kde.plasma.vault/contents/ui/main.qml
+ls /usr/lib/x86_64-linux-gnu/qt6/qml/org/kde/plasma/components/    # a API que existe mesmo
+grep -A40 'name: "PlasmoidItem"' /usr/lib/x86_64-linux-gnu/qt6/qml/org/kde/plasma/plasmoid/plasmoidplugin.qmltypes
+```
+
+Documentação técnica, incluindo a pesquisa sobre OSD nativo e por que não há um: `kde-plasma/README.md`.
+
+## O contrato D-Bus é um só
+
+`dbus/contrato.xml` é a cópia canônica da interface. Não é ele que a cria — quem publica é o `src/dbus.rs`,
+e o zbus a monta do código Rust —, mas é dele que os clientes saem: o proxy Qt é **gerado** dele em tempo
+de compilação (`qt_add_dbus_interface`), e o XML embutido em `gnome-extension/src/backend.js` é comparado
+com ele. O teste `o_contrato_canonico_bate_com_os_tres_lados` (em `src/dbus.rs`) lê o XML canônico, pede ao
+próprio zbus a introspecção do `Servico` (`Interface::introspect_to_writer`, que não precisa de barramento)
+e confere os três. Mexer num sem mexer nos outros falha o `cargo test`.
+
+**Acrescentar, nunca renomear.** Um método a mais é invisível para quem não o conhece; um renomeado quebra
+a extensão do GNOME já instalada na máquina de alguém, que não é atualizada junto com o aplicativo.
 
 ## Assets
 
@@ -194,6 +238,38 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
   É a única coisa periódica do projeto inteiro, e é por isso que ela é fechada dos dois lados: nada de
   propriedade (que guardaria o último valor para sempre e faria `PropertiesChanged` quinze vezes por
   segundo) e nada de emitir com o microfone fechado.
+- **`state::Integracoes` responde a duas perguntas, e não a uma.** `mostram_o_icone()` (quem já mostra o
+  Ditador na barra — GNOME **ou** Plasma) e `mostram_o_aviso()` (quem já avisa na tela que se está
+  gravando — **só** o GNOME). Juntar as duas num booleano só, como já foi, apaga o aviso de gravação de
+  quem usa o Plasma: lá não há nada que o substitua. Há testes cobrindo as duas separadamente.
+- **Não tente de novo o OSD nativo no KWin.** O `SceneEffect` — único caminho declarativo — é o
+  `ScriptedQuickSceneEffect`, que herda o `paintScreen` do `QuickSceneEffect`; ele **não** encadeia
+  `effects->paintScreen()` e portanto substitui a cena inteira enquanto ativo. Uma caixinha de "Gravando"
+  viria com todas as janelas sumindo. O único efeito que faz o certo (`OutputLocatorEffect`) é C++ dentro
+  do KWin, contra ABI interna. E o `org.kde.osdService` é interno do `plasmashell`: sem XML em
+  `/usr/share/dbus-1/interfaces/` e sem promessa a terceiros. Está tudo apurado em `kde-plasma/README.md`.
+- **No `kde-plasma/CMakeLists.txt` entra só o `KDEInstallDirs` do ECM.** O `KDECMakeSettings` zera o
+  prefixo das bibliotecas MODULE (convenção dos plugins do KDE, que são `nome.so`), e um módulo QML precisa
+  de `libnome.so`: com ele o módulo era achado e o plugin não, com a mensagem
+  `module "…" plugin "ditadorplasma" not found`.
+- **`dbus/contrato.xml`: DOCTYPE numa linha só, e nada de `--` nos comentários.** O `qdbusxml2cpp` recusa o
+  DOCTYPE quebrado em duas linhas (o `gdbus introspect` o imprime assim — não copie a saída dele por cima),
+  e XML proíbe dois hifens seguidos dentro de comentário, o que derruba qualquer linha de comando com
+  opções longas ali dentro. `xmllint --noout dbus/contrato.xml` diz na hora.
+- **O `Version` do `plasmoid/package/metadata.json` é `0.0.0` de propósito.** Quem o preenche é o
+  `instalar.sh`, lendo o `Cargo.toml` — que continua sendo a única fonte da verdade da versão. O
+  `CMakeLists.txt` faz o mesmo. Não escreva a versão à mão em nenhum dos dois.
+- **Depois de mexer no widget, reinicie o `plasmashell`** (`systemctl --user restart plasma-plasmashell`)
+  — inclusive para mudanças só de QML. O `kpackagetool6 --upgrade` troca os arquivos no disco, mas o
+  `plasmashell` fica com a compilação anterior na memória: já foi observado ele repetir no journal um erro
+  de sintaxe que não existia mais no arquivo instalado, no exato segundo do `--upgrade`. Sem saber disso
+  a pessoa corrige o QML, vê o mesmo erro e vai procurar o problema no lugar errado. Para iterar sem
+  reiniciar nada, use o `./kde-plasma/testar.sh`, que abre o widget num processo à parte.
+- **Os 4 avisos `Plasmoid.contextualActions` do `qmllint` não são nossos.** A propriedade existe (é do
+  `Plasma::Applet`); o `qmllint` não enxerga propriedades de objeto anexado, e os widgets do próprio
+  Plasma 6.6 produzem os mesmos — confira rodando-o no `org.kde.plasma.vault`. O `testar.sh` filtra
+  exatamente esses quatro e falha em qualquer outro. Os demais foram **resolvidos**, não silenciados
+  (`KI18nContext` no lugar do `i18nd` solto; `Plasmoid` alcançado só do arquivo raiz).
 - **`dbus::start` vem antes de `tray::start` em `main.rs`.** É o D-Bus que descobre se a extensão já está no
   ar; descobrindo primeiro, a bandeja nasce sabendo e o ícone não pisca na barra no login.
 
@@ -215,8 +291,9 @@ ggml — que o filtro padrão (`FILTRO_PADRAO`, em `src/main.rs`) mantém em `wa
 porque ocupavam três quartos do journal.
 
 `ditador --diagnostico` confere de uma vez o grupo `input`, o modelo, o microfone, o
-`wl-copy`, o `ydotool`, o `curl` e a instância em execução. É a primeira coisa a rodar
-quando alguém disser que "não acontece nada".
+`wl-copy`, o `ydotool`, o `curl`, a integração de área de trabalho no ar e a instância em
+execução. É a primeira coisa a rodar quando alguém disser que "não acontece nada" — ou que
+"o ícone do Ditador sumiu da barra", que é a pergunta que a linha da integração responde.
 
 ## Instância única
 

@@ -12,11 +12,19 @@
 //! chega. Se ele nunca chegar (extensão desligada, outra área de trabalho), o
 //! programa segue sem ícone — nunca é motivo para não subir.
 //!
-//! ## Quando a extensão do GNOME está no ar
+//! No Plasma o mesmo item aparece na bandeja do sistema sem extensão nenhuma —
+//! o `plasmashell` é hospedeiro de StatusNotifierItem nativamente. É o que faz
+//! este arquivo continuar sendo a reserva de todo mundo: KDE sem o widget,
+//! GNOME sem a extensão, e qualquer outra área de trabalho.
+//!
+//! ## Quando uma integração nativa está no ar
 //!
 //! Aí este ícone sai de cena, porque ela publica o dela — dois ícones do mesmo
 //! programa, lado a lado na mesma barra, é o tipo de coisa que ninguém escolhe
-//! de propósito.
+//! de propósito. Vale para a extensão do GNOME Shell e para o widget do Plasma,
+//! que dessa perspectiva são a mesma notícia; quem sabe distingui-las é o
+//! `state::Integracoes`, e ele precisa saber porque a *outra* pergunta — quem
+//! desenha o aviso de gravação — tem respostas diferentes para cada uma.
 //!
 //! Sair de cena aqui é **desregistrar o item**, não marcá-lo como `Passive`. O
 //! protocolo diz que um item passivo *pode* ser escondido, e "pode" é decisão de
@@ -55,8 +63,10 @@ struct Retrato {
     /// oposto do que o item fazia.
     gravando: bool,
     atalho: String,
-    /// A extensão do GNOME está no ar — e então este ícone não deve existir.
-    extensao_gnome: bool,
+    /// Alguma integração nativa já está mostrando o Ditador na barra — e então
+    /// este ícone não deve existir. Vale para a extensão do GNOME e para o
+    /// widget do Plasma; do ponto de vista daqui as duas são a mesma notícia.
+    integracao_mostra_o_icone: bool,
 }
 
 impl Retrato {
@@ -66,7 +76,7 @@ impl Retrato {
             estado: estado.estado_publico(),
             gravando: estado.gravando(),
             atalho: keys::combo_label(&estado.config.hotkey),
-            extensao_gnome: estado.extensao_gnome,
+            integracao_mostra_o_icone: estado.integracoes.mostram_o_icone(),
         }
     }
 
@@ -215,9 +225,9 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>) {
         .name("tray".into())
         .spawn(move || {
             let mut atual = retrato;
-            // Se a extensão já estava de pé quando o Ditador subiu, o item nem
+            // Se a integração já estava de pé quando o Ditador subiu, o item nem
             // chega a ser registrado — nada pisca na barra.
-            let mut publicado = (!atual.extensao_gnome)
+            let mut publicado = (!atual.integracao_mostra_o_icone)
                 .then(|| publicar(&atual, &comandos))
                 .flatten();
 
@@ -230,12 +240,14 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>) {
                 }
                 atual = novo.clone();
 
-                if novo.extensao_gnome {
+                if novo.integracao_mostra_o_icone {
                     if let Some(handle) = publicado.take() {
                         // Esperar o fim é de graça aqui e evita a única janela
                         // de tempo em que os dois ícones existiriam juntos.
                         handle.shutdown().wait();
-                        log::info!("ícone da barra recolhido; quem mostra o Ditador é a extensão");
+                        log::info!(
+                            "ícone da barra recolhido; quem mostra o Ditador é a integração do desktop"
+                        );
                     }
                     continue;
                 }
