@@ -181,18 +181,42 @@ carregada — não que ela poderia estar.
 
 ### O ícone pisca no arranque?
 
-Um pouco, e é inerente. O widget declara
-`X-Plasma-DBusActivationService`: o `plasmashell` só o carrega quando o serviço
-do Ditador aparece no barramento. Então a ordem é sempre
+Não — mas por pouco, e vale saber por quê.
+
+O widget declara `X-Plasma-DBusActivationService`, então o `plasmashell` só o
+carrega depois que o Ditador aparece no barramento:
 
 ```
 Ditador sobe → nome no barramento → plasmashell carrega o widget →
 widget segura a presença → Ditador recolhe o ícone da bandeja
 ```
 
-e existe uma fresta, de alguns milissegundos, em que os dois estão na barra. A
-alternativa seria o widget segurar o nome mesmo com o Ditador fora do ar, o que
-o faria mentir sobre o que está disponível. Preferimos a fresta.
+Lido assim, parece haver uma fresta em que os dois estão na barra. Não há, e o
+que a fecha é a ordem em `main.rs`: **`dbus::start` vem antes de `tray::start`**.
+Quando a bandeja vai se registrar, o `dbus::start` já perguntou ao barramento
+quem detém o nome da integração — e a essa altura o widget já o detém. O
+`StatusNotifierItem` não chega a ser registrado; não é registrado e recolhido, é
+nunca registrado.
+
+Medido num arranque real:
+
+```
+10:16:38.436  systemd inicia o Ditador
+10:16:38.476  "widget do Plasma no ar; recolhendo o ícone da bandeja"   ← 40 ms
+10:16:38.481  "interface D-Bus no ar"
+```
+
+O `plasmashell` carrega o pacote, cria o item QML e registra o nome dentro da
+janela de tempo em que o `dbus::start` ainda está montando as próprias
+assinaturas. Não há linha de "serviço do ícone da barra superior no ar" no
+journal desse arranque — é a prova de que o ícone não existiu nem por um quadro.
+
+Isso é uma corrida, e uma corrida ganha não é uma garantia: numa máquina mais
+lenta, ou com o pacote fora do cache do disco, o `plasmashell` pode perder. O
+custo de perder é um ícone que aparece e some — não há estado corrompido, porque
+quem manda é a presença do nome. Aquela ordem em `main.rs` está no CLAUDE.md como
+armadilha justamente por isto: invertê-la traz a fresta de volta, e no GNOME ela
+já existia pelo mesmo motivo.
 
 ## OSD nativo: por que não existe
 
@@ -508,8 +532,10 @@ em execução depende delas.
 - **Não há catálogo de traduções.** As frases estão em português, que é a língua
   do projeto; o código já passa por `i18n()` com domínio próprio, então acrescentar
   um catálogo depois não exige mexer no QML.
-- **O ícone pisca por alguns milissegundos** no arranque do Ditador, pelo motivo
-  descrito acima.
+- **O ícone único depende de uma corrida ganha** no arranque, descrita acima. Foi
+  medida e é folgada (o widget assume ~40 ms depois do Ditador subir, com o
+  `dbus::start` ainda montando as assinaturas dele), mas numa máquina bem mais
+  lenta o pior caso é o ícone da bandeja aparecer e sumir.
 - **Alt+Tab, Overview, tela cheia, tela de bloqueio e multimonitor** não são
   assunto desta integração: não há efeito de KWin, nada desenha por cima da
   cena, e o widget vive dentro do painel. A tela de bloqueio não vê nada nosso —

@@ -270,8 +270,15 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
   Plasma 6.6 produzem os mesmos — confira rodando-o no `org.kde.plasma.vault`. O `testar.sh` filtra
   exatamente esses quatro e falha em qualquer outro. Os demais foram **resolvidos**, não silenciados
   (`KI18nContext` no lugar do `i18nd` solto; `Plasmoid` alcançado só do arquivo raiz).
-- **`dbus::start` vem antes de `tray::start` em `main.rs`.** É o D-Bus que descobre se a extensão já está no
-  ar; descobrindo primeiro, a bandeja nasce sabendo e o ícone não pisca na barra no login.
+- **`dbus::start` vem antes de `tray::start` em `main.rs`.** É o D-Bus que descobre se alguma integração já
+  está no ar; descobrindo primeiro, a bandeja nasce sabendo e o ícone não pisca na barra no login.
+  No Plasma isto é ainda mais apertado do que no GNOME, e é o que faz o widget não piscar: o
+  `plasmashell` só carrega o widget **depois** de o Ditador aparecer no barramento
+  (`X-Plasma-DBusActivationService`), então a corrida é entre ele carregar o pacote e o `dbus::start`
+  terminar de montar as assinaturas. Medido num arranque real, o widget assume 40 ms depois do
+  `systemd` iniciar o Ditador, e não há linha de "serviço do ícone da barra superior no ar" no journal —
+  o StatusNotifierItem não é registrado e recolhido, é nunca registrado. Invertendo a ordem, ele passa a
+  aparecer e sumir a cada login.
 
 ## Variáveis de diagnóstico
 
