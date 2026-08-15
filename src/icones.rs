@@ -6,7 +6,7 @@
 //! sistema não tiver os nossos símbolos (alguém rodando `cargo run` sem ter
 //! passado pelo `instalar.sh`).
 
-use crate::state::{ModelState, View};
+use crate::state::EstadoPublico;
 
 /// Estados que a barra superior distingue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,19 +18,22 @@ pub enum Estado {
 }
 
 impl Estado {
-    /// Qual símbolo a barra mostra.
+    /// Qual símbolo a barra mostra, para cada estado publicado.
     ///
-    /// `gravando` vem do `recording_since` e ganha da tela de propósito: a
-    /// janela do resultado anterior pode estar por cima de um ditado em
-    /// andamento, e nesse intervalo o ícone precisa continuar vermelho — é a
-    /// única coisa na tela dizendo que o microfone está aberto.
-    pub fn de(model: ModelState, view: View, gravando: bool) -> Self {
-        match (model, gravando, view) {
-            (ModelState::Loading, _, _) => Self::Trabalhando,
-            (ModelState::Failed, _, _) => Self::Falhou,
-            (_, true, _) => Self::Gravando,
-            (_, _, View::Processing) => Self::Trabalhando,
-            _ => Self::Pronto,
+    /// Carregar o modelo e transcrever chegam ao mesmo desenho: para quem olha a
+    /// barra de relance, os dois querem dizer "espere". A distinção entre eles
+    /// existe no `EstadoPublico`, para quem tem espaço de sobra para dizê-la —
+    /// hoje, a extensão do GNOME.
+    ///
+    /// A regra de qual estado é qual mora no `EstadoPublico::de`, num lugar só.
+    /// Estava escrita duas vezes, e a segunda cópia era exatamente o tipo de
+    /// coisa que envelhece torto quando alguém mexe na primeira.
+    pub fn do_publico(estado: EstadoPublico) -> Self {
+        match estado {
+            EstadoPublico::Carregando | EstadoPublico::Transcrevendo => Self::Trabalhando,
+            EstadoPublico::Erro => Self::Falhou,
+            EstadoPublico::Gravando => Self::Gravando,
+            EstadoPublico::Pronto => Self::Pronto,
         }
     }
 
@@ -124,36 +127,34 @@ fn decodificar(bytes: &[u8]) -> Option<image::RgbaImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{ModelState, View};
+
+    /// O caminho inteiro, do estado bruto ao símbolo — que é o que a barra
+    /// percorre a cada mudança.
+    fn de(model: ModelState, view: View, gravando: bool) -> Estado {
+        Estado::do_publico(EstadoPublico::de(model, view, gravando))
+    }
 
     #[test]
     fn o_icone_da_barra_segue_o_microfone_e_nao_a_tela() {
         // A tela do resultado anterior pode estar por cima de um ditado em
         // andamento. Nesse intervalo o ícone precisa continuar vermelho: ele é
         // a única coisa visível dizendo que o microfone está aberto.
-        assert_eq!(
-            Estado::de(ModelState::Ready, View::Result, true),
-            Estado::Gravando
-        );
-        assert_eq!(
-            Estado::de(ModelState::Ready, View::Hidden, true),
-            Estado::Gravando
-        );
+        assert_eq!(de(ModelState::Ready, View::Result, true), Estado::Gravando);
+        assert_eq!(de(ModelState::Ready, View::Hidden, true), Estado::Gravando);
         // Sem gravação, quem manda é a tela.
         assert_eq!(
-            Estado::de(ModelState::Ready, View::Processing, false),
+            de(ModelState::Ready, View::Processing, false),
             Estado::Trabalhando
         );
-        assert_eq!(
-            Estado::de(ModelState::Ready, View::Hidden, false),
-            Estado::Pronto
-        );
+        assert_eq!(de(ModelState::Ready, View::Hidden, false), Estado::Pronto);
         // O estado do modelo ganha de tudo: sem ele não há ditado nenhum.
         assert_eq!(
-            Estado::de(ModelState::Loading, View::Recording, true),
+            de(ModelState::Loading, View::Recording, true),
             Estado::Trabalhando
         );
         assert_eq!(
-            Estado::de(ModelState::Failed, View::Recording, true),
+            de(ModelState::Failed, View::Recording, true),
             Estado::Falhou
         );
     }

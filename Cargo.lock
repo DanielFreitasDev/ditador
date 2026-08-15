@@ -1024,6 +1024,7 @@ dependencies = [
  "serde_json",
  "whisper-rs",
  "whisper-rs-sys",
+ "zbus",
 ]
 
 [[package]]

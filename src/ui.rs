@@ -7,7 +7,7 @@
 //! canal alfa.
 
 use crate::audio::Levels;
-use crate::config::Tema;
+use crate::config::{IDIOMAS, Tema};
 use crate::state::{ModelState, SharedState, Sinal, UiAction, View, lock};
 use crate::stt;
 use crate::tema::{self, medio, nota, paleta, titulo};
@@ -27,16 +27,6 @@ use std::time::Duration;
 /// tela pede mais ar do que um rótulo encostado na lateral. Somada à margem, dá
 /// cerca do dobro do que sobra dos lados.
 const RESPIRO: f32 = 16.0;
-
-const IDIOMAS: &[(&str, &str)] = &[
-    ("pt", "Português"),
-    ("en", "Inglês"),
-    ("es", "Espanhol"),
-    ("fr", "Francês"),
-    ("de", "Alemão"),
-    ("it", "Italiano"),
-    ("auto", "Detectar automaticamente"),
-];
 
 pub struct App {
     shared: SharedState,
@@ -299,7 +289,10 @@ impl eframe::App for App {
             }
         }
 
-        let view = state.view;
+        // `tela_visivel`, e não `state.view`: com a extensão do GNOME no ar a
+        // gravação e a transcrição são anunciadas pelo OSD do Shell, e a nossa
+        // janela fica fora do caminho.
+        let view = state.tela_visivel();
         let modelo_carregando = state.model == ModelState::Loading;
         // Ao abrir as configurações, dois controles precisam mostrar o que o
         // sistema realmente tem, não o que ficou gravado da última vez: o
@@ -358,7 +351,7 @@ impl eframe::App for App {
         // fechamento abaixo precisa de acesso exclusivo a `self`.
         let shared = self.shared.clone();
         let mut state = lock(&shared);
-        let view = state.view;
+        let view = state.tela_visivel();
         if view == View::Hidden {
             return;
         }

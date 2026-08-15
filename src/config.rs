@@ -10,6 +10,31 @@ pub const DEFAULT_MODEL_FILE: &str = "ggml-large-v3-turbo-q5_0.bin";
 /// Taxa de amostragem exigida pelo Whisper.
 pub const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
+/// Os idiomas oferecidos na tela, e o nome de cada um.
+///
+/// Mora aqui, e não na interface, porque deixou de ter um público só: a
+/// extensão do GNOME também mostra o idioma em uso, e uma segunda tabela do
+/// lado do JavaScript envelheceria torta na primeira vez que alguém
+/// acrescentasse uma língua aqui.
+pub const IDIOMAS: &[(&str, &str)] = &[
+    ("pt", "Português"),
+    ("en", "Inglês"),
+    ("es", "Espanhol"),
+    ("fr", "Francês"),
+    ("de", "Alemão"),
+    ("it", "Italiano"),
+    ("auto", "Detectar automaticamente"),
+];
+
+/// O nome do idioma, ou o próprio código quando ele não está na lista — o
+/// arquivo é editável à mão e aceita qualquer código que o Whisper entenda.
+pub fn nome_do_idioma(codigo: &str) -> &str {
+    IDIOMAS
+        .iter()
+        .find(|(c, _)| *c == codigo)
+        .map_or(codigo, |(_, nome)| *nome)
+}
+
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))

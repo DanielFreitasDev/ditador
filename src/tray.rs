@@ -11,11 +11,24 @@
 //! como erro — ele fica de olho no barramento e nos registra quando o vigia
 //! chega. Se ele nunca chegar (extensão desligada, outra área de trabalho), o
 //! programa segue sem ícone — nunca é motivo para não subir.
+//!
+//! ## Quando a extensão do GNOME está no ar
+//!
+//! Aí este ícone sai de cena, porque ela publica o dela — dois ícones do mesmo
+//! programa, lado a lado na mesma barra, é o tipo de coisa que ninguém escolhe
+//! de propósito.
+//!
+//! Sair de cena aqui é **desregistrar o item**, não marcá-lo como `Passive`. O
+//! protocolo diz que um item passivo *pode* ser escondido, e "pode" é decisão de
+//! cada hospedeiro: a promessa que se quer aqui é que o ícone suma, e a única
+//! que não depende de ninguém é não haver item nenhum. Quando a extensão sai, o
+//! item é registrado de novo — o hospedeiro trata isso como um programa que
+//! acabou de subir, que é exatamente o que ele parece ser.
 
 use crate::controller::IpcCommand;
 use crate::icones::{self, Estado};
 use crate::keys;
-use crate::state::{ModelState, SharedState, Sinal, View, lock};
+use crate::state::{EstadoPublico, SharedState, Sinal, lock};
 use crossbeam_channel::Sender;
 use ksni::blocking::TrayMethods;
 use ksni::menu::StandardItem;
@@ -26,8 +39,10 @@ use ksni::{Category, MenuItem, OfflineReason, Status, ToolTip};
 /// principal.
 #[derive(Clone, PartialEq)]
 struct Retrato {
-    view: View,
-    model: ModelState,
+    /// O estado publicado, o mesmo que vai pelo D-Bus. A regra de qual estado é
+    /// qual mora no `EstadoPublico::de`, e não aqui: eram duas cópias da mesma
+    /// tabela, e duas cópias é uma a mais do que se consegue manter iguais.
+    estado: EstadoPublico,
     /// O microfone está aberto. Vem do `recording_since`, nunca da `view`.
     ///
     /// Sem este campo a bandeja decidia pela tela — a única fonte que o
@@ -40,30 +55,37 @@ struct Retrato {
     /// oposto do que o item fazia.
     gravando: bool,
     atalho: String,
+    /// A extensão do GNOME está no ar — e então este ícone não deve existir.
+    extensao_gnome: bool,
 }
 
 impl Retrato {
     fn tirar(shared: &SharedState) -> Self {
         let estado = lock(shared);
         Self {
-            view: estado.view,
-            model: estado.model,
+            estado: estado.estado_publico(),
             gravando: estado.gravando(),
             atalho: keys::combo_label(&estado.config.hotkey),
+            extensao_gnome: estado.extensao_gnome,
         }
     }
 
-    fn estado(&self) -> Estado {
-        Estado::de(self.model, self.view, self.gravando)
+    fn icone(&self) -> Estado {
+        Estado::do_publico(self.estado)
+    }
+
+    /// O modelo carregou, então dá para ditar.
+    fn pronto_para_ditar(&self) -> bool {
+        !matches!(self.estado, EstadoPublico::Carregando | EstadoPublico::Erro)
     }
 
     fn resumo(&self) -> String {
-        match (self.model, self.gravando, self.view) {
-            (ModelState::Loading, _, _) => "Carregando o modelo…".to_string(),
-            (ModelState::Failed, _, _) => "O modelo não carregou".to_string(),
-            (_, true, _) => "Ouvindo…".to_string(),
-            (_, _, View::Processing) => "Transcrevendo…".to_string(),
-            _ => format!("Pronto · segure {}", self.atalho),
+        match self.estado {
+            EstadoPublico::Carregando => "Carregando o modelo…".to_string(),
+            EstadoPublico::Erro => "O modelo não carregou".to_string(),
+            EstadoPublico::Gravando => "Ouvindo…".to_string(),
+            EstadoPublico::Transcrevendo => "Transcrevendo…".to_string(),
+            EstadoPublico::Pronto => format!("Pronto · segure {}", self.atalho),
         }
     }
 }
@@ -101,21 +123,21 @@ impl ksni::Tray for Icone {
     }
 
     fn icon_name(&self) -> String {
-        self.retrato.estado().nome().to_string()
+        self.retrato.icone().nome().to_string()
     }
 
     /// Reserva para quando o tema não tiver os nossos ícones. O protocolo manda
     /// o hospedeiro preferir o nome e só cair no mapa de bits se não achar.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        icones::bandeja(self.retrato.estado())
+        icones::bandeja(self.retrato.icone())
     }
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "Ditador".to_string(),
             description: self.retrato.resumo(),
-            icon_name: self.retrato.estado().nome().to_string(),
-            icon_pixmap: icones::bandeja(self.retrato.estado()),
+            icon_name: self.retrato.icone().nome().to_string(),
+            icon_pixmap: icones::bandeja(self.retrato.icone()),
         }
     }
 
@@ -135,7 +157,7 @@ impl ksni::Tray for Icone {
         // O `Toggle` que este item manda decide pelo `recording_since`; o
         // rótulo precisa decidir pela mesma coisa, senão promete o contrário.
         let gravando = self.retrato.gravando;
-        let pronto = self.retrato.model == ModelState::Ready;
+        let pronto = self.retrato.pronto_para_ditar();
 
         vec![
             StandardItem {
@@ -180,31 +202,25 @@ impl ksni::Tray for Icone {
     }
 }
 
-/// Publica o ícone e o mantém em dia. Não devolve erro de propósito: ficar sem
-/// ícone é um degrau abaixo, não uma falha de inicialização.
+/// Registra o item na barra e o mantém em dia — recolhendo-o enquanto a
+/// extensão do GNOME estiver no ar e trazendo-o de volta quando ela sair.
+///
+/// Não devolve erro de propósito: ficar sem ícone é um degrau abaixo, não uma
+/// falha de inicialização.
 pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>) {
     let mudancas = sinal.observar();
     let retrato = Retrato::tirar(&shared);
-
-    let handle = match (Icone {
-        retrato: retrato.clone(),
-        comandos,
-    })
-    // Vigia ausente vira espera, não erro: veja o comentário do módulo.
-    .assume_sni_available(true)
-    .spawn()
-    {
-        Ok(handle) => handle,
-        Err(e) => {
-            log::warn!("sem ícone na barra superior ({e})");
-            return;
-        }
-    };
 
     std::thread::Builder::new()
         .name("tray".into())
         .spawn(move || {
             let mut atual = retrato;
+            // Se a extensão já estava de pé quando o Ditador subiu, o item nem
+            // chega a ser registrado — nada pisca na barra.
+            let mut publicado = (!atual.extensao_gnome)
+                .then(|| publicar(&atual, &comandos))
+                .flatten();
+
             // Um aviso por mudança de estado; o retrato é lido depois, então
             // avisos acumulados se resolvem numa atualização só.
             while mudancas.recv().is_ok() {
@@ -213,13 +229,49 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>) {
                     continue;
                 }
                 atual = novo.clone();
-                if handle.update(move |icone| icone.retrato = novo).is_none() {
-                    log::debug!("ícone da barra encerrado");
-                    return;
+
+                if novo.extensao_gnome {
+                    if let Some(handle) = publicado.take() {
+                        // Esperar o fim é de graça aqui e evita a única janela
+                        // de tempo em que os dois ícones existiriam juntos.
+                        handle.shutdown().wait();
+                        log::info!("ícone da barra recolhido; quem mostra o Ditador é a extensão");
+                    }
+                    continue;
+                }
+
+                match publicado.take() {
+                    None => publicado = publicar(&novo, &comandos),
+                    Some(handle) => {
+                        if handle.update(move |icone| icone.retrato = novo).is_some() {
+                            publicado = Some(handle);
+                        } else {
+                            log::debug!("o ícone da barra encerrou sozinho");
+                        }
+                    }
                 }
             }
         })
         .expect("spawn tray thread");
+}
 
-    log::info!("serviço do ícone da barra superior no ar");
+fn publicar(
+    retrato: &Retrato,
+    comandos: &Sender<IpcCommand>,
+) -> Option<ksni::blocking::Handle<Icone>> {
+    let icone = Icone {
+        retrato: retrato.clone(),
+        comandos: comandos.clone(),
+    };
+    // Vigia ausente vira espera, não erro: veja o comentário do módulo.
+    match icone.assume_sni_available(true).spawn() {
+        Ok(handle) => {
+            log::info!("serviço do ícone da barra superior no ar");
+            Some(handle)
+        }
+        Err(e) => {
+            log::warn!("sem ícone na barra superior ({e})");
+            None
+        }
+    }
 }

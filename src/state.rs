@@ -41,6 +41,54 @@ pub enum ModelState {
     Failed,
 }
 
+/// O estado do programa como o mundo de fora o vê.
+///
+/// Existe porque agora há dois públicos para a mesma pergunta — o ícone da
+/// barra e a extensão do GNOME, do outro lado do D-Bus — e uma resposta só
+/// evita que eles discordem. É o mesmo raciocínio do `gravando()`: uma pergunta,
+/// num lugar só.
+///
+/// A diferença para o `icones::Estado` é que ali "carregando o modelo" e
+/// "transcrevendo" dividem o símbolo de trabalho, porque para quem olha a barra
+/// os dois querem dizer "espere"; aqui são coisas distintas — a carga acontece
+/// uma vez, no arranque, e a transcrição a cada frase.
+///
+/// Não há um estado "iniciando" à parte: neste programa o arranque *é* a carga
+/// do modelo, que começa antes de tudo. Nem "indisponível" — esse é a ausência
+/// do nome no barramento, e quem o descobre é quem pergunta, não quem responde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EstadoPublico {
+    Carregando,
+    Pronto,
+    Gravando,
+    Transcrevendo,
+    Erro,
+}
+
+impl EstadoPublico {
+    pub fn de(model: ModelState, view: View, gravando: bool) -> Self {
+        match (model, gravando, view) {
+            (ModelState::Loading, _, _) => Self::Carregando,
+            (ModelState::Failed, _, _) => Self::Erro,
+            (_, true, _) => Self::Gravando,
+            (_, _, View::Processing) => Self::Transcrevendo,
+            _ => Self::Pronto,
+        }
+    }
+
+    /// Como o estado viaja pelo D-Bus. São estes textos que a extensão do GNOME
+    /// compara, então mudar um deles é mudar o protocolo.
+    pub fn nome(self) -> &'static str {
+        match self {
+            Self::Carregando => "carregando",
+            Self::Pronto => "pronto",
+            Self::Gravando => "gravando",
+            Self::Transcrevendo => "transcrevendo",
+            Self::Erro => "erro",
+        }
+    }
+}
+
 /// Ações que a interface pede ao controlador.
 #[derive(Debug, Clone)]
 pub enum UiAction {
@@ -104,6 +152,17 @@ pub struct Shared {
     pub download: Option<crate::modelo::Andamento>,
     /// Pedido de encerramento; a interface fecha a janela ao ver isto.
     pub quitting: bool,
+    /// A extensão do GNOME está no ar, segurando o nome dela no barramento.
+    ///
+    /// Quando está, duas coisas nossas saem de cena para não dizer o mesmo
+    /// recado duas vezes: o ícone do StatusNotifierItem (que vira o indicador do
+    /// Shell) e a sobreposição de "gravando"/"transcrevendo" (que vira o OSD do
+    /// Shell). Ver `tela_visivel` e `tray.rs`.
+    ///
+    /// Quem escreve aqui é `dbus.rs`, observando o nome no barramento — e não a
+    /// própria extensão mandando avisar. É a diferença que faz o ícone voltar
+    /// sozinho quando o Shell reinicia ou a extensão morre sem se despedir.
+    pub extensao_gnome: bool,
 }
 
 impl Shared {
@@ -126,6 +185,7 @@ impl Shared {
             devices,
             download: None,
             quitting: false,
+            extensao_gnome: false,
         }
     }
 
@@ -137,6 +197,33 @@ impl Shared {
     /// enquanto a janela do ditado anterior está por cima de quem fala agora.
     pub fn gravando(&self) -> bool {
         self.recording_since.is_some()
+    }
+
+    /// O estado como o D-Bus e o ícone da barra o publicam.
+    pub fn estado_publico(&self) -> EstadoPublico {
+        EstadoPublico::de(self.model, self.view, self.gravando())
+    }
+
+    /// A tela que a janela deve desenhar agora.
+    ///
+    /// É a `view`, com uma exceção: com a extensão do GNOME no ar, o aviso de
+    /// "gravando" e o de "transcrevendo" passam a ser dela — o OSD do Shell diz
+    /// as duas coisas, no lugar em que o GNOME sempre as diz, e a nossa
+    /// sobreposição por cima seria o mesmo recado duas vezes.
+    ///
+    /// As outras telas continuam nossas, e de propósito: resultado,
+    /// configurações e erro carregam texto para copiar e botões que resolvem o
+    /// problema (baixar o modelo, recarregar). Um OSD não tem onde pôr isso, e
+    /// trocar uma tela com saída por uma frase que some em quatro segundos
+    /// deixaria a pessoa sem o que fazer.
+    ///
+    /// A `view` em si não muda — quem grava continua em `View::Recording` para
+    /// todo o resto do programa. O que muda é só o que a janela desenha.
+    pub fn tela_visivel(&self) -> View {
+        match self.view {
+            View::Recording | View::Processing if self.extensao_gnome => View::Hidden,
+            outra => outra,
+        }
     }
 }
 
@@ -192,5 +279,82 @@ impl Sinal {
         {
             let _ = observador.try_send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn shared() -> Shared {
+        let mut s = Shared::new(Config::default(), Vec::new());
+        s.model = ModelState::Ready;
+        s
+    }
+
+    #[test]
+    fn o_estado_publicado_pergunta_ao_microfone_e_nao_a_tela() {
+        // A mesma armadilha de sempre, agora na porta de saída do programa: a
+        // janela do resultado anterior pode estar por cima de um ditado em
+        // andamento, e nesse intervalo quem está de fora precisa continuar
+        // ouvindo "gravando".
+        let mut s = shared();
+        s.recording_since = Some(Instant::now());
+        s.view = View::Result;
+        assert_eq!(s.estado_publico(), EstadoPublico::Gravando);
+
+        // Sem gravação, quem manda é a tela.
+        s.recording_since = None;
+        s.view = View::Processing;
+        assert_eq!(s.estado_publico(), EstadoPublico::Transcrevendo);
+        s.view = View::Hidden;
+        assert_eq!(s.estado_publico(), EstadoPublico::Pronto);
+
+        // E o modelo ganha de tudo: sem ele não há ditado nenhum.
+        s.recording_since = Some(Instant::now());
+        s.view = View::Recording;
+        s.model = ModelState::Loading;
+        assert_eq!(s.estado_publico(), EstadoPublico::Carregando);
+        s.model = ModelState::Failed;
+        assert_eq!(s.estado_publico(), EstadoPublico::Erro);
+    }
+
+    #[test]
+    fn a_extensao_do_gnome_assume_so_as_telas_que_nao_tem_botao() {
+        let mut s = shared();
+
+        // Sem extensão, nada muda: a janela desenha o que a `view` diz.
+        for view in [View::Recording, View::Processing, View::Result, View::Error] {
+            s.view = view;
+            assert_eq!(s.tela_visivel(), view, "sem extensão a tela mudou");
+        }
+
+        s.extensao_gnome = true;
+
+        // O aviso de gravação e o de transcrição passam a ser do OSD do Shell.
+        s.view = View::Recording;
+        assert_eq!(s.tela_visivel(), View::Hidden);
+        s.view = View::Processing;
+        assert_eq!(s.tela_visivel(), View::Hidden);
+
+        // O resto continua nosso: são as telas com texto para copiar e com os
+        // botões que resolvem o problema. Um OSD não tem onde pô-los.
+        for view in [View::Result, View::Settings, View::Error] {
+            s.view = view;
+            assert_eq!(
+                s.tela_visivel(),
+                view,
+                "a extensão levou uma tela que tem ação dentro"
+            );
+        }
+
+        // A `view` em si nunca foi tocada — quem grava continua gravando para
+        // todo o resto do programa.
+        s.view = View::Recording;
+        s.recording_since = Some(Instant::now());
+        assert_eq!(s.tela_visivel(), View::Hidden);
+        assert_eq!(s.view, View::Recording);
+        assert!(s.gravando());
     }
 }

@@ -10,11 +10,21 @@ use crossbeam_channel::{Receiver, select};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Comandos vindos do socket (ícone do app, atalho do GNOME, terminal).
+/// Comandos vindos de fora do programa: o socket (ícone do app, atalho do
+/// GNOME, terminal) e o barramento D-Bus (a extensão do GNOME Shell).
 #[derive(Debug, Clone, Copy)]
 pub enum IpcCommand {
     /// Alterna gravar/parar — útil quando não se pode segurar a tecla.
     Toggle,
+    /// Começa a gravar, se já não estiver gravando.
+    ///
+    /// O `Toggle` sozinho não basta para quem chama de fora conhecendo o estado:
+    /// entre ler "pronto" e mandar alternar cabe um ditado inteiro pelo atalho, e
+    /// aí o comando pararia a gravação em vez de começá-la. Pedir o resultado
+    /// desejado em vez da troca tira essa corrida do caminho.
+    Start,
+    /// Para de gravar e manda transcrever, se estiver gravando.
+    Stop,
     Settings,
     Quit,
 }
@@ -488,6 +498,11 @@ impl Controller {
                     self.start_recording();
                 }
             }
+            // As duas guardas de sempre valem aqui sem uma linha a mais:
+            // `start_recording` desiste sozinho se o microfone já estiver aberto
+            // e `stop_recording` se não estiver. A regra continua num lugar só.
+            IpcCommand::Start => self.start_recording(),
+            IpcCommand::Stop => self.stop_recording(),
             IpcCommand::Settings => self.on_ui(UiAction::OpenSettings),
             IpcCommand::Quit => self.on_ui(UiAction::Quit),
         }

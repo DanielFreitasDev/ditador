@@ -54,6 +54,14 @@ whisper-rs = { version = "0.16", default-features = false, features = ["log_back
 # Dependência direta apenas para poder ligar o backend de GPU no crate -sys
 # (veja o comentário em [features]). O código só usa a API do whisper-rs.
 whisper-rs-sys = { version = "0.15", default-features = false }
+# A interface D-Bus que a extensão do GNOME Shell consome (`src/dbus.rs`).
+#
+# Não custa nada em tamanho: o ksni já fala com a barra superior pelo zbus, na
+# mesma versão e com as mesmas features (`async-io` + `blocking-api`, que são o
+# padrão). Declará-lo aqui não acrescentou uma linha de crate ao Cargo.lock — só
+# a aresta de dependência. Trazer uma segunda biblioteca de D-Bus para o
+# projeto, além de maior, faria dois executores conviverem no mesmo processo.
+zbus = "5"
 
 [profile.release]
 opt-level = 3
