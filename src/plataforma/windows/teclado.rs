@@ -57,12 +57,12 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::Input::{
     GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT,
-    RIDEV_INPUTSINK, RegisterRawInputDevices,
+    RIDEV_DEVNOTIFY, RIDEV_INPUTSINK, RegisterRawInputDevices,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW, MSG,
-    RegisterClassExW, SetWindowLongPtrW, TranslateMessage, WM_INPUT, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-    WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GIDC_REMOVAL, GetMessageW,
+    GetWindowLongPtrW, MSG, RegisterClassExW, SetWindowLongPtrW, TranslateMessage, WM_INPUT,
+    WM_INPUT_DEVICE_CHANGE, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 /// `GWLP_USERDATA`, onde guardamos o ponteiro para o ouvinte.
@@ -357,9 +357,12 @@ fn registrar_teclado(hwnd: HWND) -> Result<(), String> {
     let dispositivo = RAWINPUTDEVICE {
         usUsagePage: HID_GENERIC_DESKTOP,
         usUsage: HID_KEYBOARD,
-        // Só INPUTSINK: receber sem foco. Sem NOLEGACY — não queremos tirar a
-        // tecla de ninguém, só olhar.
-        dwFlags: RIDEV_INPUTSINK,
+        // INPUTSINK: receber sem foco. DEVNOTIFY: ser avisado quando um teclado
+        // chega ou some — sem isso, arrancar o teclado USB com a tecla do atalho
+        // segurada deixaria a origem dele em `pressed` para sempre, e o
+        // microfone aberto para sempre junto. Sem NOLEGACY, que é o que tiraria
+        // a tecla dos outros programas: aqui só se olha.
+        dwFlags: RIDEV_INPUTSINK | RIDEV_DEVNOTIFY,
         hwndTarget: hwnd,
     };
 
@@ -379,7 +382,8 @@ fn registrar_teclado(hwnd: HWND) -> Result<(), String> {
     Ok(())
 }
 
-/// A janela postal. Só nos interessa o `WM_INPUT`.
+/// A janela postal. Interessam duas mensagens: `WM_INPUT`, que é a tecla, e
+/// `WM_INPUT_DEVICE_CHANGE`, que é o teclado indo embora com ela apertada.
 ///
 /// É um limite de FFI: um `panic!` daqui atravessaria a ABI do Windows, o que é
 /// comportamento indefinido. Por isso todo o trabalho acontece dentro de um
@@ -396,6 +400,18 @@ unsafe extern "system" fn janela_proc(
             let ponteiro = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const HotkeyListener;
             if !ponteiro.is_null() {
                 tratar_entrada(&*ponteiro, lparam as HRAWINPUT);
+            }
+        });
+    }
+
+    // O teclado foi desconectado. O `lParam` traz o mesmo `HANDLE` que vem no
+    // cabeçalho de cada `WM_INPUT` — é, portanto, a mesma `Origem` — e é o
+    // último aviso que vamos ter sobre as teclas que ele estava segurando.
+    if msg == WM_INPUT_DEVICE_CHANGE && wparam as u32 == GIDC_REMOVAL {
+        let _ = std::panic::catch_unwind(|| unsafe {
+            let ponteiro = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const HotkeyListener;
+            if !ponteiro.is_null() {
+                (*ponteiro).soltar_tudo_de(Origem(lparam as u64));
             }
         });
     }

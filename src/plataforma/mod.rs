@@ -8,7 +8,7 @@
 //!
 //! ## O contrato
 //!
-//! Cada plataforma precisa oferecer estes sete módulos, com estes nomes. Não é
+//! Cada plataforma precisa oferecer estes nove módulos, com estes nomes. Não é
 //! um `trait` porque nada aqui é escolhido em tempo de execução: a plataforma é
 //! decidida na compilação, e um `trait` só acrescentaria despacho dinâmico e
 //! objetos vazios para representar uma escolha que já foi feita. O compilador
@@ -24,6 +24,8 @@
 //! | `tray` | StatusNotifierItem (ksni) | quem mostra o ícone é o frontend |
 //! | `integracoes` | nomes no barramento D-Bus | presença do frontend no pipe |
 //! | `clipboard` | `wl-copy` / `ydotool` | `arboard` / `SendInput` |
+//! | `registro` | o journal do systemd | arquivo em `LocalAppData` |
+//! | `microfone` | nada a explicar | a recusa por privacidade do Windows |
 //!
 //! Os nomes vieram dos módulos que já existiam no topo de `src/`, e ficaram como
 //! estavam de propósito: mover um arquivo é necessário para o Windows compilar,

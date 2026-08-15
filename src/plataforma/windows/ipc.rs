@@ -243,12 +243,24 @@ impl Drop for Seguranca {
     }
 }
 
-/// Uma instância do pipe, do lado do servidor.
+/// Uma ponta do pipe — a instância que o servidor oferece ou o handle que o
+/// cliente abriu.
 ///
 /// Existe como tipo próprio para que o `HANDLE` tenha dono: um `CloseHandle`
 /// esquecido num caminho de erro vaza uma das quatro instâncias, e depois de
 /// quatro erros o Ditador para de aceitar comandos sem nada explicar.
-pub struct Instancia(HANDLE);
+///
+/// O `Lado` não é decoração: `DisconnectNamedPipe` é uma chamada do servidor, e
+/// pedi-la sobre o handle de um cliente só devolve erro — silencioso, porque o
+/// `Drop` não tem a quem contar.
+pub struct Instancia(HANDLE, Lado);
+
+/// Qual das duas pontas do pipe este handle é.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Lado {
+    Servidor,
+    Cliente,
+}
 
 // O `HANDLE` é um ponteiro opaco e por isso o Rust não o considera enviável
 // entre threads sozinho. Um handle de pipe do Windows é seguro de usar de
@@ -261,8 +273,10 @@ impl Drop for Instancia {
         unsafe {
             // `DisconnectNamedPipe` antes de fechar: sem isso, um cliente que
             // ainda esteja lendo recebe o fim da conexão como erro de sistema em
-            // vez de fim de arquivo.
-            DisconnectNamedPipe(self.0);
+            // vez de fim de arquivo. Só o servidor pode fazê-lo.
+            if self.1 == Lado::Servidor {
+                DisconnectNamedPipe(self.0);
+            }
             CloseHandle(self.0);
         }
     }
@@ -308,7 +322,7 @@ fn criar_instancia(primeira: bool) -> Result<Instancia, u32> {
     if handle == INVALID_HANDLE_VALUE {
         Err(codigo_do_erro())
     } else {
-        Ok(Instancia(handle))
+        Ok(Instancia(handle, Lado::Servidor))
     }
 }
 
@@ -484,30 +498,50 @@ where
             });
     }
 
-    let _ = std::thread::Builder::new()
-        .name("ipc-cliente".into())
-        .spawn(move || {
-            let mut conversa = Conversa(&instancia);
-            let mut linha = String::new();
-            let leu = BufReader::new(Read::by_ref(&mut conversa).take(LIMITE_DA_LINHA))
-                .read_line(&mut linha)
-                .is_ok();
-            respondido.store(true, Ordering::SeqCst);
+    // O cão de guarda guarda o valor do `HANDLE`, e não a posse dele — se ele
+    // fosse dono, a instância só voltaria para o rodízio depois dos dois
+    // segundos de paciência, e quatro `--status` seguidos esgotariam as quatro.
+    // O preço de não ser dono é que existe **um** caminho em que o handle pode
+    // fechar sem ninguém marcar `respondido`: o `spawn` abaixo falhar. Aí a
+    // closure volta dentro do `Err`, é destruída, o `Drop` da `Instancia` fecha
+    // o handle — e dois segundos depois o cão de guarda desconectaria um valor
+    // que o Windows já pode ter reentregue a outro objeto deste processo. É por
+    // isso que o `Err` é tratado em vez de virar `let _ =`.
+    let atendimento = {
+        let respondido = respondido.clone();
+        std::thread::Builder::new()
+            .name("ipc-cliente".into())
+            .spawn(move || {
+                let mut conversa = Conversa(&instancia);
+                let mut linha = String::new();
+                let leu = BufReader::new(Read::by_ref(&mut conversa).take(LIMITE_DA_LINHA))
+                    .read_line(&mut linha)
+                    .is_ok();
+                respondido.store(true, Ordering::SeqCst);
 
-            if leu && !linha.trim().is_empty() {
-                match handler(linha.trim()) {
-                    crate::ipc::Resposta::Linha(resposta) => {
-                        let _ = writeln!(conversa, "{resposta}");
-                        // O cliente lê exatamente uma linha e fecha; esperar que
-                        // ele termine evita que o `Drop` derrube a conexão antes
-                        // de a resposta ter saído do buffer do sistema.
-                        let _ = conversa.flush();
+                if leu && !linha.trim().is_empty() {
+                    match handler(linha.trim()) {
+                        crate::ipc::Resposta::Linha(resposta) => {
+                            let _ = writeln!(conversa, "{resposta}");
+                            // O cliente lê exatamente uma linha e fecha; esperar
+                            // que ele termine evita que o `Drop` derrube a
+                            // conexão antes de a resposta ter saído do buffer do
+                            // sistema.
+                            let _ = conversa.flush();
+                        }
+                        crate::ipc::Resposta::Fluxo(linhas) => escoar(&mut conversa, linhas),
                     }
-                    crate::ipc::Resposta::Fluxo(linhas) => escoar(&mut conversa, linhas),
                 }
-            }
-            drop(instancia);
-        });
+                drop(instancia);
+            })
+    };
+
+    if atendimento.is_err() {
+        // A instância já foi fechada junto com a closure devolvida no `Err`.
+        // Marcar aqui é o que impede o cão de guarda de tocar num handle morto.
+        respondido.store(true, Ordering::SeqCst);
+        log::error!("não consegui criar a thread que atende o cliente do canal de controle");
+    }
 }
 
 /// Escreve as linhas de uma assinatura até o cliente ir embora.
@@ -613,7 +647,7 @@ pub fn send(comando: &str) -> Option<String> {
         };
 
         if handle != INVALID_HANDLE_VALUE {
-            let instancia = Instancia(handle);
+            let instancia = Instancia(handle, Lado::Cliente);
             let mut conversa = Conversa(&instancia);
             conversa.write_all(comando.as_bytes()).ok()?;
             conversa.write_all(b"\n").ok()?;

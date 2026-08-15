@@ -11,6 +11,8 @@ pub mod clipboard;
 pub mod dbus;
 pub mod integracoes;
 pub mod ipc;
+pub mod microfone;
+pub mod registro;
 pub mod teclado;
 pub mod teclas;
 pub mod tray;

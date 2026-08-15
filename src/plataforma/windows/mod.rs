@@ -26,6 +26,8 @@ pub mod autostart;
 pub mod clipboard;
 pub mod integracoes;
 pub mod ipc;
+pub mod microfone;
+pub mod registro;
 pub mod teclado;
 pub mod teclas;
 pub mod tray;

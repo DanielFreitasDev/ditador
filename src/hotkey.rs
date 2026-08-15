@@ -164,13 +164,12 @@ impl HotkeyListener {
     /// soltar, e sem isto o código dela ficaria em `pressed` para sempre — a
     /// gravação não teria como parar.
     ///
-    /// Só o Linux chama, porque só lá há dispositivo para perder: o evdev abre um
-    /// arquivo por teclado, e desconectar o teclado fecha o arquivo. O Raw Input
-    /// do Windows entrega os eventos de todos os teclados numa fila só, que não
-    /// vai a lugar nenhum quando um deles é desconectado — o sistema manda os
-    /// "soltou" que faltam. Daí o aviso de código morto no build de lá, e daí
-    /// este comentário em vez de uma segunda cópia da função no lado Linux.
-    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    /// As duas plataformas chamam, cada uma pelo aviso que o sistema lhe dá: o
+    /// Linux quando o `read` do `/dev/input/eventN` falha, o Windows quando
+    /// chega `WM_INPUT_DEVICE_CHANGE` com `GIDC_REMOVAL` — que é por isso que o
+    /// registro do Raw Input pede `RIDEV_DEVNOTIFY`. Já se disse aqui que o
+    /// Windows mandava sozinho os "soltou" que faltavam; isso nunca foi
+    /// verificado, e o preço de estar errado é o microfone aberto para sempre.
     pub(crate) fn soltar_tudo_de(&self, origem: Origem) {
         let seus: Vec<u16> = lock_mut(&self.pressed)
             .iter()

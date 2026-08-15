@@ -239,10 +239,16 @@ fn run(
                         let _ = events.send(AudioEvent::Started);
                     }
                     Err(e) => {
-                        let _ = events.send(AudioEvent::Failed {
-                            ditado,
-                            message: format!("{e:#}"),
-                        });
+                        // O erro cru primeiro, a ajuda depois: o texto do
+                        // sistema é o que se procura numa busca, e a frase da
+                        // plataforma é o que se faz a respeito. No Linux não há
+                        // ajuda a acrescentar e a mensagem sai como sempre saiu.
+                        let cru = format!("{e:#}");
+                        let message = match crate::plataforma::microfone::explicar_falha(&cru) {
+                            Some(ajuda) => format!("{cru}\n\n{ajuda}"),
+                            None => cru,
+                        };
+                        let _ = events.send(AudioEvent::Failed { ditado, message });
                     }
                 }
             }

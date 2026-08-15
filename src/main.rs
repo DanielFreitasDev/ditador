@@ -79,8 +79,16 @@ const FILTRO_PADRAO: &str = "info,\
 fn main() -> Result<()> {
     // Precisa vir antes de qualquer mexida em variáveis de ambiente.
     clipboard::remember_environment();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(FILTRO_PADRAO))
-        .init();
+    let mut registro =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(FILTRO_PADRAO));
+    // No Linux isto é `None` e o log continua indo para a saída de erro, que o
+    // systemd recolhe. No Windows não há quem recolha, e o destino é um arquivo
+    // em `LocalAppData` — sem ele, o Ditador instalado ficava sem log nenhum,
+    // porque quem o sobe é o frontend, com `CreateNoWindow`.
+    if let Some(destino) = plataforma::registro::destino() {
+        registro.target(env_logger::Target::Pipe(destino));
+    }
+    registro.init();
     // Sem isto o whisper.cpp e o ggml escrevem direto no stderr, por fora do
     // `log`: o filtro acima não os alcança e as linhas chegam ao journal sem
     // nível, sem alvo e fora de ordem. É a feature `log_backend` do whisper-rs,
@@ -606,6 +614,17 @@ fn diagnostico() -> Result<()> {
             "nenhum dos dois. Para instalar: sudo apt install curl"
         },
     );
+
+    // 5b. Onde está o log, quando ele é um arquivo nosso. No Linux quem guarda é
+    // o journal e esta linha não aparece — dizer "use o journalctl" a quem já
+    // está no journal não ajuda ninguém.
+    if let Some(caminho) = plataforma::registro::caminho() {
+        linha(
+            None,
+            "Log do backend",
+            &format!("{} (o anterior fica em .log.1)", caminho.display()),
+        );
+    }
 
     // 6. A integração da área de trabalho. Não entra no veredito: ditar
     // funciona sem nenhuma delas, e a bandeja é a reserva de todo mundo. Está
