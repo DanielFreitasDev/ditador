@@ -366,6 +366,83 @@ foi preciso.
 Usamos `RIDEV_INPUTSINK` e **nada além**. Em particular, nada de
 `RIDEV_NOLEGACY`: o Ditador observa o teclado, não o consome.
 
+### O registro é do processo, e a interface roubava o nosso
+
+A armadilha mais cara desta portabilidade, e a que fez o atalho não funcionar
+mesmo com tudo parecendo certo.
+
+`RegisterRawInputDevices` registra **por processo**, não por janela. Quem chamar
+por último para a mesma página/uso HID leva as mensagens, e o registro anterior
+para de valer — sem erro, sem aviso, sem nada no log. Este processo tem dois
+candidatos: a escuta do teclado, que sobe no arranque, e o **winit**, que
+registra entrada bruta ao criar a janela do eframe, um segundo depois. O segundo
+apagava o primeiro.
+
+O sintoma é o pior que existe: o log diz "observando o teclado por Raw Input", o
+`RegisterRawInputDevices` devolveu sucesso, a janela tem handle válido — e
+nenhum `WM_INPUT` chega. Para quem usa, o atalho global simplesmente não faz
+nada, enquanto o ícone, o menu e o "Ditar agora" funcionam. Foi assim que ele
+chegou a ser dado como testado: quem verificou exercitou a escuta antes de a
+interface entrar no caminho.
+
+A defesa é `vigiar_o_registro`: uma thread que pergunta ao Windows, com
+`GetRegisteredRawInputDevices`, para qual janela o teclado está registrado, e o
+retoma quando a resposta não for a nossa. As primeiras conferências são rápidas
+(200 ms, dobrando até 2 s) porque o roubo acontece no arranque — esperar dois
+segundos deixaria o atalho morto justamente no minuto em que a pessoa liga o
+computador. Depois disso ela reage uma vez e fica quieta; o registro só muda de
+novo se a interface recriar a janela.
+
+Como ver isso acontecendo:
+
+```powershell
+$env:RUST_LOG = 'ditador=debug'   # a linha "o registro do teclado passou a apontar para…"
+$env:RUST_LOG = 'ditador=trace'   # cada tecla que chega, para quando nada chega
+```
+
+### Quando o atalho não funcionar: o roteiro que achou este defeito
+
+Vale escrito porque a ordem importa — cada passo elimina uma causa, e pular um
+faz perder tempo procurando no lugar errado.
+
+**1. O Ditador está mesmo no ar, e com que atalho?**
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Ditador\ditador.exe" --status
+```
+
+**2. As teclas chegam ao processo?** Encerre o Ditador, suba-o de um terminal com
+o rastreamento ligado e aperte algumas teclas — **inclusive letras**, não só o
+atalho:
+
+```powershell
+Get-Process ditador, Ditador.Windows | Stop-Process -Force
+$env:RUST_LOG = 'ditador=trace'
+& "$env:LOCALAPPDATA\Programs\Ditador\ditador.exe"     # e o Ditador.Windows, junto
+```
+
+Cada tecla vira uma linha `raw: vkey=… scan=… flags=…`. Aqui a resposta se
+divide:
+
+* **Aparecem letras e não aparece o `Pause`** → o problema é a tradução daquela
+  tecla, em `teclas::do_windows`. O `Pause` chega como `vkey=0x13 scan=0x1D
+  flags=0x04` seguido de `vkey=0xFF scan=0x45` — duas mensagens, e a segunda é
+  enchimento.
+* **Não aparece nada** → o `WM_INPUT` não está chegando. Vá para o 3.
+
+**3. O registro ainda é nosso?** Com `ditador=debug`, a vigia diz quando alguém
+toma o registro e quando ela o retoma. Se ela estiver reagindo em laço, há duas
+partes do processo brigando pelo teclado — e a de fora precisa ser desligada, não
+a nossa.
+
+**4. É a máquina ou é o Ditador?** Se nada explicar, escreva um programa mínimo
+de vinte linhas — janela de nível superior invisível, `RIDEV_INPUTSINK`, laço de
+mensagens, imprimir cada tecla — e rode-o. Foi assim que este defeito foi
+isolado: o programa mínimo recebeu 257 teclas em vinte segundos enquanto o
+Ditador, na mesma máquina e no mesmo minuto, recebia zero. Isso eliminou de uma
+vez antivírus, política de segurança, sessão, estação de janelas e teclado, e
+apontou para dentro do processo — que era onde estava.
+
 **O atalho não pode ser testado com tecla sintética, e isso é uma qualidade.**
 `keybd_event` e `SendInput` inserem a tecla na fila de mensagens do sistema, não
 na pilha de entrada bruta: eles produzem `WM_KEYDOWN` para quem tem foco e
@@ -562,10 +639,13 @@ O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
 - [x] `cargo fmt`, `cargo test` (84) e `cargo clippy` limpos
 - [x] `dotnet build` Debug e Release, **zero avisos** (o projeto trata aviso como
       erro), e `dotnet test` com 22 testes da leitura do protocolo
-- [x] o atalho global **com um teclado de verdade**: segurar `Pause` com outra
-      janela em foco abre o microfone, soltar transcreve, e o texto chega à área
-      de transferência. Não há como automatizar isto — veja acima por que a tecla
-      sintética não serve
+- [x] o atalho global **com um teclado de verdade**, com o programa completo no
+      ar (backend + frontend): segurar `Pause` com outra janela em foco abre o
+      microfone, soltar transcreve, e o texto chega à área de transferência. Não
+      há como automatizar isto — veja acima por que a tecla sintética não serve.
+      Este é o teste que pegou o roubo do registro do Raw Input, e é o motivo de
+      ele ter de ser refeito **sempre com a interface junto**: só o backend
+      sozinho passa, e é falso positivo
 - [x] o ciclo inteiro pelo canal de controle (`--alternar` para gravar e parar),
       com o aviso na tela acompanhando: "Gravando" com cronômetro, depois
       "Processando fala…", depois some

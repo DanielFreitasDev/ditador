@@ -165,6 +165,8 @@ fn laco_de_mensagens(listener: &Arc<HotkeyListener>) -> Result<(), String> {
     );
     listener.avisar(HotkeyEvent::Available);
 
+    vigiar_o_registro(hwnd);
+
     // `GetMessageW` devolve 0 no `WM_QUIT` e -1 em erro. O laço só termina no
     // encerramento do programa, e nesse caminho o processo sai por `_exit` — a
     // saída limpa daqui existe para o caso de erro, que não deve acontecer.
@@ -256,6 +258,99 @@ fn criar_janela_postal(listener: &Arc<HotkeyListener>) -> Result<HWND, String> {
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, ponteiro as isize) };
 
     Ok(hwnd)
+}
+
+/// Confere de tempos em tempos se o registro do teclado ainda é nosso — e o
+/// refaz quando não for.
+///
+/// **O registro do Raw Input é do processo, não da janela.** Quem registrar por
+/// último a mesma página/uso HID leva as mensagens, e o registro anterior
+/// simplesmente para de valer — sem erro, sem aviso, sem nada no log.
+///
+/// Isso não é hipótese: é o defeito que fez o atalho parar de funcionar. Este
+/// processo tem duas partes que criam janelas — esta escuta e a interface do
+/// eframe/winit — e o winit registra Raw Input para a janela dele quando ela
+/// nasce. Como a interface sobe **depois** da escuta, o registro dela roubava o
+/// nosso: o log dizia "observando o teclado por Raw Input", o
+/// `RegisterRawInputDevices` tinha devolvido sucesso, e nenhum `WM_INPUT` chegava
+/// jamais. O sintoma para quem usa é o pior possível — segurar a tecla e nada
+/// acontecer, com o programa dizendo que está tudo bem.
+///
+/// A defesa é esta vigia: a cada dois segundos, `GetRegisteredRawInputDevices`
+/// diz para qual janela o teclado está registrado agora. Se não for a nossa, o
+/// registro é refeito. Custa duas chamadas de sistema a cada dois segundos, e é o
+/// preço de conviver com uma biblioteca de janelas que legitimamente também quer
+/// entrada bruta.
+///
+/// Não dá para resolver "de uma vez" registrando depois da interface: o eframe
+/// recria a janela em algumas situações (troca de tela, mudança de monitor), e
+/// cada vez que ele o faz o registro volta a ser dele.
+fn vigiar_o_registro(hwnd: HWND) {
+    // O `HWND` é um ponteiro opaco e o Rust não o deixa atravessar a fronteira de
+    // uma thread por isso. Um handle de janela não é um ponteiro para memória
+    // nossa — é um número que o Windows resolve —, e atravessa como número.
+    let nosso = hwnd as usize;
+    std::thread::Builder::new()
+        .name("hotkey-vigia".into())
+        .spawn(move || {
+            // As primeiras voltas são rápidas porque o roubo acontece **no
+            // arranque**, quando a janela da interface nasce — mais ou menos um
+            // segundo depois desta escuta subir. Esperar dois segundos para a
+            // primeira conferência deixaria uma janela de tempo em que o atalho
+            // não funciona, logo no instante em que a pessoa acabou de ligar o
+            // computador e vai tentar ditar.
+            //
+            // Depois disso o registro só muda se a interface recriar a janela, o
+            // que é raro, e aí dois segundos de conferência é folgado.
+            let mut espera = std::time::Duration::from_millis(200);
+            loop {
+                std::thread::sleep(espera);
+                if espera < std::time::Duration::from_secs(2) {
+                    espera *= 2;
+                }
+                match alvo_do_teclado() {
+                    Some(alvo) if alvo == nosso => {}
+                    outro => {
+                        log::warn!(
+                            "o registro do teclado passou a apontar para {outro:?} \
+                             (o nosso é {nosso:#x}); registrando de novo"
+                        );
+                        if let Err(motivo) = registrar_teclado(nosso as HWND) {
+                            log::warn!("não consegui retomar o Raw Input: {motivo}");
+                        }
+                    }
+                }
+            }
+        })
+        .expect("spawn hotkey-vigia");
+}
+
+/// Para qual janela o teclado está registrado neste processo, se estiver.
+fn alvo_do_teclado() -> Option<usize> {
+    use windows_sys::Win32::UI::Input::GetRegisteredRawInputDevices;
+
+    unsafe {
+        let tamanho = std::mem::size_of::<RAWINPUTDEVICE>() as u32;
+        let mut quantos = 0u32;
+        // A primeira chamada só conta: com o ponteiro nulo ela devolve -1 e
+        // preenche `quantos`, que é como esta API foi feita para ser usada.
+        GetRegisteredRawInputDevices(std::ptr::null_mut(), &mut quantos, tamanho);
+        if quantos == 0 {
+            return None;
+        }
+
+        let mut lista = vec![std::mem::zeroed::<RAWINPUTDEVICE>(); quantos as usize];
+        let lidos = GetRegisteredRawInputDevices(lista.as_mut_ptr(), &mut quantos, tamanho);
+        if lidos == u32::MAX {
+            return None;
+        }
+
+        lista
+            .iter()
+            .take(lidos as usize)
+            .find(|d| d.usUsagePage == HID_GENERIC_DESKTOP && d.usUsage == HID_KEYBOARD)
+            .map(|d| d.hwndTarget as usize)
+    }
 }
 
 fn registrar_teclado(hwnd: HWND) -> Result<(), String> {

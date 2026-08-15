@@ -304,6 +304,19 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
   Plasma 6.6 produzem os mesmos — confira rodando-o no `org.kde.plasma.vault`. O `testar.sh` filtra
   exatamente esses quatro e falha em qualquer outro. Os demais foram **resolvidos**, não silenciados
   (`KI18nContext` no lugar do `i18nd` solto; `Plasmoid` alcançado só do arquivo raiz).
+- **O registro do Raw Input é do processo, e a interface do egui rouba o nosso.**
+  Quem chamar `RegisterRawInputDevices` por último para a mesma página/uso HID
+  leva as mensagens, e o registro anterior para de valer **sem erro nenhum**.
+  Neste processo há dois candidatos: a escuta de teclado
+  (`plataforma/windows/teclado.rs`) e o winit, que registra entrada bruta quando
+  cria a janela do eframe — depois da escuta, portanto por cima dela. O sintoma é
+  o pior possível: o log diz "observando o teclado por Raw Input", o
+  `RegisterRawInputDevices` devolveu sucesso, e **nenhum `WM_INPUT` chega
+  jamais**; o atalho global simplesmente não faz nada, enquanto o ícone e o menu
+  funcionam. A defesa é a `vigiar_o_registro`, que confere com
+  `GetRegisteredRawInputDevices` para qual janela o teclado está registrado e o
+  retoma quando não for a nossa. Não a remova achando que é redundante: sem ela o
+  atalho para de funcionar no arranque, toda vez.
 - **`ConnectNamedPipe` que falha precisa de um `DisconnectNamedPipe` antes da
   próxima volta** (`src/plataforma/windows/ipc.rs`). Um cliente que abre o pipe e
   vai embora sem dizer nada — o `Get-Acl` do PowerShell faz exatamente isso —
