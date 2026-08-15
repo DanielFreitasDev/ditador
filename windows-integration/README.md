@@ -4,10 +4,14 @@ Documentação técnica do suporte a Windows. Para o uso normal, veja o `README.
 da raiz.
 
 > **Estado em 15/08/2026.** O núcleo em Rust compila, roda e transcreve no
-> Windows. O frontend em WinUI 3 — ícone na área de notificação, aviso de
-> gravação na tela e popup de status — **ainda não existe**. Sem ele o Ditador
-> funciona por atalho, transcrição e área de transferência, mas não aparece na
-> barra. O que está pronto e o que falta está detalhado no fim deste arquivo.
+> Windows, com o atalho global verificado em hardware real. O frontend em
+> WinUI 3 — ícone na área de notificação, aviso de gravação na tela e popup de
+> status — **ainda não existe**. Sem ele o Ditador funciona por atalho,
+> transcrição e área de transferência, mas não aparece na barra.
+>
+> **O lado Linux não foi recompilado depois desta portabilidade.** Ela mexeu em
+> código compartilhado, e a máquina onde foi feita é Windows. É o primeiro item
+> da lista no fim deste arquivo, e deve ser feito antes de qualquer coisa nova.
 
 ## O que muda entre Linux e Windows
 
@@ -300,11 +304,42 @@ Duas coisas que só o teste em hardware revelou:
   executável — depois disso nem o reinício do programa paga de novo. Vale um
   aviso na tela algum dia; não vale uma mudança de arquitetura.
 
-Falta:
+Falta — e o primeiro item é o mais urgente:
+
+- [ ] **Compilar e testar no Linux.** A portabilidade mexeu em código Linux:
+      `dbus.rs` e `tray.rs` mudaram de lugar, `hotkey.rs` foi partido entre a
+      máquina de teclas e a leitura do evdev, e `keys.rs`, `ipc.rs`,
+      `clipboard.rs`, `autostart.rs`, `icones.rs`, `ui.rs` e `main.rs` foram
+      editados. **Nada disso foi compilado no Linux** — a máquina onde o porte
+      foi feito é Windows e não tem WSL. Houve revisão estática e mais nada.
+
+      O que confere de uma vez: `cargo fmt --check`, `cargo test`,
+      `cargo clippy`, `cargo build --release` e o
+      `o_contrato_canonico_bate_com_os_tres_lados`, que só existe no build
+      Linux e é quem garante que o XML, o zbus e os dois clientes continuam
+      dizendo a mesma coisa. Depois, `./gnome-extension/scripts/testar.sh` e
+      `./kde-plasma/testar.sh`.
+
+      As pastas `gnome-extension/`, `kde-plasma/` e o `dbus/contrato.xml` não
+      foram tocados — verificado por `git diff --name-only`. Mas o Rust que
+      conversa com elas, sim.
 
 - [ ] o fluxo de eventos no pipe (o comando `assinar`), para o frontend receber
       mudanças de estado sem perguntar
-- [ ] o frontend `Ditador.Windows` em WinUI 3: ícone, popup, OSD, notificações
-- [ ] empacotamento (MSIX ou instalador) e `install.ps1` / `uninstall.ps1`
+- [ ] o frontend `Ditador.Windows` em WinUI 3: ícone, popup, OSD, notificações,
+      e a instância única pelo `AppInstance` do Windows App SDK
+- [ ] um `AppUserModelID` estável, para o Shell associar notificações e ícone ao
+      aplicativo certo
+- [ ] empacotamento (MSIX ou instalador) e `install.ps1` / `uninstall.ps1`;
+      com MSIX, trocar a chave `Run` pelo `StartupTask`
+- [ ] documentar a assinatura de código (o `.pfx` já está no `.gitignore`;
+      falta o procedimento)
 - [ ] os roteiros de teste: multimonitor, DPI misto, reinício do Explorer,
-      suspender e retomar, ACL vista de outra conta
+      suspender e retomar, ACL vista de outra conta, e a instalação limpa numa
+      VM do zero
+- [ ] medir e registrar memória e CPU em repouso, do backend e do frontend
+- [ ] avisar na tela que a primeira transcrição da máquina demora (~22 s
+      compilando shaders) em vez de deixar parecer que travou
+- [ ] considerar uma matriz de CI (`ubuntu-latest` + `windows-latest`), que hoje
+      não existe — o projeto nunca teve CI, e é ela que pegaria justamente o
+      primeiro item desta lista
