@@ -33,7 +33,6 @@ export default [
                 C_: 'readonly',
                 N_: 'readonly',
                 ngettext: 'readonly',
-                imports: 'readonly',
                 pkg: 'readonly',
                 // Do GJS puro, usados só pelos scripts de `scripts/`.
                 print: 'readonly',

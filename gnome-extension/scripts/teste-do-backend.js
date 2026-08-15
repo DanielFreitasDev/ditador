@@ -17,6 +17,11 @@
  * Ele volta sozinho quando o teste termina.
  */
 
+/* `system` é módulo do próprio GJS, e não uma introspecção de biblioteca — daí
+ * não ter o prefixo `gi://`. É a forma moderna do antigo `imports.system`, que
+ * estava aqui e é justamente o estilo que o resto do projeto não usa. */
+import System from 'system';
+
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 
@@ -172,7 +177,7 @@ executar()
         print('============================================================');
         laco.quit();
         if (falhas > 0)
-            imports.system.exit(1);
+            System.exit(1);
     });
 
 laco.run();

@@ -137,6 +137,8 @@ class Aviso extends Clutter.Actor {
         this._sumico = 0;
         this._gravandoDesde = 0;
         this._semRedirecionamento = false;
+        /* Verdadeiro entre o começo do esmaecimento de saída e o `hide()`. */
+        this._saindo = false;
 
         Main.uiGroup.add_child(this);
     }
@@ -196,8 +198,24 @@ class Aviso extends Clutter.Actor {
         this._cronometro.visible = estado === 'gravando';
         this._medidor.visible = estado === 'gravando';
 
-        if (this.visible)
+        // Já na tela e sem estar saindo: não há nada a animar, só o texto que
+        // acabou de ser trocado acima.
+        if (this.visible && !this._saindo)
             return;
+
+        // Aqui é o caso que faltava. Se um esmaecimento de saída estiver em
+        // curso, `this.visible` ainda é `true` — quem chama `hide()` é o
+        // `esconder()`, e só depois do `await`. Voltando cedo, a transição de
+        // saída seguia até o fim e escondia o aviso que acabou de nascer: um
+        // `transcrevendo → pronto` seguido de um Pause dentro dos 100 ms deixava
+        // o ditado inteiro sem aviso, sem cronômetro e sem medidor, com o
+        // temporizador do relógio girando num ator invisível.
+        //
+        // Reanimar até 255 resolve os dois lados: o Clutter descarta a transição
+        // anterior sobre a mesma propriedade — é o que o `easeAsync` do Shell
+        // trata como interrupção —, e a promessa que o `esconder()` está
+        // esperando rejeita, caindo no `catch` que existe exatamente para isto.
+        this._saindo = false;
 
         // Uma janela em tela cheia pode estar sendo desenhada direto no monitor,
         // por fora do compositor — e nesse caminho o que está por cima dela não
@@ -218,6 +236,11 @@ class Aviso extends Clutter.Actor {
         if (!this.visible)
             return;
 
+        // Enquanto isto for verdade, o aviso ainda está visível mas já é passado:
+        // é o que o `_mostrar` consulta para saber que precisa reanimar em vez
+        // de voltar cedo achando que já está tudo na tela.
+        this._saindo = true;
+
         try {
             await this.easeAsync({
                 opacity: 0,
@@ -231,6 +254,13 @@ class Aviso extends Clutter.Actor {
             return;
         }
 
+        // Uma segunda saída pode ter começado enquanto esta esperava — e uma
+        // entrada também pode ter passado por aqui e zerado a marca. Só esconde
+        // quem ainda é a saída em vigor.
+        if (!this._saindo)
+            return;
+
+        this._saindo = false;
         this.hide();
         this._devolverORedirecionamento();
     }
@@ -320,6 +350,10 @@ class Aviso extends Clutter.Actor {
     destroy() {
         this._pararDeContar();
         this._cancelarSumico();
+        // Uma saída em curso não deve sobreviver ao `destroy()`: o `await` dela
+        // volta depois que o ator já não existe, e um `hide()` ali seria uma
+        // chamada num objeto destruído.
+        this._saindo = false;
         this._devolverORedirecionamento();
         super.destroy();
     }
