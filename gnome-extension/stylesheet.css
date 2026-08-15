@@ -1,0 +1,14 @@
+/* Uma regra só, e ela não escolhe nenhuma cor.
+ *
+ * Todo o resto do visual vem das classes do próprio Shell — `osd-window` no
+ * aviso, e nada nas Configurações rápidas, que já são o controle padrão. É o
+ * que faz a extensão acompanhar o tema claro, o escuro e o de alto contraste
+ * sem ter uma linha a respeito de nenhum dos três.
+ *
+ * O cronômetro é o único caso que o tema não cobre: o aviso é centralizado na
+ * tela, e sem uma largura mínima ele escorregaria alguns pixels para o lado a
+ * cada segundo, conforme os dígitos mudassem de largura. */
+.ditador-cronometro {
+    min-width: 3.2em;
+    text-align: right;
+}

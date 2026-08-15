@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="ditador">
+  <schema id="org.gnome.shell.extensions.ditador"
+          path="/org/gnome/shell/extensions/ditador/">
+
+    <key name="mostrar-indicador" type="b">
+      <default>true</default>
+      <summary>Ícone na barra superior</summary>
+      <description>
+        Mostra o estado do Ditador ao lado do relógio. Desligado, o controle
+        nas Configurações rápidas continua funcionando.
+      </description>
+    </key>
+
+    <key name="mostrar-osd" type="b">
+      <default>true</default>
+      <summary>Aviso na tela ao ditar</summary>
+      <description>
+        Mostra, no rodapé da tela, a caixa com "Gravando" e o cronômetro
+        enquanto o microfone está aberto, e "Transcrevendo" depois.
+      </description>
+    </key>
+
+  </schema>
+</schemalist>

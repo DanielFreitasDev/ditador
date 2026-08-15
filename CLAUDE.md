@@ -5,7 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Idioma
 
 Tudo neste projeto é em português (pt-BR): comentários, doc comments (`//!`, `///`), mensagens de commit,
-strings de interface, logs, ajuda da CLI e README. Só o `LICENSE` é em inglês.
+strings de interface, logs, ajuda da CLI e README. Só o `LICENSE` é em inglês. Vale também para o
+JavaScript de `gnome-extension/` — os nomes dos arquivos seguem a convenção do GNOME (`extension.js`,
+`prefs.js`, `backend.js`), mas comentários, strings e identificadores nossos são em português.
 
 **Identificadores novos também são em português** — módulos, funções, variáveis, structs, campos e nomes de
 teste. Campos serde e enums de estado que já existem em inglês (`hotkey`, `auto_copy`, `View::Recording`,
@@ -49,6 +51,39 @@ cargo build --release --no-default-features --features cuda     # exige nvcc
 Deps de sistema: `cmake libasound2-dev libvulkan-dev glslc wl-clipboard` (e `dpkg-deb`, `fakeroot` para empacotar).
 
 Não há CI. Nada roda automaticamente — verifique localmente.
+
+## Extensão do GNOME Shell (`gnome-extension/`)
+
+Opcional, alvo **só** GNOME Shell 50.x, e independente do `.deb`: o `empacotar.sh` não a leva, e o
+`instalar.sh` da raiz não a instala. O portão dela é próprio:
+
+```
+cd gnome-extension
+npm install && npm run lint     # ESLint 9; node_modules nunca entra no ZIP
+./scripts/testar.sh             # ciclo de vida num GNOME Shell aninhado (3 voltas)
+gjs -m scripts/teste-do-backend.js   # conversa com o Ditador que estiver rodando
+./instalar.sh
+```
+
+`testar.sh` roda sob `dbus-run-session` porque dois GNOME Shell não dividem o nome `org.gnome.Shell` —
+e por isso, lá dentro, o Ditador não existe e a extensão sobe dizendo "Indisponível". Quem cobre a outra
+metade é o `teste-do-backend.js`, no barramento de verdade.
+
+**A fonte da verdade das APIs do Shell é o próprio Shell instalado**, não a internet:
+
+```
+gresource list /usr/lib/gnome-shell/libshell-18.so
+gresource extract /usr/lib/gnome-shell/libshell-18.so /org/gnome/shell/ui/quickSettings.js
+```
+
+São os 160 arquivos JS do GNOME 50.1 exatamente como esta máquina os roda. Tutoriais de GNOME 42/43/44
+descrevem APIs que não existem mais.
+
+Numa **primeira instalação** é preciso sair da sessão e entrar: o Shell varre a pasta de extensões uma vez
+só, em `_loadExtensions`, e não há vigia de diretório. Habilitar/desabilitar depois disso vale na hora.
+Não existe `Alt+F2` + `r` no Wayland.
+
+Documentação técnica: `gnome-extension/README.md`.
 
 ## Assets
 
@@ -137,6 +172,25 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
   modelo faltando, um dos dois sumia antes de ser lido.
 - **`pressed`, em `src/hotkey.rs`, conta origens por dispositivo.** Guardando só o código da tecla, o teclado
   virtual que o `ydotool` cria para a colagem automática soltava a tecla que a pessoa ainda segurava.
+- **`EstadoPublico` (`src/state.rs`) é a única tabela de "em que pé está o programa".** O ícone da bandeja
+  (`icones::Estado::do_publico`) e o D-Bus saem dela. Já foram duas tabelas, e duas é uma a mais do que se
+  consegue manter iguais. Os textos de `EstadoPublico::nome` (`pronto`, `gravando`, …) são **protocolo**: a
+  extensão do GNOME os compara, e há um teste em `src/dbus.rs` para que mudá-los não passe batido.
+- **Quem recolhe o ícone da bandeja é a presença de um nome no barramento, não um aviso da extensão.**
+  `dbus.rs` vigia `io.github.danielfreitasdev.Ditador.GnomeExtension` e escreve em `Shared::extensao_gnome`;
+  `tray.rs` **desregistra** o item (não usa `Status::Passive`, que o hospedeiro pode ignorar) e `ui.rs`
+  esconde as telas de gravação por `Shared::tela_visivel`. É assim porque o barramento solta o nome sozinho
+  quando a conexão cai — Shell reiniciado, extensão morta no meio do `disable()`, tanto faz: o ícone volta.
+  Um protocolo de "avise quando sair" perderia todos esses casos.
+- **`tela_visivel` esconde só `Recording` e `Processing`.** Resultado, configurações e erro continuam do
+  aplicativo mesmo com a extensão ligada: são telas com texto para copiar e com os botões que resolvem o
+  problema, e um OSD não tem onde pôr isso.
+- **`GravandoDesde` não é recalculado enquanto a gravação é a mesma** (`Retrato::tirar`, em `src/dbus.rs`).
+  O `Instant` é monotônico e vira hora de parede por subtração, então recalculá-lo daria um número um pouco
+  diferente a cada vez — e o cronômetro do OSD, que é desenhado a partir dele, voltaria para zero no meio
+  da frase.
+- **`dbus::start` vem antes de `tray::start` em `main.rs`.** É o D-Bus que descobre se a extensão já está no
+  ar; descobrindo primeiro, a bandeja nasce sabendo e o ícone não pisca na barra no login.
 
 ## Variáveis de diagnóstico
 

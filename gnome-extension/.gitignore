@@ -1,0 +1,7 @@
+# O ESLint é a única coisa que precisa de Node aqui, e é ferramenta de quem
+# desenvolve — não entra no repositório nem no pacote da extensão.
+/node_modules/
+/package-lock.json
+
+# Saída do `gnome-extensions pack`; sai de novo a cada `./instalar.sh`.
+*.shell-extension.zip

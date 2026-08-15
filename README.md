@@ -73,15 +73,17 @@ evdev (/dev/input/event*)  ──►  controlador  ──►  cpal (microfone)
    interface egui  ◄──────────────┤             whisper.cpp (Vulkan)
    gravando / resultado / config  │                    │
                                   │  ◄─────────────────┘
-   ícone da barra  ◄──────────────┘        texto
-   StatusNotifierItem
+   ícone da barra  ◄──────────────┤        texto
+   StatusNotifierItem             │
+                                  └──►  D-Bus  ──►  extensão do GNOME Shell
+                                                    (opcional)
 ```
 
-Seis threads conversando por canais: leitura de teclado, áudio, inferência,
-controlador, interface e ícone. O estado compartilhado fica num `Mutex` só, e
-o `Sinal` avisa a interface (repintando) e o ícone (que relê o estado) a cada
-mudança — um canal de capacidade 1 por observador, para que avisos em rajada
-se fundam num só.
+Threads conversando por canais: leitura de teclado, áudio, inferência,
+controlador, interface, ícone e D-Bus. O estado compartilhado fica num `Mutex`
+só, e o `Sinal` avisa a interface (repintando), o ícone e o D-Bus (que releem o
+estado) a cada mudança — um canal de capacidade 1 por observador, para que
+avisos em rajada se fundam num só.
 
 ## Uso
 
@@ -115,6 +117,44 @@ O GNOME não tem bandeja nativa; o ícone é um **StatusNotifierItem**, exibido
 pela extensão *Ubuntu AppIndicators*, que vem habilitada no Ubuntu. Se ela
 estiver desligada, o Ditador funciona igual — só avisa no log que ficou sem
 ícone.
+
+### Integração com o GNOME Shell
+
+Há uma **extensão oficial opcional** para o GNOME Shell 50.x (testada na 50.1,
+Ubuntu 26.04, Wayland). Com ela, o Ditador aparece onde o GNOME põe as coisas do
+GNOME: um indicador na barra superior, um controle nas *Configurações rápidas* e
+o aviso de gravação no OSD do Shell, com cronômetro — em vez da sobreposição
+própria do aplicativo.
+
+```bash
+./instalar.sh                    # o aplicativo primeiro
+./gnome-extension/instalar.sh    # depois a extensão
+```
+
+Na primeira instalação é preciso sair da sessão e entrar de novo: o GNOME Shell
+só procura extensões novas ao iniciar, e numa sessão Wayland não há como
+recarregá-lo. Depois disso, `gnome-extensions disable ditador@danielfreitasdev.github.io`
+e o `enable` correspondente valem na hora.
+
+Os dois lados conversam por **D-Bus** (`io.github.danielfreitasdev.Ditador`) — o
+socket Unix continua sendo o caminho da linha de comando, e nada dele muda. A
+extensão não grava áudio, não transcreve, não lê o teclado e não acessa a rede:
+ela só desenha o estado que o processo Rust publica.
+
+Quando a extensão está no ar, o ícone do StatusNotifierItem e a sobreposição de
+"gravando" saem de cena, para o mesmo recado não aparecer duas vezes. Isso não
+depende de a extensão se despedir: enquanto ela vive, segura um nome no
+barramento, e o barramento o solta sozinho se o Shell reiniciar ou se ela morrer
+sem avisar — aí os dois voltam.
+
+**Sem a extensão nada muda**: StatusNotifierItem, sobreposição própria, socket
+Unix e `evdev`, como sempre. Em outra área de trabalho, idem. O atalho global
+continua sendo o `evdev` nos dois casos — a extensão não tenta substituí-lo,
+porque o GNOME não entrega o evento de *soltar* a tecla e sem ele "segurar para
+falar" não existe.
+
+Os detalhes técnicos — interface D-Bus, ciclo de vida, testes, diagnóstico —
+estão em [`gnome-extension/README.md`](gnome-extension/README.md).
 
 Nas configurações dá para trocar o atalho (clique no botão e pressione a nova
 tecla ou combinação), o idioma, o microfone, o modelo, ligar a colagem

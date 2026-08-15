@@ -1,0 +1,13 @@
+{
+    "name": "ditador-gnome-extension",
+    "private": true,
+    "type": "module",
+    "description": "Só para rodar o ESLint. Nada daqui vai para o ZIP nem é preciso em tempo de execução: a extensão é GJS puro, e o Shell não sabe o que é Node.",
+    "scripts": {
+        "lint": "eslint extension.js prefs.js src scripts eslint.config.js"
+    },
+    "devDependencies": {
+        "eslint": "^9",
+        "globals": "^16"
+    }
+}
