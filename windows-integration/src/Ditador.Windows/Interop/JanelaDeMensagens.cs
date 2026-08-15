@@ -136,6 +136,13 @@ internal sealed class JanelaDeMensagens : IDisposable
         }
 
         PInvoke.UnregisterClass(_classe, _modulo);
-        _modulo.Dispose();
+
+        // Nada de `_modulo.Dispose()` aqui. O handle veio de `GetModuleHandle`,
+        // que — diz a documentação, em tantas palavras — **não** incrementa a
+        // contagem de referências do módulo; liberá-lo decrementa uma contagem
+        // que nunca foi nossa. Como é o módulo do próprio executável, o estrago
+        // hoje é teórico, e é exatamente por isso que passaria despercebido até
+        // o dia em que não fosse.
+        _modulo.SetHandleAsInvalid();
     }
 }

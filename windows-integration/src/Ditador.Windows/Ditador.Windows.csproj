@@ -52,7 +52,11 @@
     <!-- O interop com Win32 precisa de ponteiros em alguns pontos (a fila de
          mensagens, o NOTIFYICONDATA). Está confinado a `Interop/`. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Sem janela de console atrás da interface. -->
+    <!-- O marshalling clássico continua ligado: o CsWin32 gera assinaturas que
+         contam com ele (strings, `BOOL`, structs com `cbSize`), e desligá-lo
+         quebraria justamente a camada de interop. Quem tira a janela de console
+         é o `WinExe` lá em cima, não esta propriedade — o comentário que estava
+         aqui dizia isso e falava de outra coisa. -->
     <DisableRuntimeMarshalling>false</DisableRuntimeMarshalling>
     <EnableMsixTooling>true</EnableMsixTooling>
     <!--

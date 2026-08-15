@@ -37,6 +37,15 @@ public partial class App : Application
     private Notificador? _notificador;
     private bool _jaTenteiSubirOBackend;
 
+    /// <summary>
+    /// Se o backend já respondeu alguma vez nesta execução do frontend.
+    /// </summary>
+    /// <remarks>
+    /// É o que separa "ainda não subiu" de "foi encerrado de propósito". Só o
+    /// primeiro autoriza subir o backend sozinho.
+    /// </remarks>
+    private bool _backendJaEsteveNoAr;
+
     public App()
     {
         InitializeComponent();
@@ -106,11 +115,24 @@ public partial class App : Application
         _popup?.Atualizar(retrato);
         _notificador?.Avaliar(retrato);
 
-        // O backend não está no ar. Uma tentativa de subi-lo, uma só, e nunca
+        // Um backend que já esteve no ar e saiu, saiu porque alguém o mandou
+        // sair — `ditador --encerrar` no terminal ou "Encerrar Ditador" no menu.
+        // Ressuscitá-lo seria desfazer uma decisão explícita da pessoa, e é o
+        // que acontecia: o frontend subia com o backend vivo, via a queda e o
+        // trazia de volta.
+        if (retrato.Estado != Estado.Indisponivel)
+        {
+            _backendJaEsteveNoAr = true;
+        }
+
+        // O backend nunca esteve no ar nesta execução: é o caso do frontend que
+        // sobe primeiro no login. Uma tentativa de subi-lo, uma só, e nunca
         // mais: o laço de reconexão continua tentando falar, mas criar processo
         // em laço é como se fabrica uma máquina de fazer processos zumbis. Se
         // esta tentativa não resolveu, quem resolve é a pessoa, pelo menu.
-        if (retrato.Estado == Estado.Indisponivel && !_jaTenteiSubirOBackend)
+        if (retrato.Estado == Estado.Indisponivel
+            && !_backendJaEsteveNoAr
+            && !_jaTenteiSubirOBackend)
         {
             _jaTenteiSubirOBackend = true;
             ClienteDoDitador.IniciarBackend();
@@ -202,5 +224,9 @@ public partial class App : Application
         _cliente?.Dispose();
         _aviso?.Fechar();
         _popup?.Fechar();
+        // O `Dispose` do notificador é o `Unregister` do AppNotificationManager.
+        // Faltando aqui, o Ditador saía sem devolver o registro que pediu ao
+        // sistema ao subir.
+        _notificador?.Dispose();
     }
 }

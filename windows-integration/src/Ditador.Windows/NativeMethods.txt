@@ -24,6 +24,11 @@ RegisterWindowMessage
 PostMessage
 WNDCLASSEXW
 WM_APP
+// Base da faixa reservada às mensagens de janela do próprio aplicativo. Serve
+// aqui para escrever `NIN_SELECT` como o `shellapi.h` o define (`WM_USER+0`) em
+// vez de um 0x400 solto — as duas macros do NIN não estão nos metadados do
+// Win32, então elas são as únicas constantes do arquivo escritas à mão.
+WM_USER
 WM_NULL
 WM_SETTINGCHANGE
 WM_LBUTTONUP

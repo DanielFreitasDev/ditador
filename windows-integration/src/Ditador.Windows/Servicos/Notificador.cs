@@ -85,13 +85,21 @@ internal sealed class Notificador : IDisposable
 
         try
         {
+            // Sem som: o Ditador avisa, não interrompe. O `MuteAudio` do
+            // construtor é o jeito documentado de fazer isso — antes havia aqui
+            // um `SuppressDisplay = false`, que é o valor padrão e não silencia
+            // coisa nenhuma, sob um comentário dizendo que silenciava.
+            //
+            // A duração fica no padrão de propósito: o Windows já a encurta ou
+            // alonga conforme as preferências de acessibilidade da pessoa, e
+            // fixá-la aqui passaria por cima delas. O "Não incomodar" e o Foco
+            // também continuam mandando — quem decide se o aviso aparece agora é
+            // o sistema, e é assim que deve ser.
             var aviso = new AppNotificationBuilder()
                 .AddText(titulo)
                 .AddText(corpo)
+                .MuteAudio()
                 .BuildNotification();
-
-            // Sem som e sem insistência: o Ditador avisa, não interrompe.
-            aviso.SuppressDisplay = false;
             AppNotificationManager.Default.Show(aviso);
             Registro.Info($"notificação: {titulo} — {corpo}");
         }

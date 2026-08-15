@@ -37,6 +37,19 @@ internal sealed class IconeDaBandeja : IDisposable
     /// </remarks>
     private const uint MensagemDoIcone = PInvoke.WM_APP + 1;
 
+    /// <summary>Ativação do ícone: clique simples na versão 4 do protocolo.</summary>
+    /// <remarks>
+    /// <c>NIN_SELECT</c> e <c>NIN_KEYSELECT</c> são macros do <c>shellapi.h</c>
+    /// (<c>WM_USER+0</c> e <c>NIN_SELECT | 1</c>) e não existem nos metadados do
+    /// Win32, então o CsWin32 não tem o que gerar. Ficam aqui com o nome do
+    /// cabeçalho para que o <c>switch</c> continue legível ao lado das constantes
+    /// que são geradas.
+    /// </remarks>
+    private const uint NIN_SELECT = PInvoke.WM_USER + 0;
+
+    /// <summary>O mesmo, quando a ativação veio do teclado ou da acessibilidade.</summary>
+    private const uint NIN_KEYSELECT = NIN_SELECT | 1;
+
     /// <summary>
     /// A identidade do ícone, estável para sempre.
     /// </summary>
@@ -110,14 +123,19 @@ internal sealed class IconeDaBandeja : IDisposable
     /// </remarks>
     public unsafe RECT? Retangulo()
     {
+        // Ou o GUID, ou o par janela+identificador — nunca os dois. A
+        // documentação do NOTIFYICONIDENTIFIER é explícita, e preencher os dois
+        // é o tipo de coisa que "funciona" na máquina de quem escreveu: se a API
+        // recusar, o retângulo vem nulo, o popup cai no canto inferior direito e
+        // ninguém percebe enquanto a barra de tarefas estiver na posição padrão.
         var identificacao = new NOTIFYICONIDENTIFIER
         {
             cbSize = (uint)sizeof(NOTIFYICONIDENTIFIER),
-            hWnd = _janela.Handle,
         };
 
         if (_semGuid)
         {
+            identificacao.hWnd = _janela.Handle;
             identificacao.uID = 1;
         }
         else
@@ -211,6 +229,18 @@ internal sealed class IconeDaBandeja : IDisposable
         switch (evento)
         {
             case PInvoke.WM_LBUTTONUP:
+            // `NIN_SELECT` é o clique na versão 4 do protocolo, e
+            // `NIN_KEYSELECT` é o mesmo gesto feito pelo teclado — Tab até a
+            // área de notificação e Enter, ou a barra de espaço. É o caminho de
+            // quem navega sem mouse e o do Narrator, e era justamente ele que
+            // faltava: o ícone respondia ao mouse e ficava mudo para o teclado.
+            //
+            // Os dois valores são macros do `shellapi.h` (`WM_USER+0` e
+            // `WM_USER+1`) e não vêm nos metadados do Win32, então não há o que
+            // gerar pelo CsWin32 — daí as constantes logo acima, com o nome que
+            // o cabeçalho lhes dá.
+            case NIN_SELECT:
+            case NIN_KEYSELECT:
                 Clicado?.Invoke();
                 return new LRESULT(0);
 
@@ -423,7 +453,17 @@ internal sealed class IconeDaBandeja : IDisposable
         // O handle sai do invólucro seguro de propósito: quem o destrói é o
         // `Redesenhar`, depois de o Shell já estar com o ícone novo, e um
         // `SafeHandle` o liberaria no fim deste método.
-        return (HICON)carregado.DangerousGetHandle();
+        //
+        // Dizer isso num comentário não bastava. Sem o `SetHandleAsInvalid`, o
+        // `SafeHandle` continuava dono: quando o coletor o alcançasse — horas
+        // depois, com o ícone na bandeja —, o finalizador destruiria o ícone que
+        // o Shell ainda estava desenhando, e o `DestroyIcon` do `Redesenhar` ou
+        // do `Dispose` cairia sobre um handle já liberado, possivelmente
+        // reciclado para outro objeto GDI deste processo. A linha abaixo é o que
+        // transfere a posse de verdade.
+        var alca = carregado.DangerousGetHandle();
+        carregado.SetHandleAsInvalid();
+        return (HICON)alca;
     }
 
     private unsafe void Enviar(NOTIFY_ICON_MESSAGE acao)

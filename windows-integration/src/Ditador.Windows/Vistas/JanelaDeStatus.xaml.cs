@@ -39,6 +39,23 @@ public sealed partial class JanelaDeStatus : Window
     private readonly AppWindow _janela;
     private bool _visivel;
 
+    /// <summary>Quando o painel se escondeu pela última vez, em milissegundos de
+    /// tempo de máquina ligada.</summary>
+    private long _escondidoEm = long.MinValue / 2;
+
+    /// <summary>
+    /// Quanto tempo depois de o painel se esconder um pedido de abertura ainda
+    /// conta como parte do mesmo clique.
+    /// </summary>
+    /// <remarks>
+    /// Meio segundo é o limite do clique duplo padrão do Windows, e é a medida
+    /// certa aqui pelo mesmo motivo: é o intervalo em que dois eventos ainda são
+    /// tratados como um gesto só. O que se mede é a distância entre o
+    /// desaparecimento causado pela perda de foco e o clique que chega logo
+    /// atrás — no fluxo normal, poucos milissegundos.
+    /// </remarks>
+    private const long JanelaDoMesmoClique = 500;
+
     public JanelaDeStatus(ClienteDoDitador cliente)
     {
         _cliente = cliente;
@@ -90,6 +107,22 @@ public sealed partial class JanelaDeStatus : Window
         if (_visivel)
         {
             Esconder();
+            return;
+        }
+
+        // O segundo clique no ícone precisa fechar o painel, e por um instante
+        // ele não fechava: clicar no ícone tira o foco daqui, o `Activated`
+        // esconde o painel e zera o `_visivel` — tudo isso **antes** de o
+        // `WM_LBUTTONUP` do ícone chegar. Quando chegava, já não havia nada
+        // aberto para alternar, e o painel reabria. Quem via descrevia como "o
+        // painel pisca e continua aberto".
+        //
+        // O desempate é o relógio: um pedido de abertura que chega coladinho no
+        // desaparecimento é o outro lado daquele mesmo clique, e não um clique
+        // novo. A janela é curta o bastante para não atrapalhar quem realmente
+        // quer reabrir logo em seguida.
+        if (Environment.TickCount64 - _escondidoEm < JanelaDoMesmoClique)
+        {
             return;
         }
 
@@ -173,6 +206,7 @@ public sealed partial class JanelaDeStatus : Window
         }
 
         _visivel = false;
+        _escondidoEm = Environment.TickCount64;
         _janela.Hide();
     }
 

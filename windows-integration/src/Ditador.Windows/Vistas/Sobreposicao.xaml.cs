@@ -86,15 +86,13 @@ public sealed partial class Sobreposicao : Window
         // Shell e o compositor, que consultam coisas diferentes.
         _janela.IsShownInSwitchers = false;
 
-        _janela.Changed += (_, argumentos) =>
-        {
-            // O DPI mudou (a janela foi parar noutro monitor): refazer a conta do
-            // tamanho, senão a faixa fica com o tamanho do monitor anterior.
-            if (argumentos.DidSizeChange || argumentos.DidPositionChange)
-            {
-                return;
-            }
-        };
+        // Aqui houve um tratador de `Changed` que não fazia nada — todos os
+        // ramos só retornavam — sob um comentário prometendo refazer a conta do
+        // tamanho quando o DPI mudasse. Quem faz isso de verdade é o
+        // `Posicionar()`, que roda a cada `Aparecer()` e consulta o DPI e a área
+        // de trabalho do monitor de então. O caso que sobra é estreito: mudar a
+        // escala do monitor **com o aviso na tela**, por poucos segundos. Um
+        // tratador vazio não cobria nem esse, e ainda dizia que cobria.
 
         var alca = new AlcaDaJanela(this);
         alca.TornarPassiva();
