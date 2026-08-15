@@ -22,3 +22,22 @@ pub fn caminho() -> Option<PathBuf> {
 pub fn destino() -> Option<Box<dyn Write + Send + 'static>> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Não é um teste de "chamar função e ver `None`": é o contrato do módulo.
+    /// O `main` só desvia o log do `env_logger` quando `destino()` responde
+    /// alguma coisa, e o `--diagnostico` só imprime a linha do log quando há
+    /// caminho. Devolvendo `Some` por engano aqui, o journal deixaria de receber
+    /// o que o systemd recolhe — e ninguém notaria até precisar dele.
+    #[test]
+    fn no_linux_quem_guarda_o_log_e_o_journal() {
+        assert!(caminho().is_none(), "o journal não é arquivo nosso");
+        assert!(
+            destino().is_none(),
+            "desviar a saída de erro tiraria o log do journal"
+        );
+    }
+}

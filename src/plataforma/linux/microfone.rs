@@ -14,3 +14,17 @@
 pub fn explicar_falha(_erro: &str) -> Option<&'static str> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O erro do cpal chega ao usuário como está. Um palpite acrescentado aqui
+    /// apareceria colado em toda falha de microfone do Linux, inclusive nas que
+    /// não têm nada a ver com permissão.
+    #[test]
+    fn o_erro_do_microfone_no_linux_vai_inteiro_e_sem_palpite() {
+        assert!(explicar_falha("Access is denied").is_none());
+        assert!(explicar_falha("DeviceNotAvailable").is_none());
+    }
+}
