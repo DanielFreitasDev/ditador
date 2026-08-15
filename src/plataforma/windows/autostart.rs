@@ -141,7 +141,7 @@ fn ler() -> Option<String> {
 
 fn escrever() -> Result<()> {
     let chave = abrir(KEY_WRITE)?;
-    let comando = citar(&executavel_atual()?);
+    let comando = citar(&quem_deve_subir()?);
     let dados = utf16(&comando);
     let nome = utf16(VALOR);
 
@@ -189,9 +189,48 @@ fn apagar() -> Result<()> {
 ///
 /// O Windows pode iniciar o programa com um diretório de trabalho qualquer, e um
 /// comando relativo no registro simplesmente não sobe.
-fn executavel_atual() -> Result<String> {
-    let caminho = std::env::current_exe().context("descobrindo o caminho do próprio binário")?;
-    Ok(caminho.display().to_string())
+fn executavel_atual() -> Result<std::path::PathBuf> {
+    std::env::current_exe().context("descobrindo o caminho do próprio binário")
+}
+
+/// O nome do frontend, ao lado do backend numa instalação normal.
+const FRONTEND: &str = "Ditador.Windows.exe";
+
+/// Quem deve subir no login: o frontend, se ele estiver instalado; o backend, se
+/// não estiver.
+///
+/// A chave `Run` tem **um** valor chamado `Ditador`, e dois programas o escrevem:
+/// o `instalar.ps1` (com `-IniciarComOWindows`) e este módulo, quando alguém liga
+/// o interruptor na tela de configurações. O último a escrever vence — então, se
+/// os dois não apontarem para o mesmo lugar, ligar o interruptor por dentro
+/// trocaria silenciosamente o que sobe no login.
+///
+/// E a troca não seria inofensiva. Subindo só o `ditador.exe`, o ditado funciona
+/// — atalho, áudio, Whisper, área de transferência —, mas não há ícone na área de
+/// notificação nem aviso na tela, porque quem desenha as duas coisas no Windows é
+/// o frontend. O usuário ligaria "iniciar com o Windows" e perderia a interface.
+///
+/// O contrário é seguro: o frontend sobe o backend sozinho quando percebe que ele
+/// não está no ar, e faz isso **uma vez**. Por isso, havendo os dois, quem entra
+/// na chave é o frontend — a mesma escolha que o `instalar.ps1` faz, e pelo mesmo
+/// motivo.
+fn quem_deve_subir() -> Result<String> {
+    Ok(escolher(&executavel_atual()?).display().to_string())
+}
+
+/// A decisão em si, separada para poder ser testada sem depender de onde o
+/// binário do teste está.
+fn escolher(eu: &std::path::Path) -> std::path::PathBuf {
+    // `ditador.exe` e `Ditador.Windows.exe` moram na mesma pasta desde o
+    // `instalar.ps1`. Não havendo o frontend ali — quem compilou só o Rust, ou
+    // roda o binário de dentro do `target\release` —, sobe o backend mesmo, que
+    // é melhor do que não subir nada.
+    let frontend = eu.with_file_name(FRONTEND);
+    if frontend.is_file() {
+        frontend
+    } else {
+        eu.to_path_buf()
+    }
 }
 
 /// Põe o comando entre aspas, para que um caminho com espaço não seja partido.
@@ -222,6 +261,35 @@ mod tests {
             citar(r"C:\Program Files\Ditador\ditador.exe"),
             "\"C:\\Program Files\\Ditador\\ditador.exe\""
         );
+    }
+
+    #[test]
+    fn havendo_frontend_ao_lado_e_ele_quem_sobe_no_login() {
+        // O interruptor da tela de configurações e o `instalar.ps1` escrevem no
+        // mesmo valor da chave `Run`. Apontando para lugares diferentes, o
+        // último a escrever venceria — e ligar o interruptor por dentro deixaria
+        // a sessão subindo o backend sem o ícone e sem o aviso na tela.
+        let pasta = std::env::temp_dir().join("ditador-teste-autostart");
+        let _ = std::fs::create_dir_all(&pasta);
+        let backend = pasta.join("ditador.exe");
+        let frontend = pasta.join(FRONTEND);
+
+        let _ = std::fs::remove_file(&frontend);
+        assert_eq!(
+            escolher(&backend),
+            backend,
+            "sem o frontend instalado, quem sobe é o próprio backend"
+        );
+
+        std::fs::write(&frontend, b"").expect("criando um frontend de mentira");
+        assert_eq!(
+            escolher(&backend),
+            frontend,
+            "havendo frontend, é ele que sobe — ele acorda o backend sozinho"
+        );
+
+        let _ = std::fs::remove_file(&frontend);
+        let _ = std::fs::remove_dir(&pasta);
     }
 
     #[test]
