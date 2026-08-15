@@ -343,6 +343,16 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
   troca é feita no `WM_SETTINGCHANGE` com `ImmersiveColorSet` — e mudar só a
   chave do registro não a dispara, é preciso a difusão (foi assim que o teste
   passou a valer).
+- **A colagem automática do Windows (`SendInput`) solta o que atrapalha antes do
+  Ctrl+V, e devolve depois.** Shift/Alt/Win segurados na hora da colagem virariam
+  Ctrl+Shift+V (que é "colar sem formatação" em metade dos programas) — e quem
+  grava por alternar com um atalho de modificador está com a mão nele justamente
+  nesse instante. Um Ctrl já segurado é **aproveitado**, não reapertado: apertar
+  por cima e soltar no fim deixa o sistema achando que a pessoa soltou uma tecla
+  que ela ainda segura. E as teclas da direita e as Win precisam de
+  `KEYEVENTF_EXTENDEDKEY`, senão soltar o Alt direito solta o esquerdo e o direito
+  fica preso. Tudo isso é `montar_sequencia`, com testes; não a simplifique para
+  "Ctrl↓ V↓ V↑ Ctrl↑".
 - **`dbus::start` vem antes de `tray::start` em `main.rs`.** É o D-Bus que descobre se alguma integração já
   está no ar; descobrindo primeiro, a bandeja nasce sabendo e o ícone não pisca na barra no login.
   No Plasma isto é ainda mais apertado do que no GNOME, e é o que faz o widget não piscar: o

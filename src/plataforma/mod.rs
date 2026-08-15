@@ -23,7 +23,7 @@
 //! | `autostart` | serviço do systemd ou `.desktop` do XDG | `HKCU\…\Run` |
 //! | `tray` | StatusNotifierItem (ksni) | quem mostra o ícone é o frontend |
 //! | `integracoes` | nomes no barramento D-Bus | presença do frontend no pipe |
-//! | `clipboard` | `wl-copy` / `ydotool` | Win32, pelo `arboard` |
+//! | `clipboard` | `wl-copy` / `ydotool` | `arboard` / `SendInput` |
 //!
 //! Os nomes vieram dos módulos que já existiam no topo de `src/`, e ficaram como
 //! estavam de propósito: mover um arquivo é necessário para o Windows compilar,

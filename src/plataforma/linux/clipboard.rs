@@ -83,6 +83,15 @@ pub fn colar() -> Result<()> {
 pub const COMO_HABILITAR_A_COLAGEM: &str =
     "Colagem automática requer o ydotool: sudo apt install ydotool";
 
+/// O que a colagem automática faz nesta plataforma, e o que ela custa.
+///
+/// Aparece nas configurações quando a chave é ligada e no `--diagnostico`. O
+/// Windows tem a versão dele, com outras ressalvas — as duas plataformas colam,
+/// mas por caminhos que falham de maneiras diferentes.
+pub const SOBRE_A_COLAGEM: &str = "O Ctrl+V vai pelo ydotool, que precisa do serviço ativo — confira com \
+     systemctl --user status ydotool — e chega na janela que estiver em foco \
+     quando a transcrição terminar.";
+
 /// Aviso de que a cópia está indo por um caminho pior, se estiver.
 pub fn aviso_da_copia() -> Option<&'static str> {
     (!crate::programas::existe("wl-copy"))

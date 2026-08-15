@@ -1183,6 +1183,11 @@ impl App {
                     "Com a colagem automática a janela de resultado não aparece — \
                      o texto vai direto para onde você estava escrevendo.",
                 ));
+                // As ressalvas da plataforma, ditas antes de a chave valer e não
+                // depois de o texto ter ido para a janela errada. Elas não são as
+                // mesmas no Linux e no Windows, e por isso quem as escreve é a
+                // plataforma.
+                ui.label(nota(clipboard::SOBRE_A_COLAGEM));
             }
 
             if let Some(aviso) = clipboard::aviso_da_copia() {

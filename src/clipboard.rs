@@ -11,7 +11,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::plataforma::clipboard as nativo;
 
-pub use nativo::COMO_HABILITAR_A_COLAGEM;
+pub use nativo::{COMO_HABILITAR_A_COLAGEM, SOBRE_A_COLAGEM};
 
 static ARBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
 
@@ -51,8 +51,10 @@ pub fn copy(text: &str) -> Result<()> {
 
 /// Dá para colar sozinho na janela em foco?
 ///
-/// No Linux depende do `ydotool` estar instalado; no Windows é sempre `false`, e
-/// por decisão — o porquê está em `plataforma/windows/clipboard.rs`.
+/// No Linux depende do `ydotool` estar instalado; no Windows o `SendInput` é do
+/// próprio sistema e a resposta é sempre sim. O que muda de um para o outro — e
+/// o que cada um custa — está em `SOBRE_A_COLAGEM`, que a interface mostra na
+/// hora de ligar a chave.
 pub fn paste_available() -> bool {
     nativo::colagem_disponivel()
 }

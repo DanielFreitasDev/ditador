@@ -53,7 +53,7 @@ interface do egui, regras de transcrição. O que muda mora todo em
 | Aviso de gravação | OSD da extensão do GNOME | janela `WS_EX_NOACTIVATE` do frontend |
 | Integração de desktop | nomes no barramento D-Bus | presença do assinante no pipe |
 | Início automático | systemd `--user` ou `.desktop` do XDG | `HKCU\…\CurrentVersion\Run` |
-| Colagem automática | `ydotool` (opcional) | não existe, por decisão |
+| Colagem automática | `ydotool` (opcional) | `SendInput` (Ctrl+V sintético) |
 | Área de transferência | `wl-copy`, com `arboard` de reserva | `arboard` |
 | Configuração | `~/.config/ditador/` | `%APPDATA%\ditador\` |
 | Modelos | `~/.local/share/ditador/models/` | `%LOCALAPPDATA%\ditador\models\` |
@@ -546,21 +546,51 @@ APIs não documentadas do `uxtheme` (ordinais 133/135), e o Ditador não usa API
 não documentada — o preço seria quebrar numa atualização do Windows sem aviso. O
 painel de status, que é WinUI, segue o tema corretamente.
 
-### A colagem automática não existe no Windows
+### A colagem automática, por `SendInput`
 
-No Linux o Ditador cola com `ydotool`, que é opcional e que o usuário escolhe
-instalar. O equivalente aqui seria `SendInput` sintetizando Ctrl+V, e ele fica de
-fora por três motivos:
+No Linux o Ditador cola com o `ydotool`; aqui quem faz o mesmo trabalho é o
+`SendInput`, a API documentada para entrada sintética — a mesma que o teclado na
+tela do Windows usa. A chave é a mesma dos dois lados, vem desligada nos dois, e
+o que ela custa aparece na tela antes de a pessoa ligá-la
+(`SOBRE_A_COLAGEM`, em `src/plataforma/windows/clipboard.rs`).
 
-* vai para **onde o foco estiver** no instante em que a transcrição termina, que
-  não é necessariamente onde estava quando a pessoa começou a falar — o texto
-  acabaria numa conversa, num campo de senha, num terminal;
-* não alcança janelas de integridade mais alta (UIPI): não aparece, sem erro
-  nenhum, e "não funciona às vezes" é pior que "não existe";
-* o Ditador já lê o teclado globalmente por Raw Input; somar escrita sintética a
-  isso é o par exato que dispara heurística de antivírus.
+Três arestas, e o que se faz com cada uma:
 
-O texto vai para a área de transferência e o Ctrl+V é da pessoa.
+* **o foco é o que estiver na frente na hora.** Ditar uma frase longa e trocar de
+  janela no meio manda o texto para a janela nova. Não tem conserto — quem cola é
+  o teclado, e o teclado escreve onde o foco está. É idêntico ao `ydotool`, e é a
+  primeira frase do aviso;
+* **UIPI.** `SendInput` não alcança processos de integridade mais alta: num editor
+  aberto como administrador o texto não apareceria, sem erro nenhum. O
+  `foco_inalcancavel` pergunta antes — um processo elevado recusa até o
+  `PROCESS_QUERY_LIMITED_INFORMATION` com `ERROR_ACCESS_DENIED`, e quem recusa
+  isso recusa nossas teclas —, e o que a pessoa recebe é a janela de resultado com
+  o texto e a explicação, em vez de silêncio. Se o foco mudar entre a pergunta e o
+  envio, o próprio `SendInput` devolve zero e o `enviar` diz a mesma coisa;
+* **antivírus.** Injeção de teclado é comportamento de *keylogger* para as
+  heurísticas, e o Ditador já lê o teclado globalmente por Raw Input. Está na
+  terceira frase do aviso, e é o motivo de a chave continuar vindo desligada.
+
+**As teclas já seguradas são resolvidas antes.** Um Ctrl+V solto no meio de um
+Shift segurado vira Ctrl+Shift+V — "colar sem formatação" em metade dos programas
+e nada na outra metade —, e quem grava por *alternar* com um atalho de modificador
+ainda está com a mão nele quando a transcrição termina. `montar_sequencia` solta
+Shift/Alt/Win antes e os devolve depois, na ordem inversa; um Ctrl já segurado é
+aproveitado em vez de reapertado, para o sistema não passar a achar que a pessoa
+soltou uma tecla que ela ainda segura. As teclas da direita e as Win levam
+`KEYEVENTF_EXTENDEDKEY`, senão soltar o Alt direito soltaria o esquerdo e o
+direito ficaria preso.
+
+O Ctrl+V sintético volta pela nossa própria escuta de Raw Input, com `hDevice`
+nulo. A máquina de teclas conta origens por dispositivo justamente por isso (a
+mesma defesa que o teclado virtual do `ydotool` exige no Linux), então o "soltar"
+sintético não derruba a tecla que a pessoa esteja segurando de verdade.
+
+Como foi verificado: os testes de unidade cobrem a sequência montada em cada
+situação de teclado; o teste `o_windows_aceita_as_teclas_que_montamos`
+(`#[ignore]`, porque digita) manda a estrutura `INPUT` para o Windows de verdade;
+e a colagem ponta a ponta foi conferida à mão, com o texto chegando ao campo de
+uma janela em primeiro plano.
 
 ### Empacotado ou não: por que o padrão não é MSIX
 
@@ -636,7 +666,7 @@ residente é a coluna do working set.
 O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
 3060, um monitor a 1920×1080 em 100%):
 
-- [x] `cargo fmt`, `cargo test` (84) e `cargo clippy` limpos
+- [x] `cargo fmt`, `cargo test` (89) e `cargo clippy` limpos
 - [x] `dotnet build` Debug e Release, **zero avisos** (o projeto trata aviso como
       erro), e `dotnet test` com 22 testes da leitura do protocolo
 - [x] o atalho global **com um teclado de verdade**, com o programa completo no
@@ -672,12 +702,28 @@ O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
       configuração e os 574 MB do modelo onde estão, conferido depois de rodar
 - [x] MSIX gerado e assinado com certificado de teste
 - [x] memória e CPU em repouso medidas
+- [x] **a colagem automática chegando a uma janela de verdade**: com um marcador
+      na área de transferência e um formulário com campo de texto em primeiro
+      plano, o `colar()` do Ditador foi disparado e o texto apareceu no campo,
+      inteiro. O trabalho de pôr a janela em primeiro plano é do arranjo do teste
+      (`AttachThreadInput` + `SetForegroundWindow`), não do Ditador — um processo
+      em segundo plano não toma o foco sozinho, e sem isso o Ctrl+V vai para a
+      janela de quem estiver usando o computador, que é exatamente o que o aviso
+      da tela diz
+- [x] **a colagem no ciclo completo do ditado**, com o programa instalado: falar,
+      soltar a tecla e o texto aparecer sozinho onde o cursor estava. Como o
+      atalho global, este é um teste de gente — exige microfone e voz
 - [x] troca de tema do sistema: com a difusão de `WM_SETTINGCHANGE`, o ícone
       passa para o conjunto claro e volta para o escuro (conferido no log —
       mudar só a chave do registro **não** dispara a mensagem, e foi assim que o
       primeiro teste passou sem testar nada)
 
 O que **não** foi verificado, e por quê:
+
+- **A recusa por UIPI**: exigiria um editor aberto como administrador e uma
+  elevação nesta sessão. `foco_inalcancavel` foi escrito a partir do
+  comportamento documentado do `OpenProcess`, e o `enviar` tem a segunda linha de
+  defesa para quando o foco muda entre a pergunta e o envio.
 
 - **DPI diferente de 100%** e **múltiplos monitores**: esta máquina tem um
   monitor a 100%. O código usa `GetDpiForWindow`, `GetSystemMetricsForDpi` e a

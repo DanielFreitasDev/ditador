@@ -447,9 +447,11 @@ quando o tema do sistema ainda não tem os nossos.
 
 ## Limitações conhecidas
 
-- **Colagem automática** (desligada por padrão) depende do `ydotool` e de a
-  janela em foco continuar sendo a sua — a sobreposição pode roubar o foco em
-  alguns gerenciadores de janela. A cópia automática não tem esse problema.
+- **Colagem automática** (desligada por padrão) depende de a janela em foco
+  continuar sendo a sua — a sobreposição pode roubar o foco em alguns
+  gerenciadores de janela. No Linux ela também exige o `ydotool`; no Windows usa o
+  `SendInput` do próprio sistema, que não alcança janelas abertas como
+  administrador. A cópia automática não tem nenhum desses problemas.
 - O microfone é aberto no momento em que você pressiona a tecla; em máquinas
   lentas isso pode cortar a primeira sílaba.
 - Trocar de modelo com o programa aberto libera o contexto anterior da GPU; se

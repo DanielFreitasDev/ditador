@@ -120,7 +120,8 @@ pub struct Config {
     pub translate: bool,
     /// Copiar o resultado para a área de transferência automaticamente.
     pub auto_copy: bool,
-    /// Após copiar, colar automaticamente na janela em foco (usa ydotool).
+    /// Após copiar, colar automaticamente na janela em foco (ydotool no Linux,
+    /// SendInput no Windows).
     pub auto_paste: bool,
     /// Abrir a janela com o texto ao terminar de transcrever. Desligue quando a
     /// cópia automática já resolve: o texto vai para a área de transferência e

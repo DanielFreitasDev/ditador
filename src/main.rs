@@ -497,10 +497,10 @@ fn diagnostico() -> Result<()> {
     ///
     /// `None` é informativo: a linha aparece, com `--` na frente, e **não** pesa
     /// no veredito. Existe porque nem tudo que não está lá é problema — a
-    /// colagem automática no Windows não existe por decisão de projeto, e a
-    /// leitura do teclado não é mensurável de dentro deste processo. Marcá-las
-    /// com `!!` faria o comando terminar dizendo "há o que resolver" numa
-    /// máquina onde não há, que é justamente o erro que ele existe para evitar.
+    /// colagem automática no Linux é um extra opcional, e a leitura do teclado
+    /// não é mensurável de dentro deste processo. Marcá-las com `!!` faria o
+    /// comando terminar dizendo "há o que resolver" numa máquina onde não há, que
+    /// é justamente o erro que ele existe para evitar.
     fn linha(situacao: Option<bool>, titulo: &str, detalhe: &str) -> bool {
         println!(
             "{} {titulo}\n    {detalhe}",
@@ -579,15 +579,14 @@ fn diagnostico() -> Result<()> {
             .unwrap_or("funcionando pelo caminho nativo desta área de trabalho."),
     );
     linha(
-        // Informativo quando não há: no Windows a colagem automática não existe
-        // por decisão de projeto, e no Linux ela é um extra que o usuário
-        // escolhe instalar. Nos dois casos, "não tem" não é defeito.
+        // Informativo quando não há: no Linux a colagem é um extra que o usuário
+        // escolhe instalar, e "não tem" não é defeito — dá para ditar sem ela.
         clipboard::paste_available().then_some(true),
         "Colagem automática",
-        if clipboard::paste_available() {
-            "disponível. Ela também precisa do serviço: systemctl --user status ydotool"
+        &if clipboard::paste_available() {
+            format!("disponível. {}", clipboard::SOBRE_A_COLAGEM)
         } else {
-            clipboard::COMO_HABILITAR_A_COLAGEM
+            clipboard::COMO_HABILITAR_A_COLAGEM.to_string()
         },
     );
 
