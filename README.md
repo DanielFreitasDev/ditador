@@ -5,7 +5,7 @@
 <h1 align="center">Ditador</h1>
 
 <p align="center">
-  Ditado por voz <b>offline</b> para Ubuntu/GNOME, em Rust, com o Whisper na GPU.<br>
+  Ditado por voz <b>offline</b> para Linux e Windows, em Rust, com o Whisper na GPU.<br>
   Segure <b>Pause/Break</b>, fale, solte. Nada sai da sua máquina.
 </p>
 
@@ -199,6 +199,38 @@ carregar a camada de compatibilidade do Plasma 5). Por isso a instalação pede 
 senha **uma vez**, para pôr o plugin no diretório de módulos QML do Qt, e por
 isso ele não é distribuível pela KDE Store como um widget puro. Nada disso vale
 em execução: a integração nunca chama `sudo`, `pkexec` nem shell nenhum.
+
+### Windows 11
+
+> **Em andamento.** O núcleo em Rust compila, roda e transcreve no Windows; o
+> ícone na área de notificação e o aviso de gravação na tela ainda não existem.
+> Hoje o Ditador funciona lá por atalho, transcrição e área de transferência, mas
+> não aparece na barra. Não há pacote pronto — quem quiser usar, compila.
+
+O mesmo código de domínio, com a plataforma trocada por baixo: **Raw Input** no
+lugar do evdev, **named pipe** no lugar do socket Unix, a chave `Run` do usuário
+no lugar do systemd. Nada de WSL, de D-Bus instalado à força nem de camada de
+compatibilidade — as duas APIs são diferentes e o que atravessa a fronteira é o
+propósito, não a chamada.
+
+O atalho é o mesmo `Pause/Break`, com a mesma semântica de segurar para falar, e
+o `config.json` é compatível nos dois sentidos: uma configuração escrita no
+Ubuntu vale no Windows e vice-versa.
+
+```powershell
+.\windows-integration\scripts\build.ps1     # Vulkan, o padrão
+```
+
+Compilar o whisper.cpp no Windows tem cinco armadilhas, e cada uma falha com uma
+mensagem que aponta para o lugar errado — de `libclang` ausente a um estouro de
+`MAX_PATH` que se anuncia como erro de PDB. Estão todas resolvidas no script e
+explicadas uma a uma em
+[`windows-integration/README.md`](windows-integration/README.md), junto com a
+arquitetura, a ACL do named pipe e o que falta.
+
+Uma medida que vale registrar aqui: numa RTX 3060, transcrevendo 17,7 s de fala,
+o **Vulkan leva 0,42 s e o CUDA 0,47 s** — o Vulkan ganha, o que contraria a
+suposição comum sobre NVIDIA. A CPU leva 18,9 s, ou seja, não serve para ditar.
 
 Nas configurações dá para trocar o atalho (clique no botão e pressione a nova
 tecla ou combinação), o idioma, o microfone, o modelo, ligar a colagem
