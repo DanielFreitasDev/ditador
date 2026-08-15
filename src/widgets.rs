@@ -19,7 +19,12 @@ use egui::{
 const ANIM: f32 = 0.12;
 
 /// Altura dos botões e dos campos de uma linha.
-const ALTURA: f32 = 36.0;
+///
+/// Pública porque as telas descontam a fileira de botões da altura disponível,
+/// e o número estava copiado à mão em duas contas de `ui.rs`. O commit que
+/// consertou "a tela de primeira execução não cabia na janela" é essa família
+/// de erro já tendo chegado ao usuário.
+pub const ALTURA: f32 = 36.0;
 
 // ---------------------------------------------------------------------- botão
 
@@ -84,14 +89,14 @@ impl egui::Widget for Botao {
         }
 
         let ativo = ui.is_enabled();
-        let realce = animar(ui, &resposta, ativo && resposta.hovered());
+        let energia_realce = realce(ui, &resposta, ativo);
         let pressao = animar_com(
             ui,
             resposta.id.with("pressao"),
             ativo && resposta.is_pointer_button_down_on(),
             0.05,
         );
-        let energia = (realce + pressao).min(1.0);
+        let energia = (energia_realce + pressao).min(1.0);
 
         let p = paleta();
         let (fundo, borda, cor_texto) = match self.peso {
@@ -130,6 +135,7 @@ impl egui::Widget for Botao {
 
         let pos = rect.center() - galley.size() / 2.0;
         painter.galley(pos.round(), galley, esmaecer(cor_texto, ativo));
+        anel_de_foco(ui, rect, raio, &resposta);
         resposta
     }
 }
@@ -157,9 +163,15 @@ pub fn botao_icone(ui: &mut Ui, icone: Icone, dica: &str) -> Response {
     }
 
     let ativo = ui.is_enabled();
-    let realce = animar(ui, &resposta, ativo && resposta.hovered());
+    let realce = realce(ui, &resposta, ativo);
     let p = paleta();
 
+    anel_de_foco(
+        ui,
+        rect,
+        CornerRadius::same((rect.height() / 2.0) as u8),
+        &resposta,
+    );
     let painter = ui.painter();
     if realce > 0.0 {
         painter.circle_filled(
@@ -261,7 +273,7 @@ pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<String>) ->
     }
 
     let ativo = ui.is_enabled();
-    let realce = animar(ui, &resposta, ativo && resposta.hovered());
+    let realce = realce(ui, &resposta, ativo);
     let t = animar_com(ui, resposta.id.with("ligado"), *ligado, 0.15);
 
     let p = paleta();
@@ -275,6 +287,12 @@ pub fn interruptor(ui: &mut Ui, ligado: &mut bool, rotulo: impl Into<String>) ->
     let trilho = Rect::from_center_size(
         Pos2::new(rect.right() - TRILHO.x / 2.0, rect.center().y),
         TRILHO,
+    );
+    anel_de_foco(
+        ui,
+        trilho,
+        CornerRadius::same((TRILHO.y / 2.0) as u8),
+        &resposta,
     );
     let raio = trilho.height() / 2.0;
     let desligado = mistura(p.superficie_forte, p.borda_forte, 0.4 * realce);
@@ -436,7 +454,13 @@ pub fn segmentado<T: PartialEq + Copy>(
         }
 
         let escolhida = *valor == *opcao;
-        let realce = animar(ui, &clique, ui.is_enabled() && clique.hovered());
+        let realce = realce(ui, &clique, ui.is_enabled());
+        anel_de_foco(
+            ui,
+            celula,
+            CornerRadius::same(tema::RAIO_CONTROLE - 3),
+            &clique,
+        );
         if escolhida {
             painter.rect_filled(celula, CornerRadius::same(tema::RAIO_CONTROLE - 3), p.fundo);
             painter.rect_stroke(
@@ -555,6 +579,35 @@ fn esmaecer(cor: Color32, ativo: bool) -> Color32 {
 
 fn animar(ui: &Ui, resposta: &Response, condicao: bool) -> f32 {
     animar_com(ui, resposta.id.with("realce"), condicao, ANIM)
+}
+
+/// A energia do realce de um controle: cursor em cima **ou** foco do teclado.
+///
+/// O foco entrava na conta de nenhum controle nosso, embora `Sense::click()`
+/// no egui já os torne alcançáveis por Tab e o Espaço os acione. O resultado
+/// era um foco invisível passeando por Salvar, Cancelar e "Encerrar o
+/// Ditador" — dava para fechar o aplicativo com a barra de espaço sem nada na
+/// tela indicando onde o foco estava.
+fn realce(ui: &Ui, resposta: &Response, ativo: bool) -> f32 {
+    let aceso = ativo && (resposta.hovered() || resposta.has_focus());
+    animar(ui, resposta, aceso)
+}
+
+/// Anel de foco, desenhado por fora do controle.
+///
+/// Fica do lado de fora para não disputar espaço com a borda: os controles
+/// deste projeto são cápsulas de um pixel de borda, e um anel por dentro
+/// sumiria dentro dela.
+fn anel_de_foco(ui: &Ui, rect: Rect, raio: CornerRadius, resposta: &Response) {
+    if !resposta.has_focus() {
+        return;
+    }
+    ui.painter().rect_stroke(
+        rect.expand(3.0),
+        raio,
+        Stroke::new(2.0, paleta().primario),
+        StrokeKind::Outside,
+    );
 }
 
 fn animar_com(ui: &Ui, id: egui::Id, condicao: bool, tempo: f32) -> f32 {

@@ -70,20 +70,39 @@ pub fn baixar(modelo: &str, sinal: Sinal) -> (Andamento, crossbeam_channel::Rece
     let endereco = url(modelo);
     let saida = andamento.clone();
 
-    let _ = std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("baixar-modelo".into())
-        .spawn(move || {
-            let resultado = executar(&endereco, &destino, &saida, &sinal);
-            if let Ok(pronto) = &resultado {
-                let _ = tx.send(pronto.clone());
+        .spawn({
+            let saida = saida.clone();
+            move || {
+                let resultado = executar(&endereco, &destino, &saida, &sinal);
+                if let Ok(pronto) = &resultado {
+                    let _ = tx.send(pronto.clone());
+                }
+                if let Err(e) = &resultado {
+                    log::error!("o download do modelo falhou: {e:#}");
+                }
+                saida
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .fim
+                    .replace(resultado.map_err(|e| format!("{e:#}")));
+                sinal.mudou();
             }
-            saida
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .fim
-                .replace(resultado.map_err(|e| format!("{e:#}")));
-            sinal.mudou();
         });
+
+    // A thread que não nasce precisa marcar o fim, senão `andando()` fica
+    // verdadeiro para sempre: a barra congela em zero, o botão de baixar some
+    // (porque um download está "em curso") e a tela vira um beco sem saída até
+    // alguém reiniciar o programa.
+    if let Err(e) = thread {
+        log::error!("não consegui iniciar o download: {e}");
+        saida
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .fim
+            .replace(Err(format!("não consegui iniciar o download: {e}")));
+    }
 
     (andamento, rx)
 }
@@ -101,26 +120,59 @@ fn executar(
     if let Some(pasta) = destino.parent() {
         std::fs::create_dir_all(pasta)?;
     }
-    let parcial = destino.with_extension("parcial");
+
+    // O temporário leva o número do processo. Com um nome fixo, o botão da
+    // janela e um `ditador --baixar-modelo` num terminal — que é justamente o
+    // que a pessoa faz quando a janela parece travada — apontavam para o mesmo
+    // arquivo: o segundo apagava o do primeiro, o progresso passava a medir o
+    // arquivo errado, e quem terminasse antes renomeava para o destino um
+    // arquivo que o outro ainda estava escrevendo.
+    let parcial = destino.with_extension(format!("{}.parcial", std::process::id()));
     // Um download interrompido antes deixaria um arquivo pela metade, e a
     // retomada precisaria de um cabeçalho Range combinando com ele. Recomeçar é
     // mais simples e mais seguro do que adivinhar se o pedaço serve.
     let _ = std::fs::remove_file(&parcial);
 
-    if let Some(total) = tamanho(prog, endereco) {
+    let total = tamanho(prog, endereco);
+    if let Some(total) = total {
         andamento.lock().unwrap_or_else(|e| e.into_inner()).total = total;
         sinal.mudou();
     }
 
     let mut filho = match prog {
+        // Os prazos importam: sem eles, uma conexão que abre e para de entregar
+        // bytes deixa a barra congelada até o keepalive do kernel desistir —
+        // dez minutos ou mais —, e nesse meio-tempo o programa recusa começar
+        // outro download porque este ainda está "andando".
         "curl" => Command::new("curl")
-            .args(["-L", "--fail", "--silent", "--show-error", "-o"])
+            .args([
+                "-L",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--connect-timeout",
+                "20",
+                // Menos de 1 kB/s por 60 s seguidos é conexão morta.
+                "--speed-limit",
+                "1024",
+                "--speed-time",
+                "60",
+                "--retry",
+                "2",
+                "-o",
+            ])
             .arg(&parcial)
             .arg(endereco)
             .stderr(Stdio::piped())
             .spawn()?,
         _ => Command::new("wget")
-            .args(["--quiet", "-O"])
+            .args([
+                "--quiet",
+                "--timeout=20",
+                "--read-timeout=60",
+                "--tries=3",
+                "-O",
+            ])
             .arg(&parcial)
             .arg(endereco)
             .stderr(Stdio::piped())
@@ -162,8 +214,46 @@ fn executar(
         }
     }
 
+    conferir(&parcial, total).inspect_err(|_| {
+        let _ = std::fs::remove_file(&parcial);
+    })?;
     std::fs::rename(&parcial, destino)?;
     Ok(destino.to_path_buf())
+}
+
+/// O arquivo baixado é mesmo um modelo GGML inteiro?
+///
+/// Sem esta conferência, qualquer arquivo ruim que chegasse ao destino trancava
+/// a instalação inteira: `modelo_faltando` decide só por `exists()`, então o
+/// botão de baixar nunca mais aparecia; `--baixar-modelo` e o script respondiam
+/// "já existe"; e o único botão restante recarregava eternamente o mesmo
+/// arquivo, enquanto a tela de configurações dizia "Arquivo encontrado".
+fn conferir(parcial: &Path, total: Option<u64>) -> anyhow::Result<()> {
+    use std::io::Read as _;
+
+    let tamanho_real = std::fs::metadata(parcial)?.len();
+    if let Some(total) = total
+        && total != tamanho_real
+    {
+        anyhow::bail!(
+            "o download veio incompleto ({} de {}); tente de novo",
+            tamanho_legivel(tamanho_real),
+            tamanho_legivel(total)
+        );
+    }
+
+    // Todo modelo do whisper.cpp começa com a assinatura "ggml" (0x67676d6c).
+    // Pega o caso em que um proxy ou portal cativo entregou uma página HTML com
+    // o status 200 que o `--fail` do curl não recusa.
+    let mut assinatura = [0u8; 4];
+    std::fs::File::open(parcial)?.read_exact(&mut assinatura)?;
+    if &assinatura != b"ggml" {
+        anyhow::bail!(
+            "o arquivo baixado não é um modelo do Whisper — \
+             a rede pode ter devolvido uma página no lugar dele"
+        );
+    }
+    Ok(())
 }
 
 /// Tamanho anunciado pelo servidor, para a barra ter escala. Sem isto o

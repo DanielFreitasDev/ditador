@@ -1,11 +1,19 @@
-//! Captura do microfone com cpal, convertida para mono 16 kHz.
+//! Captura do microfone com cpal, reduzida a mono.
+//!
+//! O áudio sai daqui na taxa do próprio dispositivo, e não nos 16 kHz que o
+//! Whisper exige: reamostrar custa uma centena de multiplicações por amostra de
+//! saída, e fazer isso aqui prenderia a thread que atende os comandos — que é a
+//! mesma que precisa estar pronta para abrir o microfone de novo. Falar outra
+//! frase enquanto a anterior é transcrita é o uso normal do programa, então a
+//! conversão foi para o lado de quem transcreve (ver `stt.rs`), que já ia
+//! esperar mesmo.
 
 use crate::config::WHISPER_SAMPLE_RATE;
-use crate::resample;
 use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,7 +26,6 @@ pub type Levels = Arc<Mutex<VecDeque<f32>>>;
 pub struct AudioSettings {
     pub device: Option<String>,
     pub max_secs: u64,
-    pub normalize: bool,
 }
 
 #[derive(Debug)]
@@ -37,7 +44,9 @@ pub enum AudioEvent {
     Started,
     Captured {
         ditado: u64,
+        /// Mono, na taxa do dispositivo — quem reamostra é o `stt`.
         samples: Vec<f32>,
+        sample_rate: u32,
         duration_ms: u64,
     },
     Failed {
@@ -71,15 +80,80 @@ pub fn spawn(settings: AudioSettings, events: Sender<AudioEvent>) -> AudioHandle
 }
 
 /// Lista os microfones disponíveis, para o seletor das configurações.
+///
+/// Os nomes repetidos são desfeitos aqui. O ALSA anuncia o mesmo microfone em
+/// vários PCMs — `hw:`, `plughw:`, `sysdefault:`, `dsnoop:` — e a primeira linha
+/// da descrição é idêntica em todos: num aparelho comum saíam sete entradas
+/// iguais na lista, todas marcadas como escolhidas ao mesmo tempo. Pior, como o
+/// que se grava na configuração é o nome, a busca sempre recaía sobre a
+/// primeira da enumeração, que costuma ser o `hw:` cru — acesso exclusivo, sem
+/// conversão de taxa — e não havia como escolher a que funcionaria.
 pub fn list_input_devices() -> Vec<String> {
-    let host = cpal::default_host();
-    match host.input_devices() {
-        Ok(devices) => devices.filter_map(|d| device_name(&d)).collect(),
-        Err(e) => {
-            log::warn!("não consegui listar microfones: {e}");
-            Vec::new()
-        }
+    rotular(cpal::default_host().input_devices().ok())
+        .into_iter()
+        .map(|(rotulo, _)| rotulo)
+        .collect()
+}
+
+/// Acha o dispositivo pelo rótulo que a configuração guardou.
+///
+/// Se o rótulo exato não estiver mais lá, vale o nome sem o sufixo de desempate:
+/// o ALSA renumera os PCMs entre sessões (`hw:CARD=2` hoje, `hw:CARD=Generic_1`
+/// amanhã), e é o mesmo microfone. Melhor gravar no aparelho certo por um
+/// caminho diferente do que dizer que ele sumiu.
+fn achar_dispositivo(host: &cpal::Host, procurado: &str) -> Option<cpal::Device> {
+    let candidatos = rotular(host.input_devices().ok());
+    if let Some((_, device)) = candidatos.iter().find(|(rotulo, _)| rotulo == procurado) {
+        return Some(device.clone());
     }
+
+    let base = procurado
+        .split_once(" (")
+        .map_or(procurado, |(nome, _)| nome);
+    let achado = candidatos
+        .iter()
+        .find(|(rotulo, _)| rotulo.split_once(" (").map_or(rotulo.as_str(), |(n, _)| n) == base);
+    if let Some((rotulo, device)) = achado {
+        log::info!("o microfone \"{procurado}\" mudou de endereço; usando \"{rotulo}\"");
+        return Some(device.clone());
+    }
+    None
+}
+
+/// Dá a cada microfone um rótulo único, na ordem em que o cpal os anuncia.
+///
+/// A lista e a busca passam as duas por aqui de propósito: se as duas regras
+/// vivessem separadas, o dia em que uma mudasse a configuração de alguém
+/// passaria a apontar para um dispositivo que a tela nunca mostrou.
+///
+/// O primeiro de cada nome fica com o nome limpo, sem sufixo, porque é ele que
+/// já está gravado nas configurações de quem usa o programa hoje.
+fn rotular(devices: Option<impl Iterator<Item = cpal::Device>>) -> Vec<(String, cpal::Device)> {
+    let Some(devices) = devices else {
+        log::warn!("não consegui listar os microfones do sistema");
+        return Vec::new();
+    };
+
+    let mut saida: Vec<(String, cpal::Device)> = Vec::new();
+    let mut vistos: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for device in devices {
+        let Some(descricao) = device.description().ok() else {
+            continue;
+        };
+        let base = descricao.name().to_string();
+        let quantos = vistos.entry(base.clone()).or_insert(0);
+        *quantos += 1;
+        let rotulo = match (*quantos, descricao.driver()) {
+            (1, _) => base,
+            // No ALSA o `driver` é o identificador do PCM (`hw:0,0`,
+            // `plughw:0,0`, `dsnoop:…`), que é exatamente o que distingue as
+            // sete entradas idênticas de um mesmo microfone.
+            (_, Some(pcm)) if !pcm.is_empty() => format!("{base} ({pcm})"),
+            (n, _) => format!("{base} #{n}"),
+        };
+        saida.push((rotulo, device));
+    }
+    saida
 }
 
 fn device_name(device: &cpal::Device) -> Option<String> {
@@ -97,12 +171,31 @@ struct Recording {
     buffer: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
     max_samples: usize,
+    /// O dispositivo sumiu no meio da gravação.
+    ///
+    /// Marcada pelo callback de erro do cpal e lida pela ronda de `run`. É por
+    /// bandeira, e não por evento mandado dali de dentro, porque quem precisa
+    /// largar o `Recording` é a thread de comandos: um `Failed` vindo do
+    /// callback zeraria o `recording_since` do controlador com o stream ainda
+    /// de pé, o `stop_recording` seguinte sairia cedo, o `Stop` nunca chegaria
+    /// aqui — e todo ditado depois disso ficaria preso em "Transcrevendo…".
+    perdido: Arc<AtomicBool>,
 }
 
 impl Recording {
     /// Bateu o teto de duração.
     fn cheia(&self) -> bool {
         lock(&self.buffer).len() >= self.max_samples
+    }
+
+    /// O microfone sumiu.
+    fn perdeu_o_dispositivo(&self) -> bool {
+        self.perdido.load(Ordering::Relaxed)
+    }
+
+    /// Quanto tempo de áudio já foi capturado.
+    fn duracao_ms(&self) -> u64 {
+        lock(&self.buffer).len() as u64 * 1000 / self.sample_rate.max(1) as u64
     }
 }
 
@@ -156,32 +249,58 @@ fn run(
 
             Some(AudioCmd::Stop) => {
                 if let Some(rec) = recording.take() {
-                    entregar(rec, &settings, &levels, &events);
+                    entregar(rec, &levels, &events);
                 }
             }
 
             // A ronda: nada chegou pelo canal.
             None => {
-                if recording.as_ref().is_some_and(Recording::cheia) {
-                    let rec = recording.take().expect("acabou de ser conferida");
+                let Some(rec) = &recording else { continue };
+                if rec.perdeu_o_dispositivo() {
+                    // O microfone sumiu no meio da frase. Antes disto o
+                    // callback de erro só escrevia no log: o `Recording`
+                    // continuava de pé, o buffer congelava, e como ele nunca
+                    // mais encheria o teto de duração também não servia de
+                    // rede. A tela seguia dizendo "Ouvindo" com o cronômetro
+                    // correndo, e o pedaço já gravado morria calado no filtro
+                    // de duração mínima.
+                    let rec = recording.take().expect("acabou de ser conferido");
+                    let ditado = rec.ditado;
+                    let tinha = rec.duracao_ms();
+                    log::warn!("o microfone sumiu no meio da gravação ({tinha} ms capturados)");
+                    // O que já foi falado não se perde: se dá uma frase, vai
+                    // para a transcrição; se não dá, aí sim é uma falha para
+                    // contar na tela.
+                    if tinha >= AVULSO_MINIMO_MS {
+                        entregar(rec, &levels, &events);
+                    } else {
+                        drop(rec);
+                        clear(&levels);
+                        let _ = events.send(AudioEvent::Failed {
+                            ditado,
+                            message: "o microfone foi desconectado".to_string(),
+                        });
+                    }
+                } else if rec.cheia() {
+                    let rec = recording.take().expect("acabou de ser conferido");
                     log::info!(
                         "teto de {} s atingido; encerrando a gravação",
                         settings.max_secs
                     );
-                    entregar(rec, &settings, &levels, &events);
+                    entregar(rec, &levels, &events);
                 }
             }
         }
     }
 }
 
-/// Fecha a gravação e manda o áudio, já em 16 kHz, para quem transcreve.
-fn entregar(
-    rec: Recording,
-    settings: &AudioSettings,
-    levels: &Levels,
-    events: &Sender<AudioEvent>,
-) {
+/// Abaixo disto, um ditado interrompido não vale a pena mandar para o Whisper —
+/// é menos que uma palavra, e o modelo devolveria alucinação.
+const AVULSO_MINIMO_MS: u64 = 400;
+
+/// Fecha a gravação e manda o áudio, ainda na taxa do dispositivo, para quem
+/// transcreve. A conversão para 16 kHz acontece lá (ver o bloco `//!`).
+fn entregar(rec: Recording, levels: &Levels, events: &Sender<AudioEvent>) {
     let ditado = rec.ditado;
     let sample_rate = rec.sample_rate;
     let buffer = rec.buffer.clone();
@@ -189,19 +308,16 @@ fn entregar(
     drop(rec);
     clear(levels);
 
-    let raw = std::mem::take(&mut *lock(&buffer));
+    let samples = std::mem::take(&mut *lock(&buffer));
     // A duração sai da contagem de amostras, e não do relógio: ao bater o teto
     // a gravação termina antes de a tecla ser solta, e o relógio contaria um
     // tempo de áudio que não existe.
-    let duration_ms = raw.len() as u64 * 1000 / sample_rate.max(1) as u64;
+    let duration_ms = samples.len() as u64 * 1000 / sample_rate.max(1) as u64;
 
-    let mut samples = resample::resample(&raw, sample_rate, WHISPER_SAMPLE_RATE);
-    if settings.normalize {
-        resample::normalize(&mut samples);
-    }
     let _ = events.send(AudioEvent::Captured {
         ditado,
         samples,
+        sample_rate,
         duration_ms,
     });
 }
@@ -210,9 +326,7 @@ fn start(ditado: u64, settings: &AudioSettings, levels: &Levels) -> Result<Recor
     let host = cpal::default_host();
 
     let device = match &settings.device {
-        Some(name) => host
-            .input_devices()?
-            .find(|d| device_name(d).as_deref() == Some(name.as_str()))
+        Some(name) => achar_dispositivo(&host, name)
             .ok_or_else(|| anyhow!("microfone \"{name}\" não encontrado"))?,
         None => host
             .default_input_device()
@@ -232,29 +346,68 @@ fn start(ditado: u64, settings: &AudioSettings, levels: &Levels) -> Result<Recor
         sample_format
     );
 
-    let buffer = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
-        sample_rate as usize * 4,
-    )));
+    // O buffer nasce já do tamanho do teto de duração. Crescer sob demanda
+    // significava `realloc` — com cópia de tudo — dentro do callback de áudio,
+    // que roda em tempo real e não pode esperar o alocador. Ao teto padrão de
+    // 120 s isso é meio megabyte, reservado enquanto o microfone está aberto.
+    let buffer = Arc::new(Mutex::new(Vec::<f32>::with_capacity(max_samples)));
+    let perdido = Arc::new(AtomicBool::new(false));
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => {
-            build::<f32>(&device, &config, &buffer, levels, channels, max_samples)
-        }
-        cpal::SampleFormat::I16 => {
-            build::<i16>(&device, &config, &buffer, levels, channels, max_samples)
-        }
-        cpal::SampleFormat::I32 => {
-            build::<i32>(&device, &config, &buffer, levels, channels, max_samples)
-        }
-        cpal::SampleFormat::I8 => {
-            build::<i8>(&device, &config, &buffer, levels, channels, max_samples)
-        }
-        cpal::SampleFormat::U8 => {
-            build::<u8>(&device, &config, &buffer, levels, channels, max_samples)
-        }
-        cpal::SampleFormat::U16 => {
-            build::<u16>(&device, &config, &buffer, levels, channels, max_samples)
-        }
+        cpal::SampleFormat::F32 => build::<f32>(
+            &device,
+            &config,
+            &buffer,
+            levels,
+            &perdido,
+            channels,
+            max_samples,
+        ),
+        cpal::SampleFormat::I16 => build::<i16>(
+            &device,
+            &config,
+            &buffer,
+            levels,
+            &perdido,
+            channels,
+            max_samples,
+        ),
+        cpal::SampleFormat::I32 => build::<i32>(
+            &device,
+            &config,
+            &buffer,
+            levels,
+            &perdido,
+            channels,
+            max_samples,
+        ),
+        cpal::SampleFormat::I8 => build::<i8>(
+            &device,
+            &config,
+            &buffer,
+            levels,
+            &perdido,
+            channels,
+            max_samples,
+        ),
+        cpal::SampleFormat::U8 => build::<u8>(
+            &device,
+            &config,
+            &buffer,
+            levels,
+            &perdido,
+            channels,
+            max_samples,
+        ),
+        cpal::SampleFormat::U16 => build::<u16>(
+            &device,
+            &config,
+            &buffer,
+            levels,
+            &perdido,
+            channels,
+            max_samples,
+        ),
         other => return Err(anyhow!("formato de amostra não suportado: {other:?}")),
     }?;
 
@@ -266,6 +419,7 @@ fn start(ditado: u64, settings: &AudioSettings, levels: &Levels) -> Result<Recor
         buffer,
         sample_rate,
         max_samples,
+        perdido,
     })
 }
 
@@ -307,11 +461,13 @@ fn format_rank(format: cpal::SampleFormat) -> u8 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     buffer: &Arc<Mutex<Vec<f32>>>,
     levels: &Levels,
+    perdido: &Arc<AtomicBool>,
     channels: usize,
     max_samples: usize,
 ) -> Result<cpal::Stream>
@@ -321,6 +477,7 @@ where
 {
     let buffer = buffer.clone();
     let levels = levels.clone();
+    let perdido = perdido.clone();
     let channels = channels.max(1);
 
     let stream = device.build_input_stream(
@@ -350,7 +507,22 @@ where
             }
             lv.push_back(peak);
         },
-        |err| log::warn!("erro no stream de entrada: {err}"),
+        move |err| {
+            // `Xrun` é rotina: o cpal reprepara o dispositivo sozinho e a
+            // gravação continua. Estes dois não — no ALSA o worker chama este
+            // callback e faz `return`, então a thread do stream morre ali e
+            // nenhuma amostra chega mais. Filtrar importa: marcar a bandeira
+            // num Xrun encerraria a gravação a cada engasgo do sistema.
+            if matches!(
+                err.kind(),
+                cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated
+            ) {
+                log::warn!("o microfone deixou de responder: {err}");
+                perdido.store(true, Ordering::Relaxed);
+            } else {
+                log::warn!("erro no stream de entrada: {err}");
+            }
+        },
         None,
     )?;
 
@@ -363,4 +535,28 @@ fn clear(levels: &Levels) {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn o_melhor_formato_de_amostra_ganha_do_pior() {
+        // Esta ordem existe porque o ALSA anuncia U8 junto com formatos bons, e
+        // pegar o primeiro da lista jogaria a gravação para 8 bits sem
+        // necessidade — algo que ninguém percebe até ouvir o resultado.
+        let mut oferta = [
+            cpal::SampleFormat::U8,
+            cpal::SampleFormat::I16,
+            cpal::SampleFormat::F32,
+            cpal::SampleFormat::I8,
+        ];
+        oferta.sort_by_key(|f| format_rank(*f));
+        assert_eq!(oferta[0], cpal::SampleFormat::F32);
+        assert_eq!(oferta[oferta.len() - 1], cpal::SampleFormat::U8);
+        // Um formato que não conhecemos vai para o fim da fila, nunca para o
+        // começo.
+        assert!(format_rank(cpal::SampleFormat::F64) >= format_rank(cpal::SampleFormat::U8));
+    }
 }

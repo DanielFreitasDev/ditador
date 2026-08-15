@@ -24,8 +24,11 @@ impl View {
             View::Result => [620.0, 372.0],
             View::Settings => [660.0, 660.0],
             // A mais alta das mensagens é a do modelo faltando: título, duas
-            // linhas de texto, os botões e ainda a nota de rodapé.
-            View::Error => [520.0, 228.0],
+            // linhas de texto, os botões e a nota de rodapé — mais o aviso do
+            // atalho, que aparece embaixo de tudo isso e é justamente o caso da
+            // primeira execução, quando o usuário ainda não está no grupo
+            // `input`. As duas linhas dele são a folga a mais aqui.
+            View::Error => [520.0, 268.0],
         };
         [w + pad, h + pad]
     }
@@ -69,6 +72,11 @@ pub struct Shared {
     pub message: String,
     /// Linha de rodapé: tempo de processamento, backend etc.
     pub status: String,
+    /// Aviso de que o atalho global não está funcionando. Mora fora do
+    /// `message` porque os dois nascem no mesmo instante do arranque — teclado
+    /// ilegível e modelo faltando — e, dividindo um campo só, o segundo apagava
+    /// o primeiro antes de alguém ler.
+    pub aviso_atalho: Option<String>,
     pub capturing_hotkey: bool,
     pub copied_at: Option<Instant>,
     /// Quando a gravação em curso começou. É ele, e não a tela, que diz se o
@@ -76,13 +84,20 @@ pub struct Shared {
     /// de um ditado em andamento.
     pub recording_since: Option<Instant>,
     /// Número do ditado em curso. Cresce a cada gravação, e volta nos eventos
-    /// do áudio, para distinguir o que é do ditado de agora e o que é de um
-    /// anterior que ainda estava a caminho.
+    /// do áudio e da transcrição, para distinguir o que é do ditado de agora e
+    /// o que é de um anterior que ainda estava a caminho.
     pub ditado_atual: u64,
+    /// A tela de erro está no ar só esperando o modelo carregar, e não por uma
+    /// falha. É o que decide se ela some sozinha quando o modelo fica pronto.
+    ///
+    /// Existe porque essa decisão já foi tomada comparando o texto exibido ao
+    /// usuário (`message.starts_with("Carregando")`), e o caminho do download
+    /// escrevia outra frase: a tela ficava presa com o emblema de erro ao lado
+    /// de uma mensagem de sucesso. Texto de interface não é lugar de guardar
+    /// estado — mudar uma vírgula na frase quebrava o fluxo em silêncio.
+    pub erro_e_so_espera: bool,
     pub result_shown_at: Option<Instant>,
     pub devices: Vec<String>,
-    /// Sinaliza para a interface que o rascunho mudou fora dela.
-    pub draft_revision: u64,
     /// Download do modelo em curso, se houver.
     pub download: Option<crate::modelo::Andamento>,
     /// Pedido de encerramento; a interface fecha a janela ao ver isto.
@@ -99,16 +114,27 @@ impl Shared {
             text: String::new(),
             message: String::new(),
             status: String::new(),
+            aviso_atalho: None,
             capturing_hotkey: false,
             copied_at: None,
             recording_since: None,
             ditado_atual: 0,
+            erro_e_so_espera: false,
             result_shown_at: None,
             devices,
-            draft_revision: 0,
             download: None,
             quitting: false,
         }
+    }
+
+    /// O microfone está aberto?
+    ///
+    /// Uma pergunta só, num lugar só. A resposta sai do `recording_since` e
+    /// nunca da tela — a armadilha que este projeto já pisou duas vezes é
+    /// justamente alguém consultar `view == View::Recording`, que é falso
+    /// enquanto a janela do ditado anterior está por cima de quem fala agora.
+    pub fn gravando(&self) -> bool {
+        self.recording_since.is_some()
     }
 }
 

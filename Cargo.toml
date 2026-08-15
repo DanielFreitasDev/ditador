@@ -5,6 +5,16 @@ edition = "2024"
 description = "Ditado por voz offline (speech-to-text) com Whisper, para Ubuntu/GNOME"
 license = "MIT"
 repository = "https://github.com/DanielFreitasDev/ditador"
+# Este é um aplicativo, não uma biblioteca: nada aqui vai para o crates.io.
+publish = false
+
+# A régua de qualidade do projeto escrita onde o compilador lê, e não só em
+# prosa no CLAUDE.md. O código já passava nas duas antes de elas existirem.
+[lints.clippy]
+all = "deny"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
 
 [features]
 # Vulkan é o padrão: usa a GPU NVIDIA/AMD/Intel sem precisar do CUDA Toolkit.

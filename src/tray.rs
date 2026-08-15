@@ -28,6 +28,17 @@ use ksni::{Category, MenuItem, OfflineReason, Status, ToolTip};
 struct Retrato {
     view: View,
     model: ModelState,
+    /// O microfone está aberto. Vem do `recording_since`, nunca da `view`.
+    ///
+    /// Sem este campo a bandeja decidia pela tela — a única fonte que o
+    /// CLAUDE.md proíbe consultar — e o controlador cria o estado divergente
+    /// nos padrões: `on_transcription` põe `View::Result` com a gravação ainda
+    /// correndo. Nesse intervalo o ícone voltava ao normal, a dica dizia
+    /// "Pronto · segure Pause" com o microfone aberto, e o item do menu
+    /// oferecia "Ditar agora" — mas o clique manda `Toggle`, que lê o
+    /// `recording_since` certinho e **para** a gravação. O rótulo prometia o
+    /// oposto do que o item fazia.
+    gravando: bool,
     atalho: String,
 }
 
@@ -37,20 +48,21 @@ impl Retrato {
         Self {
             view: estado.view,
             model: estado.model,
+            gravando: estado.gravando(),
             atalho: keys::combo_label(&estado.config.hotkey),
         }
     }
 
     fn estado(&self) -> Estado {
-        Estado::de(self.model, self.view)
+        Estado::de(self.model, self.view, self.gravando)
     }
 
     fn resumo(&self) -> String {
-        match (self.model, self.view) {
-            (ModelState::Loading, _) => "Carregando o modelo…".to_string(),
-            (ModelState::Failed, _) => "O modelo não carregou".to_string(),
-            (_, View::Recording) => "Ouvindo…".to_string(),
-            (_, View::Processing) => "Transcrevendo…".to_string(),
+        match (self.model, self.gravando, self.view) {
+            (ModelState::Loading, _, _) => "Carregando o modelo…".to_string(),
+            (ModelState::Failed, _, _) => "O modelo não carregou".to_string(),
+            (_, true, _) => "Ouvindo…".to_string(),
+            (_, _, View::Processing) => "Transcrevendo…".to_string(),
             _ => format!("Pronto · segure {}", self.atalho),
         }
     }
@@ -120,7 +132,9 @@ impl ksni::Tray for Icone {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let gravando = self.retrato.view == View::Recording;
+        // O `Toggle` que este item manda decide pelo `recording_since`; o
+        // rótulo precisa decidir pela mesma coisa, senão promete o contrário.
+        let gravando = self.retrato.gravando;
         let pronto = self.retrato.model == ModelState::Ready;
 
         vec![

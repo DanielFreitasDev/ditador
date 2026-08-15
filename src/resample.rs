@@ -98,12 +98,18 @@ fn blackman(t: f64) -> f64 {
 
 /// Ajusta o ganho para que o pico fique próximo de 0.9, ajudando microfones
 /// fracos. O ganho é limitado para não transformar ruído de fundo em "voz".
+///
+/// A faixa −1..1 é garantida nos dois caminhos, com ou sem ganho a aplicar: é o
+/// contrato do que o Whisper recebe, e antes ele valia só quando o ganho era
+/// aplicado — um microfone que já entregasse acima de 1.0 saía daqui do mesmo
+/// jeito que entrou.
 pub fn normalize(samples: &mut [f32]) {
     let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-    if !(1e-4..0.9).contains(&peak) {
-        return;
-    }
-    let gain = (0.9 / peak).min(10.0);
+    let gain = if (1e-4..0.9).contains(&peak) {
+        (0.9 / peak).min(10.0)
+    } else {
+        1.0
+    };
     for s in samples.iter_mut() {
         *s = (*s * gain).clamp(-1.0, 1.0);
     }
@@ -140,6 +146,90 @@ mod tests {
             .fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.9, "pico caiu demais: {peak}");
         assert!(peak < 1.1, "pico estourou: {peak}");
+    }
+
+    /// Um seno de `hz` amostrado a `taxa`, com `amostras` amostras.
+    fn tom(hz: f64, taxa: u32, amostras: usize) -> Vec<f32> {
+        (0..amostras)
+            .map(|i| (2.0 * PI * hz * i as f64 / taxa as f64).sin() as f32)
+            .collect()
+    }
+
+    fn pico(sinal: &[f32], margem: usize) -> f32 {
+        sinal[margem..sinal.len() - margem]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn a_razao_fracionaria_de_44_1_khz_tambem_sobrevive() {
+        // 44100 → 16000 não é razão inteira: é o caminho que usa a interpolação
+        // da tabela do núcleo, e nenhum teste passava por ele. É também a taxa
+        // mais comum em microfone de máquina doméstica.
+        let src = 44_100u32;
+        let entrada = tom(440.0, src, src as usize);
+        let saida = resample(&entrada, src, 16_000);
+
+        assert_eq!(saida.len(), 16_000, "o comprimento não seguiu a proporção");
+        let p = pico(&saida, 2000);
+        assert!(p > 0.9, "pico caiu demais: {p}");
+        assert!(p < 1.1, "pico estourou: {p}");
+    }
+
+    #[test]
+    fn aumentar_a_taxa_tambem_funciona() {
+        // Um microfone que só ofereça 8 kHz precisa subir para 16. O caminho de
+        // upsampling nunca tinha sido exercitado.
+        let src = 8_000u32;
+        let entrada = tom(300.0, src, src as usize);
+        let saida = resample(&entrada, src, 16_000);
+
+        assert_eq!(saida.len(), 16_000);
+        let p = pico(&saida, 1000);
+        assert!(p > 0.85, "pico caiu demais: {p}");
+        assert!(p < 1.1, "pico estourou: {p}");
+    }
+
+    #[test]
+    fn os_casos_degenerados_nao_derrubam_nada() {
+        assert!(resample(&[], 48_000, 16_000).is_empty());
+        assert!(resample(&[0.5], 48_000, 0).is_empty());
+        assert!(resample(&[0.5], 0, 16_000).is_empty());
+        // Uma amostra só: sai alguma coisa, sem estourar índice.
+        let uma = resample(&[0.5], 48_000, 16_000);
+        assert!(uma.len() <= 1);
+    }
+
+    #[test]
+    fn a_normalizacao_levanta_o_microfone_fraco_e_deixa_o_forte_em_paz() {
+        // Fraco: sobe até perto de 0,9.
+        let mut fraco = vec![0.1, -0.05, 0.08];
+        normalize(&mut fraco);
+        let p = fraco.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!((p - 0.9).abs() < 1e-5, "não chegou a 0,9: {p}");
+
+        // Já forte: fica como está.
+        let mut forte = vec![0.95, -0.5];
+        normalize(&mut forte);
+        assert_eq!(forte, [0.95, -0.5]);
+
+        // Silêncio não vira voz: o ganho é limitado e o piso, respeitado.
+        let mut silencio = vec![1e-6, -1e-6];
+        normalize(&mut silencio);
+        assert_eq!(silencio, [1e-6, -1e-6]);
+    }
+
+    #[test]
+    fn a_faixa_de_menos_um_a_um_vale_em_todos_os_caminhos() {
+        // O contrato do que o Whisper recebe. Antes ele valia só no ramo que
+        // aplicava ganho: um microfone entregando acima de 1.0 saía daqui
+        // exatamente como entrou.
+        let mut estourado = vec![3.0, -2.5, 0.2];
+        normalize(&mut estourado);
+        assert!(
+            estourado.iter().all(|s| (-1.0..=1.0).contains(s)),
+            "saiu fora da faixa: {estourado:?}"
+        );
     }
 
     #[test]

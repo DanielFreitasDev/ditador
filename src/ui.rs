@@ -105,6 +105,14 @@ impl Medidor {
     }
 }
 
+/// O convite para baixar o modelo, quando ele falta ou não abriu.
+struct Oferta {
+    /// Há `curl` ou `wget` para fazer o download.
+    baixavel: bool,
+    rotulo: &'static str,
+    nota: &'static str,
+}
+
 /// Diagnóstico opcional: com `DITADOR_CAPTURA=<pasta>`, grava um PNG de cada
 /// tela assim que ela estabiliza. Existe porque o GNOME nega a API de captura
 /// de tela a aplicativos comuns, e sem isso não há como conferir o desenho — é
@@ -128,9 +136,16 @@ impl App {
         // Diagnóstico opcional: `DITADOR_ZOOM=1.5` desenha tudo maior, o que
         // serve tanto para conferir a interface numa tela densa quanto para as
         // imagens do README saírem com resolução de sobra.
-        if let Ok(zoom) = std::env::var("DITADOR_ZOOM").map(|z| z.parse::<f32>()) {
-            cc.egui_ctx
-                .set_zoom_factor(zoom.unwrap_or(1.0).clamp(0.5, 3.0));
+        if std::env::var_os("DITADOR_ZOOM").is_some() {
+            // `is_finite` antes do `clamp`: o `clamp` do Rust devolve NaN
+            // quando o valor é NaN, e um fator NaN contamina o layout inteiro —
+            // a janela sai vazia e nada na tela diz por quê.
+            let zoom = std::env::var("DITADOR_ZOOM")
+                .ok()
+                .and_then(|z| z.parse::<f32>().ok())
+                .filter(|z| z.is_finite())
+                .unwrap_or(1.0);
+            cc.egui_ctx.set_zoom_factor(zoom.clamp(0.5, 3.0));
         }
         tema::instalar_fontes(&cc.egui_ctx);
         tema::definir_escuro(escuro_agora(&lock(&shared).config.appearance));
@@ -285,16 +300,24 @@ impl eframe::App for App {
         }
 
         let view = state.view;
+        let modelo_carregando = state.model == ModelState::Loading;
         // Ao abrir as configurações, dois controles precisam mostrar o que o
         // sistema realmente tem, não o que ficou gravado da última vez: o
         // interruptor de início automático e o tema, que o usuário pode ter
         // mudado no GNOME desde que o Ditador subiu.
-        if view == View::Settings && self.applied != Some(View::Settings) {
-            state.draft.start_with_session = crate::autostart::ligado();
-            state.config.start_with_session = state.draft.start_with_session;
-            tema::reler_o_sistema();
-        }
+        let abrindo_config = view == View::Settings && self.applied != Some(View::Settings);
         drop(state);
+
+        if abrindo_config {
+            // Os dois abrem processos (`systemctl`, `gsettings`). Ficam fora do
+            // mutex: segurá-lo durante uma chamada de sistema prende o
+            // controlador junto, e este é o único ponto do desenho que faz isso.
+            let ligado = crate::autostart::ligado();
+            tema::reler_o_sistema();
+            let mut state = lock(&shared);
+            state.draft.start_with_session = ligado;
+            state.config.start_with_session = ligado;
+        }
 
         if self.applied != Some(view) {
             apply_window(ctx, view);
@@ -312,6 +335,11 @@ impl eframe::App for App {
             View::Recording | View::Processing => ctx.request_repaint(),
             // Mantém o aviso de "copiado" e o tempo limite em dia.
             View::Result => ctx.request_repaint_after(Duration::from_millis(250)),
+            // A tela de erro também anima: ela desenha o anel girando enquanto
+            // o modelo carrega, e sem repaint contínuo ele ficava parado no
+            // mesmo ângulo pelos vários segundos da carga dos 574 MB — um
+            // indicador de trabalho congelado se lê como aplicativo travado.
+            View::Error if modelo_carregando => ctx.request_repaint(),
             _ => {}
         }
 
@@ -344,6 +372,18 @@ impl eframe::App for App {
         };
         if tema::definir_escuro(escuro_agora(&aparencia)) {
             ui.ctx().all_styles_mut(tema::estilo);
+        }
+
+        // Esc dispensa a janela — é o que todo mundo tenta primeiro numa
+        // janela sem decoração e sempre-no-topo, e antes não fazia nada. Na
+        // captura de atalho o Esc pertence à captura (ele cancela a escolha da
+        // tecla), então ali este atalho não vale.
+        if !state.capturing_hotkey && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.act(if view == View::Settings {
+                UiAction::CloseSettings
+            } else {
+                UiAction::Hide
+            });
         }
 
         let opacidade = self.animar_abertura(ui, aparencia);
@@ -471,13 +511,7 @@ impl App {
             ui.label(medio("Ouvindo", 16.0));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    tema::tecnico(
-                        format!("{:.0}:{:02.0}", decorrido / 60.0, decorrido % 60.0),
-                        14.0,
-                    )
-                    .color(p.texto_fraco),
-                );
+                ui.label(tema::tecnico(cronometro(decorrido), 14.0).color(p.texto_fraco));
             });
         });
 
@@ -598,27 +632,44 @@ impl App {
 
         // O que sobra depois do cartão: o espaço, a fileira de botões e o mesmo
         // respiro embaixo deles que as configurações têm.
-        let altura_texto = ui.available_height() - (10.0 + 36.0 + 12.0 + RESPIRO);
+        let altura_texto = ui.available_height() - (10.0 + widgets::ALTURA + 12.0 + RESPIRO);
+        let mut editou = false;
         widgets::cartao(ui, |ui| {
             ui.set_min_height(altura_texto - 24.0);
-            if state.config.editable_result {
-                ui.add_sized(
-                    [ui.available_width(), altura_texto - 24.0],
-                    egui::TextEdit::multiline(&mut state.text)
-                        .desired_width(f32::INFINITY)
-                        // O cartão já é a moldura; o campo entra sem a dele.
-                        .frame(egui::Frame::NONE)
-                        .margin(Margin::ZERO)
-                        .font(egui::TextStyle::Body),
-                );
-            } else {
-                egui::ScrollArea::vertical()
-                    .max_height(altura_texto - 24.0)
-                    .show(ui, |ui| {
+            // Os dois ramos rolam. O editável não rolava, e o `TextEdit` do
+            // egui não tem rolagem própria nem teto de altura: numa fala de uns
+            // 45 s (o teto padrão é 120) o campo crescia além da janela, que é
+            // de tamanho fixo e não redimensionável, e empurrava "Copiar" e
+            // "Copiar e colar" para fora — sem rolagem, sem como alcançá-los, e
+            // com o resto do texto invisível. E este é o ramo padrão.
+            egui::ScrollArea::vertical()
+                .max_height(altura_texto - 24.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if state.config.editable_result {
+                        editou = ui
+                            .add(
+                                egui::TextEdit::multiline(&mut state.text)
+                                    .desired_width(f32::INFINITY)
+                                    // O cartão já é a moldura; o campo entra sem a dele.
+                                    .frame(egui::Frame::NONE)
+                                    .margin(Margin::ZERO)
+                                    .font(egui::TextStyle::Body),
+                            )
+                            .has_focus();
+                    } else {
                         ui.label(RichText::new(&state.text).size(14.5));
-                    });
-            }
+                    }
+                });
         });
+
+        // Enquanto se digita, o relógio do fechamento automático não corre: a
+        // janela sumia no meio de uma correção, e nenhum comando a traz de
+        // volta — só o texto original, que já foi para a área de transferência,
+        // sobreviveria.
+        if editou {
+            state.result_shown_at = Some(std::time::Instant::now());
+        }
 
         ui.add_space(10.0);
 
@@ -693,85 +744,138 @@ impl App {
         ui.label(RichText::new(&state.message).size(14.5));
         ui.add_space(12.0);
 
-        if self.modelo_faltando(ui, state) {
-            return;
-        }
+        let baixando = self.progresso_do_download(ui, state);
+        let oferta = (!baixando)
+            .then(|| self.oferta_de_download(state))
+            .flatten();
 
+        // Uma fileira só, sempre. A janela desta tela tem altura fixa, e o
+        // botão de baixar já morou numa segunda fileira que não cabia.
         ui.horizontal(|ui| {
-            if state.model == ModelState::Failed
-                && ui.add(Botao::new("Tentar de novo").principal()).clicked()
-            {
-                self.act(UiAction::ReloadModel);
+            match &oferta {
+                Some(oferta) => {
+                    ui.add_enabled_ui(oferta.baixavel, |ui| {
+                        if ui
+                            .add(Botao::new(oferta.rotulo).principal())
+                            .on_hover_text(format!(
+                                "Baixa {} de huggingface.co para {}",
+                                crate::modelo::PADRAO,
+                                crate::modelo::caminho(crate::modelo::PADRAO).display()
+                            ))
+                            .clicked()
+                        {
+                            self.act(UiAction::DownloadModel);
+                        }
+                    });
+                }
+                None => {
+                    if !baixando
+                        && state.model == ModelState::Failed
+                        && ui.add(Botao::new("Tentar de novo").principal()).clicked()
+                    {
+                        self.act(UiAction::ReloadModel);
+                    }
+                }
             }
-            if widgets::botao(ui, "Configurações").clicked() {
+            if !baixando && widgets::botao(ui, "Configurações").clicked() {
                 self.act(UiAction::OpenSettings);
             }
+            // Durante o download só o "Fechar" faz sentido, mas ele precisa
+            // existir: antes a tela saía sem fileira nenhuma e ficava por cima
+            // de tudo, sempre-no-topo e sem decoração, pelos cinco a dez
+            // minutos do download — bem embaixo de uma frase prometendo "Pode
+            // fechar esta janela".
             if widgets::botao(ui, "Fechar").clicked() {
                 self.act(UiAction::Hide);
             }
         });
+
+        if let Some(oferta) = &oferta {
+            ui.add_space(6.0);
+            ui.label(nota(oferta.nota));
+        }
+        self.rodape_do_atalho(ui, state);
     }
 
-    /// Instalação nova: o programa está inteiro, mas o modelo — que tem
-    /// centenas de megabytes e não cabe num pacote — ainda não foi baixado.
-    /// Em vez de mandar o usuário para o terminal, o botão resolve aqui.
+    /// O aviso de que o atalho global não está funcionando.
     ///
-    /// Devolve `true` quando assumiu a tela (aí o resto dos botões não sai).
-    fn modelo_faltando(&self, ui: &mut egui::Ui, state: &crate::state::Shared) -> bool {
-        if let Some(andamento) = &state.download {
-            let p = andamento.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if p.andando() {
-                let quanto = match (p.fracao(), p.total) {
-                    (Some(f), total) => format!(
-                        "{:.0} % de {}",
-                        f * 100.0,
-                        crate::modelo::tamanho_legivel(total)
-                    ),
-                    _ => format!("{} até agora", crate::modelo::tamanho_legivel(p.baixados)),
-                };
-                widgets::progresso(ui, p.fracao(), &format!("Baixando o modelo — {quanto}"));
-                return true;
-            }
-            if let Some(Err(erro)) = &p.fim {
-                ui.label(RichText::new(erro).size(12.5).color(paleta().erro));
-                ui.add_space(8.0);
-            }
+    /// Mora no rodapé, e não no corpo da mensagem, porque ele e o aviso do
+    /// modelo faltando nascem juntos numa instalação nova — dividindo um campo
+    /// só, um dos dois sumia sem nunca ter sido lido.
+    fn rodape_do_atalho(&self, ui: &mut egui::Ui, state: &crate::state::Shared) {
+        let Some(aviso) = &state.aviso_atalho else {
+            return;
+        };
+        ui.add_space(8.0);
+        ui.label(RichText::new(aviso).size(12.5).color(paleta().erro));
+    }
+
+    /// A barra do download em curso, se houver um.
+    ///
+    /// Devolve `true` enquanto ele anda — aí a tela oferece só o "Fechar".
+    fn progresso_do_download(&self, ui: &mut egui::Ui, state: &crate::state::Shared) -> bool {
+        let Some(andamento) = &state.download else {
+            return false;
+        };
+        let p = andamento.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+        if p.andando() {
+            let quanto = match (p.fracao(), p.total) {
+                (Some(f), total) => format!(
+                    "{:.0} % de {}",
+                    f * 100.0,
+                    crate::modelo::tamanho_legivel(total)
+                ),
+                _ => format!("{} até agora", crate::modelo::tamanho_legivel(p.baixados)),
+            };
+            widgets::progresso(ui, p.fracao(), &format!("Baixando o modelo — {quanto}"));
+            ui.add_space(10.0);
+            return true;
         }
 
-        if state.config.model_path.exists() {
-            return false;
+        if let Some(Err(erro)) = &p.fim {
+            ui.label(RichText::new(erro).size(12.5).color(paleta().erro));
+            ui.add_space(8.0);
+        }
+        false
+    }
+
+    /// Vale oferecer o download do modelo nesta tela?
+    ///
+    /// Instalação nova: o programa está inteiro, mas o modelo — que tem
+    /// centenas de megabytes e não cabe num pacote — ainda não foi baixado. Em
+    /// vez de mandar a pessoa para o terminal, o botão resolve aqui.
+    ///
+    /// Também vale quando o arquivo existe e não abre. Antes a decisão era só
+    /// `exists()`, e aí um arquivo truncado trancava a instalação inteira: o
+    /// botão sumia, `--baixar-modelo` respondia "já existe", e o único botão
+    /// restante recarregava eternamente o mesmo arquivo ruim.
+    fn oferta_de_download(&self, state: &crate::state::Shared) -> Option<Oferta> {
+        let arquivo_ruim = state.model == ModelState::Failed
+            && state.config.model_path == crate::modelo::caminho(crate::modelo::PADRAO)
+            && state.config.model_path.exists();
+        if state.config.model_path.exists() && !arquivo_ruim {
+            return None;
         }
 
         let baixavel = crate::modelo::disponivel();
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(baixavel, |ui| {
-                if ui
-                    .add(Botao::new("Baixar o modelo (574 MB)").principal())
-                    .on_hover_text(format!(
-                        "Baixa {} de huggingface.co para {}",
-                        crate::modelo::PADRAO,
-                        crate::modelo::caminho(crate::modelo::PADRAO).display()
-                    ))
-                    .clicked()
-                {
-                    self.act(UiAction::DownloadModel);
-                }
-            });
-            if widgets::botao(ui, "Configurações").clicked() {
-                self.act(UiAction::OpenSettings);
-            }
-            if widgets::botao(ui, "Fechar").clicked() {
-                self.act(UiAction::Hide);
-            }
-        });
-        ui.add_space(6.0);
-        ui.label(nota(if baixavel {
-            "É a única coisa que falta. Depois disso tudo roda na sua máquina, \
-             sem internet."
-        } else {
-            "Preciso do curl ou do wget para baixar: sudo apt install curl"
-        }));
-        true
+        Some(Oferta {
+            baixavel,
+            rotulo: if arquivo_ruim {
+                "Baixar o modelo de novo (574 MB)"
+            } else {
+                "Baixar o modelo (574 MB)"
+            },
+            nota: if !baixavel {
+                "Preciso do curl ou do wget para baixar: sudo apt install curl"
+            } else if arquivo_ruim {
+                "O arquivo que está aqui não abriu. Baixar de novo por cima dele \
+                 costuma resolver."
+            } else {
+                "É a única coisa que falta. Depois disso tudo roda na sua máquina, \
+                 sem internet."
+            },
+        })
     }
 
     // --------------------------------------------------------- configurações
@@ -794,7 +898,7 @@ impl App {
         // que vem depois da lista: o espaço antes da linha, a linha, o espaço
         // depois dela, os botões — mais um espaçamento, que o egui insere
         // sozinho ao fechar a área de rolagem, e o respiro embaixo dos botões.
-        let rodape = 10.0 + 1.0 + 14.0 + 36.0 + ui.spacing().item_spacing.y + RESPIRO;
+        let rodape = 10.0 + 1.0 + 14.0 + widgets::ALTURA + ui.spacing().item_spacing.y + RESPIRO;
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - rodape)
             .show(ui, |ui| {
@@ -835,8 +939,25 @@ impl App {
                 {
                     self.act(UiAction::Quit);
                 }
+                // Esta tela não desenhava `message` em lugar nenhum, e dois
+                // caminhos de erro escrevem nele justamente enquanto ela está
+                // visível: o Salvar que não consegue gravar o arquivo e o
+                // interruptor de início automático que falha. Nos dois casos a
+                // pessoa não via nada — no autostart a chave ainda voltava
+                // sozinha, sem explicação.
+                if !state.message.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(encurtar(&state.message, 70))
+                            .size(12.5)
+                            .color(paleta().erro),
+                    )
+                    .on_hover_text(&state.message);
+                }
             });
         });
+
+        self.rodape_do_atalho(ui, state);
     }
 
     fn settings_atalho(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
@@ -1198,10 +1319,66 @@ fn drag_area(ui: &mut egui::Ui, id: &str) {
 }
 
 fn encurtar(texto: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
     if texto.chars().count() <= max {
         texto.to_string()
     } else {
         let inicio: String = texto.chars().take(max - 1).collect();
         format!("{inicio}…")
+    }
+}
+
+/// "1:07" — minutos e segundos decorridos.
+///
+/// A conta é inteira porque `{:.0}` do Rust arredonda em vez de truncar: aos
+/// 31 s o mostrador dizia `1:31`, aos 59,7 s dizia `1:60`, e aos 60 s voltava
+/// para `1:00`. Ou seja, na segunda metade de cada minuto o número saltava um
+/// minuto à frente e depois andava para trás — numa fonte monoespaçada
+/// escolhida justamente para o mostrador não dançar.
+fn cronometro(decorrido: f32) -> String {
+    let total = decorrido.max(0.0) as u64;
+    format!("{}:{:02}", total / 60, total % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn o_cronometro_conta_para_a_frente_e_so_para_a_frente() {
+        assert_eq!(cronometro(0.0), "0:00");
+        assert_eq!(cronometro(9.4), "0:09");
+        // O caso que quebrava: `{:.0}` arredondava e 31 s virava "1:31".
+        assert_eq!(cronometro(30.0), "0:30");
+        assert_eq!(cronometro(31.0), "0:31");
+        assert_eq!(cronometro(59.7), "0:59");
+        assert_eq!(cronometro(60.0), "1:00");
+        assert_eq!(cronometro(119.9), "1:59");
+        assert_eq!(cronometro(3_600.0), "60:00");
+
+        // E nunca anda para trás de um segundo para o outro.
+        let mut anterior = String::new();
+        for centesimos in 0..12_000u32 {
+            let agora = cronometro(centesimos as f32 / 100.0);
+            assert!(
+                agora >= anterior || anterior.len() != agora.len(),
+                "{anterior} → {agora}"
+            );
+            anterior = agora;
+        }
+    }
+
+    #[test]
+    fn o_nome_comprido_do_microfone_e_encurtado_sem_estourar() {
+        assert_eq!(encurtar("curto", 10), "curto");
+        assert_eq!(encurtar("exatamente", 10), "exatamente");
+        assert_eq!(encurtar("comprido demais", 10), "comprido …");
+        // Contagem por caractere, não por byte: o nome do microfone tem acento.
+        assert_eq!(encurtar("áéíóú", 5), "áéíóú");
+        assert_eq!(encurtar("áéíóúà", 5), "áéíó…");
+        // O `max - 1` não pode estourar quando `max` é zero.
+        assert_eq!(encurtar("qualquer coisa", 0), "");
     }
 }

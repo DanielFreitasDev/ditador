@@ -3,6 +3,32 @@
 //! Roda em segundo plano. Segure a tecla de atalho, fale, solte: o texto
 //! aparece (e, se você quiser, já vai para a área de transferência).
 
+// O whisper.cpp é compilado com um back-end só, então as três features são
+// mutuamente exclusivas. Sem estes guardas o Cargo somava as features como
+// sempre faz: quem esquecesse o `--no-default-features` levava o Vulkan junto
+// em silêncio — `--features cpu` produzia um binário ligado à libvulkan que
+// ainda se anunciava como "CPU", e `--features cuda` mandava compilar os dois.
+#[cfg(all(feature = "vulkan", feature = "cuda"))]
+compile_error!(
+    "vulkan e cuda não convivem — o whisper.cpp aceita um back-end só. \
+     Use: cargo build --release --no-default-features --features cuda"
+);
+#[cfg(all(feature = "vulkan", feature = "cpu"))]
+compile_error!(
+    "vulkan e cpu não convivem — o vulkan vem do default. \
+     Use: cargo build --release --no-default-features --features cpu"
+);
+#[cfg(all(feature = "cuda", feature = "cpu"))]
+compile_error!(
+    "cuda e cpu não convivem — escolha um: \
+     cargo build --release --no-default-features --features cuda (ou cpu)"
+);
+#[cfg(not(any(feature = "vulkan", feature = "cuda", feature = "cpu")))]
+compile_error!(
+    "nenhum back-end escolhido. Use --features vulkan (o padrão), \
+     ou --no-default-features --features cpu|cuda"
+);
+
 mod audio;
 mod autostart;
 mod clipboard;
@@ -30,10 +56,33 @@ use crate::state::{ModelState, Shared, SharedState, Sinal};
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
 
+/// Nível padrão dos registros.
+///
+/// O `info` é o nosso; o resto da linha é contenção de barulho alheio. Num dia
+/// de uso normal o journal tinha 3 190 linhas, das quais 1 530 eram o aperto de
+/// mão do zbus (que o ksni usa para falar com a barra superior) despejando
+/// arrays de bytes crus e 780 eram o whisper.cpp e o ggml escrevendo em C —
+/// sobravam umas setecentas nossas no meio. Como o journal é a única superfície
+/// de diagnóstico deste programa, deixá-la três quartos ocupada por biblioteca
+/// é o mesmo que não ter nenhuma.
+///
+/// Para depurar, `RUST_LOG=ditador=debug` continua valendo e não traz o barulho
+/// de volta; `RUST_LOG=debug` seco traz, e é isso mesmo que se quer quando o
+/// problema está numa delas.
+const FILTRO_PADRAO: &str = "info,\
+     zbus=warn,tracing=warn,\
+     whisper_rs::whisper_logging_hook=warn,whisper_rs::ggml_logging_hook=warn";
+
 fn main() -> Result<()> {
     // Precisa vir antes de qualquer mexida em variáveis de ambiente.
     clipboard::remember_environment();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(FILTRO_PADRAO))
+        .init();
+    // Sem isto o whisper.cpp e o ggml escrevem direto no stderr, por fora do
+    // `log`: o filtro acima não os alcança e as linhas chegam ao journal sem
+    // nível, sem alvo e fora de ordem. É a feature `log_backend` do whisper-rs,
+    // que já pagávamos no Cargo.toml sem nunca ligar.
+    whisper_rs::install_logging_hooks();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut ao_iniciar: Option<IpcCommand> = None;
@@ -62,6 +111,7 @@ fn main() -> Result<()> {
             }
             return Ok(());
         }
+        Some("--diagnostico" | "--doctor") => return diagnostico(),
         Some("--alternar" | "--toggle") => {
             if let Some(resposta) = ipc::send("toggle") {
                 println!("{resposta}");
@@ -113,14 +163,32 @@ fn main() -> Result<()> {
 }
 
 fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
-    let listener = match ipc::bind()? {
-        ipc::Bind::Ready(listener) => listener,
-        ipc::Bind::AlreadyRunning => {
+    let listener = match ipc::bind() {
+        ipc::Bind::Escutando(listener) => Some(listener),
+        ipc::Bind::JaRodando => {
             println!("O Ditador já está rodando.");
             return Ok(());
         }
+        // Sem socket dá para ditar; o que se perde é o controle por linha de
+        // comando. Derrubar a inicialização por causa de um acessório seria
+        // trocar o programa inteiro pela parte dele que faltou.
+        ipc::Bind::SemSocket(motivo) => {
+            log::warn!(
+                "sem o socket de controle ({motivo}); `ditador --alternar` não vai funcionar"
+            );
+            None
+        }
     };
     let config = Config::load();
+
+    // Primeira linha de todo journal: sem ela, `journalctl --user -u ditador`
+    // depois de uma atualização não diz qual binário está de pé.
+    log::info!(
+        "ditador {} · backend {} · whisper.cpp {}",
+        env!("CARGO_PKG_VERSION"),
+        stt::BACKEND,
+        whisper_rs::WHISPER_CPP_VERSION
+    );
 
     // No GNOME/Wayland um aplicativo comum não escolhe onde sua janela aparece
     // nem consegue ficar por cima das outras. Pelo XWayland isso funciona.
@@ -149,7 +217,6 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         AudioSettings {
             device: config.input_device.clone(),
             max_secs: config.max_recording_secs,
-            normalize: config.normalize_audio,
         },
         audio_tx,
     );
@@ -157,7 +224,7 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
     let stt_cmd_tx = stt::spawn(stt_tx);
 
     // Socket de controle: ícone do aplicativo, atalho do GNOME, terminal.
-    {
+    if let Some(listener) = listener {
         let ipc_tx = ipc_tx.clone();
         let shared = shared.clone();
         ipc::serve(listener, move |linha| match linha {
@@ -175,15 +242,31 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
             }
             "status" => {
                 let estado = state::lock(&shared);
+                // O aviso do atalho entra aqui porque é a falha mais comum e a
+                // mais silenciosa deste programa (usuário fora do grupo
+                // `input`): quem for descobrir por que "não acontece nada ao
+                // segurar a tecla" digita `ditador --status` antes de qualquer
+                // outra coisa.
                 format!(
-                    "modelo: {} · atalho: {} · backend: {}",
+                    "modelo: {} · atalho: {} · microfone: {} · backend: {}{}",
                     match estado.model {
                         ModelState::Loading => "carregando",
                         ModelState::Ready => "pronto",
                         ModelState::Failed => "falhou",
                     },
                     keys::combo_label(&estado.config.hotkey),
-                    stt::BACKEND
+                    if estado.gravando() {
+                        "gravando"
+                    } else {
+                        "parado"
+                    },
+                    stt::BACKEND,
+                    // Numa linha só: a resposta trafega pelo socket terminada
+                    // por `\n`, e o cliente lê exatamente uma linha.
+                    match &estado.aviso_atalho {
+                        Some(aviso) => format!(" · atenção: {aviso}"),
+                        None => String::new(),
+                    }
                 )
             }
             outro => format!("comando desconhecido: {outro}"),
@@ -259,17 +342,25 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
     );
 
     ipc::cleanup();
-    resultado.map_err(|e| anyhow::anyhow!("falha na interface: {e}"))?;
 
-    // Encerra sem rodar os destrutores globais. Os do ggml/Vulkan desmontam a
-    // GPU enquanto o driver ainda está sendo usado, e o preço de um encerramento
-    // "arrumado" seria um SIGSEGV — que o systemd leria como falha e reiniciaria
-    // o serviço em seguida.
-    sair_sem_desmontar()
+    // O erro é registrado e não propagado. Devolvê-lo com `?` faria o processo
+    // terminar pelo runtime do Rust, com `atexit` e destrutores estáticos — o
+    // caminho exato que o `_exit(0)` logo abaixo existe para evitar. E a thread
+    // do whisper nasce antes da janela, então neste ponto o contexto do ggml
+    // provavelmente já está montado na GPU: um erro de interface viraria core
+    // dump, e o `Restart=on-failure` reiniciaria por cima dele.
+    let codigo = match resultado {
+        Ok(()) => 0,
+        Err(e) => {
+            log::error!("falha na interface: {e}");
+            1
+        }
+    };
+    sair_sem_desmontar(codigo)
 }
 
 /// Sai imediatamente, pulando `atexit` e destrutores estáticos.
-fn sair_sem_desmontar() -> ! {
+fn sair_sem_desmontar(codigo: i32) -> ! {
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
@@ -277,7 +368,7 @@ fn sair_sem_desmontar() -> ! {
     unsafe extern "C" {
         fn _exit(status: i32) -> !;
     }
-    unsafe { _exit(0) }
+    unsafe { _exit(codigo) }
 }
 
 /// Baixa o modelo pelo terminal, com a mesma máquina que a interface usa.
@@ -318,6 +409,137 @@ fn baixar_modelo(nome: &str) -> Result<()> {
     }
 }
 
+/// Confere, uma a uma, as coisas de que o Ditador depende e que ele não
+/// controla.
+///
+/// Existe porque a falha mais comum deste programa é também a mais silenciosa:
+/// sem o usuário no grupo `input` o atalho global simplesmente não acontece, e
+/// nada na tela explica o porquê. As outras — modelo faltando, `wl-copy`
+/// ausente, `ydotool` sem serviço, bandeja sem extensão — degradam de formas
+/// parecidas. Uma tela que responde "o que está faltando aqui?" custa menos que
+/// a soma das perguntas que ela evita.
+fn diagnostico() -> Result<()> {
+    fn linha(ok: bool, titulo: &str, detalhe: &str) -> bool {
+        println!(
+            "{} {titulo}\n    {detalhe}",
+            if ok { "ok  " } else { "!!  " }
+        );
+        ok
+    }
+
+    println!(
+        "Ditador {} · backend {} · whisper.cpp {}\n",
+        env!("CARGO_PKG_VERSION"),
+        stt::BACKEND,
+        whisper_rs::WHISPER_CPP_VERSION
+    );
+
+    let mut tudo_bem = true;
+
+    // 1. O atalho global. Sem o grupo `input` nada disso funciona.
+    let teclados = hotkey::teclados_legiveis();
+    tudo_bem &= linha(
+        teclados > 0,
+        "Leitura do teclado (/dev/input)",
+        &if teclados > 0 {
+            format!("{teclados} teclado(s) legível(is).")
+        } else {
+            "Nenhum. Rode: sudo usermod -aG input $USER — depois saia da sessão e entre de novo."
+                .to_string()
+        },
+    );
+
+    // 2. O modelo.
+    let config = Config::load();
+    let modelo_ok = config.model_path.exists();
+    tudo_bem &= linha(
+        modelo_ok,
+        "Modelo de transcrição",
+        &if modelo_ok {
+            format!(
+                "{} ({})",
+                config::caminho_curto(&config.model_path),
+                std::fs::metadata(&config.model_path)
+                    .map(|m| modelo::tamanho_legivel(m.len()))
+                    .unwrap_or_else(|_| "tamanho desconhecido".into())
+            )
+        } else {
+            format!(
+                "não está em {}. Rode: ditador --baixar-modelo",
+                config::caminho_curto(&config.model_path)
+            )
+        },
+    );
+
+    // 3. O microfone.
+    let microfones = audio::list_input_devices();
+    tudo_bem &= linha(
+        !microfones.is_empty(),
+        "Microfone",
+        &match config.input_device.as_deref() {
+            _ if microfones.is_empty() => "nenhum encontrado.".to_string(),
+            Some(escolhido) if !microfones.iter().any(|m| m == escolhido) => format!(
+                "o escolhido (\"{escolhido}\") não está mais aqui; \
+                 {} disponível(is). Escolha outro nas configurações.",
+                microfones.len()
+            ),
+            Some(escolhido) => format!("\"{escolhido}\"."),
+            None => format!(
+                "padrão do sistema, entre {} disponível(is).",
+                microfones.len()
+            ),
+        },
+    );
+
+    // 4. Área de transferência e colagem — degradam, mas com aviso.
+    linha(
+        clipboard::wl_copy_available(),
+        "Cópia no Wayland (wl-copy)",
+        if clipboard::wl_copy_available() {
+            "instalado."
+        } else {
+            "ausente; a cópia vai pelo X11. Para instalar: sudo apt install wl-clipboard"
+        },
+    );
+    linha(
+        clipboard::paste_available(),
+        "Colagem automática (ydotool)",
+        if clipboard::paste_available() {
+            "instalado. Ela também precisa do serviço: systemctl --user status ydotool"
+        } else {
+            "ausente; a colagem automática fica desligada. Para instalar: sudo apt install ydotool"
+        },
+    );
+
+    // 5. Download do modelo.
+    linha(
+        modelo::disponivel(),
+        "Download do modelo (curl ou wget)",
+        if modelo::disponivel() {
+            "disponível."
+        } else {
+            "nenhum dos dois. Para instalar: sudo apt install curl"
+        },
+    );
+
+    // 6. A instância em execução, se houver.
+    match ipc::send("status") {
+        Some(resposta) => println!("ok   Instância em execução\n    {resposta}"),
+        None => println!(
+            "--   Instância em execução\n    nenhuma. Para subir: systemctl --user start ditador"
+        ),
+    }
+
+    println!();
+    if tudo_bem {
+        println!("Tudo o que o Ditador precisa está no lugar.");
+        Ok(())
+    } else {
+        println!("Há o que resolver acima antes de o ditado funcionar.");
+        std::process::exit(1);
+    }
+}
+
 fn ajuda() {
     println!(
         r#"Ditador — ditado por voz offline com Whisper
@@ -330,6 +552,7 @@ USO
   ditador --encerrar         fecha o aplicativo
   ditador --baixar-modelo    baixa o modelo de transcrição (~574 MB)
   ditador --microfones       lista os microfones disponíveis
+  ditador --diagnostico      confere tudo de que o Ditador depende
   ditador --versao           versão e backend
   ditador --ajuda            esta mensagem
 

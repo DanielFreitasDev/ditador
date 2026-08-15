@@ -198,11 +198,24 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Self {
-        let path = config_path();
-        match std::fs::read_to_string(&path) {
+        Self::ler_de(&config_path())
+    }
+
+    pub fn save(&self) -> Result<()> {
+        self.salvar_em(&config_path())
+    }
+
+    /// Lê a configuração de um caminho qualquer.
+    ///
+    /// `load` é uma casca fina em volta desta função para que o caminho de
+    /// arquivo — quarentena do inválido, sobrevivência do anterior — possa ser
+    /// testado numa pasta temporária em vez de na configuração de quem roda os
+    /// testes.
+    pub fn ler_de(path: &std::path::Path) -> Self {
+        match std::fs::read_to_string(path) {
             Ok(raw) => match serde_json::from_str::<Config>(&raw) {
                 Ok(mut cfg) => {
-                    cfg.appearance.sanear();
+                    cfg.sanear();
                     cfg
                 }
                 Err(e) => {
@@ -214,37 +227,85 @@ impl Config {
                     // substitua pelos padrões: o arquivo é editável à mão, e
                     // quem errou uma vírgula precisa poder ver o que escreveu.
                     let guardado = path.with_extension("json.invalida");
-                    match std::fs::rename(&path, &guardado) {
+                    match std::fs::rename(path, &guardado) {
                         Ok(()) => log::warn!("a anterior ficou em {}", guardado.display()),
                         Err(e) => log::warn!("não consegui guardar a config inválida: {e}"),
                     }
                     Config::default()
                 }
             },
-            Err(_) => {
+            // Só a ausência do arquivo autoriza gravar os padrões por cima.
+            //
+            // Qualquer erro de leitura levava a este caminho antes, e o `save`
+            // logo abaixo destruía o original sem nem guardar cópia — o oposto
+            // do cuidado que o ramo do JSON inválido tem. Um arquivo ilegível
+            // por um instante (permissão trocada, setor ruim, bytes que não são
+            // UTF-8) custava o atalho, o idioma e o caminho do modelo de quem
+            // usa o programa, sem uma linha no log dizendo o que aconteceu.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let cfg = Config::default();
-                if let Err(e) = cfg.save() {
+                if let Err(e) = cfg.salvar_em(path) {
                     log::warn!("não consegui gravar a config inicial: {e}");
                 }
                 cfg
             }
+            Err(e) => {
+                log::error!(
+                    "não consegui ler {}: {e}. Sigo com os padrões desta vez, \
+                     sem gravar nada por cima do seu arquivo.",
+                    path.display()
+                );
+                Config::default()
+            }
         }
     }
 
-    pub fn save(&self) -> Result<()> {
-        let dir = config_dir();
-        std::fs::create_dir_all(&dir).with_context(|| format!("criando {}", dir.display()))?;
+    /// Grava a configuração num caminho qualquer, de forma atômica.
+    pub fn salvar_em(&self, path: &std::path::Path) -> Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("criando {}", dir.display()))?;
+        }
         let raw = serde_json::to_string_pretty(self)?;
-        let path = config_path();
 
         // Grava ao lado e só então troca pelo definitivo. A troca é atômica
         // dentro da mesma pasta: uma queda no meio da escrita deixa o arquivo
         // anterior inteiro, em vez de um JSON pela metade que o `load` seguinte
         // recusaria — e aí as configurações de quem usa sumiriam sem aviso.
-        let parcial = path.with_extension("json.parcial");
+        //
+        // O nome do temporário carrega o processo e um contador porque duas
+        // threads chamam esta função: quem clica em Salvar e quem termina o
+        // download do modelo. Com um nome fixo, a que abrisse depois truncava o
+        // arquivo que a outra estava escrevendo, e a gravação perdida não
+        // aparecia em lugar nenhum — a tela dizia que tinha salvo.
+        static CONTADOR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = CONTADOR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let parcial = path.with_extension(format!("json.{}.{n}.parcial", std::process::id()));
+
         std::fs::write(&parcial, raw).with_context(|| format!("gravando {}", parcial.display()))?;
-        std::fs::rename(&parcial, &path).with_context(|| format!("gravando {}", path.display()))?;
+        if let Err(e) = std::fs::rename(&parcial, path) {
+            let _ = std::fs::remove_file(&parcial);
+            return Err(e).with_context(|| format!("gravando {}", path.display()));
+        }
         Ok(())
+    }
+
+    /// Apara os valores que só um arquivo editado à mão produz.
+    ///
+    /// A tela já limita todos eles; o arquivo, não. `min_recording_ms` alto
+    /// demais descartava calado todo ditado, e `threads` fora de faixa ia
+    /// direto para o whisper.cpp.
+    fn sanear(&mut self) {
+        self.appearance.sanear();
+        self.threads = self.threads.clamp(1, 32);
+        self.min_recording_ms = self.min_recording_ms.min(5_000);
+        self.max_recording_secs = self.max_recording_secs.clamp(1, 3_600);
+        self.result_timeout_secs = self.result_timeout_secs.min(3_600);
+        if self.hotkey.is_empty() {
+            self.hotkey = Config::default().hotkey;
+        }
+        // A ordem de exibição do atalho é decidida uma vez, aqui, e não a cada
+        // quadro pela interface.
+        crate::keys::sort_combo(&mut self.hotkey);
     }
 
     /// Idioma no formato que o whisper.cpp espera (None = detecção automática).
@@ -318,5 +379,110 @@ mod tests {
         let mut padrao = Appearance::PADRAO;
         padrao.sanear();
         assert_eq!(padrao, Appearance::PADRAO);
+    }
+
+    #[test]
+    fn o_arquivo_editado_a_mao_tem_os_numeros_aparados_na_leitura() {
+        // A tela limita todos estes; o arquivo, não. Um `min_recording_ms`
+        // absurdo descartava calado todo ditado, e `threads` fora de faixa ia
+        // direto para o whisper.cpp.
+        let bruto = r#"{
+            "threads": 9000,
+            "min_recording_ms": 999999,
+            "max_recording_secs": 0,
+            "hotkey": []
+        }"#;
+        let cfg: Config = {
+            let mut c: Config = serde_json::from_str(bruto).expect("config");
+            c.sanear();
+            c
+        };
+        assert_eq!(cfg.threads, 32);
+        assert_eq!(cfg.min_recording_ms, 5_000);
+        assert_eq!(cfg.max_recording_secs, 1);
+        // Sem atalho nenhum o programa ficaria mudo, sem nada explicando.
+        assert_eq!(cfg.hotkey, Config::default().hotkey);
+    }
+
+    /// Uma pasta só deste teste, para não encostar na config de quem o roda.
+    fn pasta_de_teste(nome: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ditador-teste-{}-{nome}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("criando a pasta do teste");
+        dir
+    }
+
+    #[test]
+    fn a_config_vai_e_volta_do_disco() {
+        let dir = pasta_de_teste("ida-e-volta");
+        let arquivo = dir.join("config.json");
+
+        // Arquivo ausente: nascem os padrões, e eles ficam gravados.
+        let inicial = Config::ler_de(&arquivo);
+        assert_eq!(inicial, Config::default());
+        assert!(arquivo.is_file(), "a config inicial não foi gravada");
+
+        let mudada = Config {
+            language: "en".to_string(),
+            threads: 3,
+            ..Config::default()
+        };
+        mudada.salvar_em(&arquivo).expect("gravando");
+        assert_eq!(Config::ler_de(&arquivo), mudada);
+
+        // Nenhum temporário sobrou na pasta.
+        let sobras: Vec<_> = std::fs::read_dir(&dir)
+            .expect("lendo a pasta")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains("parcial"))
+            .collect();
+        assert!(sobras.is_empty(), "temporários esquecidos: {sobras:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_config_invalida_vai_para_a_quarentena_em_vez_de_sumir() {
+        let dir = pasta_de_teste("quarentena");
+        let arquivo = dir.join("config.json");
+        std::fs::write(&arquivo, "{ isto não é json").expect("gravando");
+
+        let cfg = Config::ler_de(&arquivo);
+        assert_eq!(cfg, Config::default());
+        // O arquivo é editável à mão: quem errou uma vírgula precisa poder ver
+        // o que escreveu.
+        let guardado = dir.join("config.json.invalida");
+        assert!(guardado.is_file(), "a config inválida foi destruída");
+        assert_eq!(
+            std::fs::read_to_string(&guardado).expect("lendo"),
+            "{ isto não é json"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_config_ilegivel_nao_e_substituida_pelos_padroes() {
+        // Só a ausência do arquivo autoriza gravar por cima. Qualquer outro
+        // erro de leitura destruía o original sem nem guardar cópia.
+        let dir = pasta_de_teste("ilegivel");
+        // Uma pasta no lugar do arquivo: a leitura falha com algo que não é
+        // NotFound, sem depender de mexer em permissões.
+        let arquivo = dir.join("config.json");
+        std::fs::create_dir(&arquivo).expect("criando a pasta no lugar do arquivo");
+
+        let cfg = Config::ler_de(&arquivo);
+        assert_eq!(cfg, Config::default());
+        assert!(
+            arquivo.is_dir(),
+            "o que estava no lugar da config foi destruído"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

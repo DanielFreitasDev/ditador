@@ -1,12 +1,12 @@
 //! Socket Unix para instância única e para o controle por linha de comando
 //! (`ditador --alternar`, usado pelo ícone e por atalhos do GNOME).
 
-use anyhow::{Context, Result, anyhow};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Onde o socket de controle mora, ou `None` quando não há lugar seguro.
 ///
@@ -74,41 +74,80 @@ unsafe fn libc_getuid() -> u32 {
     unsafe { getuid() }
 }
 
+/// Quanto tempo esperamos por um cliente calado antes de desistir dele.
+///
+/// O atendimento é em série, então uma conexão que nunca mandasse a linha
+/// prendia a thread inteira: a partir dali nenhum `ditador --alternar` — nem o
+/// do atalho do GNOME, nem o do lançador — era atendido, e cada um deles ficava
+/// pendurado esperando resposta. O atalho do evdev e a bandeja continuavam
+/// funcionando, o que tornava o sintoma difícil de entender.
+const PACIENCIA: Duration = Duration::from_secs(2);
+
+/// Teto do que aceitamos numa linha de comando.
+///
+/// O maior comando válido tem oito bytes. Sem teto, um cliente que mandasse
+/// bytes sem nunca mandar `\n` fazia a `String` crescer até acabar a memória.
+const LIMITE_DA_LINHA: u64 = 1024;
+
 /// Envia um comando para a instância que já está rodando.
 /// `None` significa que não há ninguém escutando.
 pub fn send(command: &str) -> Option<String> {
     let mut stream = UnixStream::connect(socket_path()?).ok()?;
+    // Do lado do cliente os prazos também importam: sem eles, uma instância
+    // travada deixava `ditador --status` pendurado para sempre no terminal.
+    let _ = stream.set_read_timeout(Some(PACIENCIA));
+    let _ = stream.set_write_timeout(Some(PACIENCIA));
     stream.write_all(command.as_bytes()).ok()?;
     stream.write_all(b"\n").ok()?;
     stream.flush().ok()?;
 
     let mut reply = String::new();
-    BufReader::new(&stream).read_line(&mut reply).ok()?;
+    BufReader::new(stream.take(LIMITE_DA_LINHA))
+        .read_line(&mut reply)
+        .ok()?;
     Some(reply.trim_end().to_string())
 }
 
 pub enum Bind {
-    Ready(UnixListener),
+    Escutando(UnixListener),
     /// Outra instância já responde no socket.
-    AlreadyRunning,
+    JaRodando,
+    /// Não há onde pendurar o socket, e o motivo.
+    ///
+    /// Não é erro de inicialização: sem socket ainda dá para ditar, e o que se
+    /// perde é o controle por linha de comando. Derrubar o programa inteiro por
+    /// causa de um acessório seria trocar o todo pela parte que faltou.
+    SemSocket(String),
 }
 
 /// Assume o socket, a menos que outra instância já esteja atendendo nele.
 ///
 /// "Já está rodando" não é erro: é o estado desejado. Tratá-lo como falha faria
 /// o systemd reiniciar o serviço sem parar.
-pub fn bind() -> Result<Bind> {
-    let path = socket_path().ok_or_else(|| anyhow!("sem um lugar seguro para o socket"))?;
+pub fn bind() -> Bind {
+    let Some(path) = socket_path() else {
+        return Bind::SemSocket("sem um lugar seguro para o socket".to_string());
+    };
 
     if UnixStream::connect(path).is_ok() {
-        return Ok(Bind::AlreadyRunning);
+        return Bind::JaRodando;
     }
     // Socket órfão de uma execução anterior.
     let _ = std::fs::remove_file(path);
 
-    let listener =
-        UnixListener::bind(path).with_context(|| format!("criando o socket {}", path.display()))?;
-    Ok(Bind::Ready(listener))
+    match UnixListener::bind(path) {
+        Ok(listener) => Bind::Escutando(listener),
+        // Duas execuções simultâneas chegam aqui juntas e uma perde a corrida.
+        // A que perdeu confere de novo: se agora há alguém atendendo, o estado
+        // desejado foi alcançado por outro caminho.
+        Err(e) => {
+            if UnixStream::connect(path).is_ok() {
+                Bind::JaRodando
+            } else {
+                Bind::SemSocket(format!("criando {}: {e}", path.display()))
+            }
+        }
+    }
 }
 
 /// Atende comandos numa thread própria. O handler devolve a resposta.
@@ -121,8 +160,15 @@ where
         .spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
+                let _ = stream.set_read_timeout(Some(PACIENCIA));
+                let _ = stream.set_write_timeout(Some(PACIENCIA));
+
                 let mut line = String::new();
-                if BufReader::new(&stream).read_line(&mut line).is_err() {
+                if BufReader::new((&stream).take(LIMITE_DA_LINHA))
+                    .read_line(&mut line)
+                    .is_err()
+                {
+                    log::debug!("cliente do socket desistiu antes de mandar o comando");
                     continue;
                 }
                 let reply = handler(line.trim());

@@ -123,23 +123,65 @@ fn escrever_xdg() -> Result<()> {
     let pasta = arquivo.parent().unwrap_or(std::path::Path::new("."));
     std::fs::create_dir_all(pasta).with_context(|| format!("criando {}", pasta.display()))?;
 
-    // O caminho absoluto do binário em execução, porque a sessão gráfica pode
-    // não ter o mesmo PATH do terminal de onde o programa foi rodado.
-    let executavel = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "ditador".to_string());
-
-    std::fs::write(&arquivo, texto_xdg(&executavel))
+    std::fs::write(&arquivo, texto_xdg(&executavel_atual()))
         .with_context(|| format!("gravando {}", arquivo.display()))
 }
 
+/// O caminho absoluto do binário em execução, porque a sessão gráfica pode não
+/// ter o mesmo PATH do terminal de onde o programa foi rodado.
+///
+/// Depois de um `cargo build` por cima do binário que está rodando, o Linux
+/// devolve aqui o caminho antigo com " (deleted)" no fim. Escrever isso no
+/// `Exec=` produziria um autostart que não sobe — e, como `ligado()` só confere
+/// se o arquivo existe, o interruptor continuaria dizendo que está ligado.
+fn executavel_atual() -> String {
+    match std::env::current_exe() {
+        Ok(caminho) if caminho.exists() => caminho.display().to_string(),
+        Ok(caminho) => {
+            log::warn!(
+                "{} não existe mais; o autostart vai procurar o ditador no PATH",
+                caminho.display()
+            );
+            "ditador".to_string()
+        }
+        Err(e) => {
+            log::warn!("não descobri o caminho do próprio binário ({e}); usando o PATH");
+            "ditador".to_string()
+        }
+    }
+}
+
+/// Cita o comando conforme a especificação Desktop Entry.
+///
+/// Sem as aspas, um caminho com espaço — que é o caso normal de quem só
+/// compilou o projeto dentro de uma pasta com nome de verdade — era quebrado
+/// pelo lançador e só o primeiro pedaço virava o programa a executar. A spec
+/// pede a barra invertida antes de `"`, `` ` ``, `$` e `\`, e o `%` dobrado.
+fn citar(comando: &str) -> String {
+    let mut saida = String::with_capacity(comando.len() + 2);
+    saida.push('"');
+    for c in comando.chars() {
+        match c {
+            '"' | '`' | '$' | '\\' => {
+                saida.push('\\');
+                saida.push(c);
+            }
+            '%' => saida.push_str("%%"),
+            _ => saida.push(c),
+        }
+    }
+    saida.push('"');
+    saida
+}
+
 fn texto_xdg(executavel: &str) -> String {
+    let comando = citar(executavel);
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=Ditador\n\
          Comment=Ditado por voz offline, em segundo plano\n\
-         Exec={executavel}\n\
+         Exec={comando}\n\
          Icon=ditador\n\
          Terminal=false\n\
          NoDisplay=true\n\
@@ -149,13 +191,32 @@ fn texto_xdg(executavel: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn o_desktop_de_autostart_aponta_para_o_binario() {
-        let texto = super::texto_xdg("/usr/bin/ditador");
-        assert!(texto.contains("Exec=/usr/bin/ditador\n"));
+        let texto = texto_xdg("/usr/bin/ditador");
+        assert!(texto.contains("Exec=\"/usr/bin/ditador\"\n"));
         // Sem argumentos: o autostart sobe o serviço, não abre uma janela.
         assert!(!texto.contains("--alternar"));
         // E sem aparecer na lista de aplicativos, que já tem o atalho normal.
         assert!(texto.contains("NoDisplay=true"));
+    }
+
+    #[test]
+    fn o_exec_com_espaco_no_caminho_sai_entre_aspas() {
+        // É o caso de quem só compilou: ~/Meus Projetos/ditador/target/release.
+        let texto = texto_xdg("/home/ana/Meus Projetos/ditador");
+        assert!(
+            texto.contains("Exec=\"/home/ana/Meus Projetos/ditador\"\n"),
+            "{texto}"
+        );
+    }
+
+    #[test]
+    fn os_caracteres_que_a_especificacao_manda_escapar_saem_escapados() {
+        assert_eq!(citar("/opt/di$ador"), "\"/opt/di\\$ador\"");
+        assert_eq!(citar("/opt/100% puro"), "\"/opt/100%% puro\"");
+        assert_eq!(citar(r"/opt/a\b"), "\"/opt/a\\\\b\"");
     }
 }
