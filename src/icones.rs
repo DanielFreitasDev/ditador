@@ -71,26 +71,43 @@ impl Estado {
     }
 }
 
-/// Ícone da bandeja em ARGB32, que é o formato do protocolo StatusNotifierItem.
+/// Um ícone já decodificado, do tamanho que estiver.
+///
+/// Existe porque este módulo não pode mais devolver `ksni::Icon`: o ksni é o
+/// StatusNotifierItem, que é do Linux, e o Windows precisa dos mesmos pixels
+/// para montar um `HICON`. Cada plataforma converte no lado dela — são duas
+/// linhas de cópia — e o que atravessa a fronteira é só o mapa de bits.
+///
+/// O `argb` está em ARGB de 32 bits na ordem de rede (o byte mais alto
+/// primeiro), que é o que o protocolo StatusNotifierItem pede. Não é o que o
+/// Win32 pede (lá é BGRA, de baixo para cima); a conversão mora em
+/// `plataforma::windows`, junto do resto do que é peculiaridade do Windows, e
+/// não aqui.
+pub struct Bitmap {
+    pub largura: u32,
+    pub altura: u32,
+    pub argb: Vec<u8>,
+}
+
+/// Ícones da bandeja, nas duas resoluções que os hospedeiros costumam pedir.
 ///
 /// Só é decodificado quando o estado muda, então não vale a pena guardar.
-pub fn bandeja(estado: Estado) -> Vec<ksni::Icon> {
+pub fn bandeja(estado: Estado) -> Vec<Bitmap> {
     estado
         .png()
         .into_iter()
         .filter_map(|bytes| {
             let imagem = decodificar(bytes)?;
             let (largura, altura) = imagem.dimensions();
-            let mut data = Vec::with_capacity(largura as usize * altura as usize * 4);
+            let mut argb = Vec::with_capacity(largura as usize * altura as usize * 4);
             for pixel in imagem.pixels() {
                 let [r, g, b, a] = pixel.0;
-                // ARGB de 32 bits na ordem de rede (o byte mais alto primeiro).
-                data.extend_from_slice(&[a, r, g, b]);
+                argb.extend_from_slice(&[a, r, g, b]);
             }
-            Some(ksni::Icon {
-                width: largura as i32,
-                height: altura as i32,
-                data,
+            Some(Bitmap {
+                largura,
+                altura,
+                argb,
             })
         })
         .collect()

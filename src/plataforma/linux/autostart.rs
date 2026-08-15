@@ -72,6 +72,25 @@ pub fn definir(ligar: bool) -> Result<()> {
     }
 }
 
+/// A explicação que a tela de configurações mostra embaixo do interruptor.
+///
+/// Devolve a frase pronta em vez de expor o `Metodo`, porque a tela não tem o
+/// que fazer com um enum cujos dois valores só existem no Linux: o Windows tem
+/// um método só e uma frase só, e a alternativa seria um `cfg` no meio do
+/// desenho da interface.
+pub fn explicacao() -> &'static str {
+    match metodo() {
+        Metodo::Systemd => {
+            "Pelo serviço de usuário do systemd. Vale na hora, sem precisar salvar. \
+             Para ver o que está acontecendo: journalctl --user -u ditador -f"
+        }
+        Metodo::Xdg => {
+            "Por um atalho em ~/.config/autostart. Vale na hora, sem precisar salvar. \
+             Instalando pelo pacote, passa a usar o serviço do systemd."
+        }
+    }
+}
+
 // ------------------------------------------------------------------- systemd
 
 fn unidade_existe() -> bool {

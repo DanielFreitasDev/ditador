@@ -41,22 +41,65 @@ fn memoria() -> std::sync::MutexGuard<'static, BTreeMap<&'static str, bool>> {
 
 fn procurar(programa: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|caminhos| {
-        std::env::split_paths(&caminhos).any(|dir| dir.join(programa).is_file())
+        std::env::split_paths(&caminhos)
+            .any(|dir| nomes_possiveis(programa).any(|nome| dir.join(&nome).is_file()))
     })
+}
+
+/// Os nomes de arquivo que o programa pode ter, em ordem de preferência.
+///
+/// No Unix é um só, o próprio nome. No Windows um executável quase nunca se
+/// chama pelo nome pelado: quem digita `curl` executa `curl.exe`, e é o
+/// `PATHEXT` que diz quais sufixos contam. Procurando sem eles, esta função
+/// respondia "não instalado" para **tudo** no Windows — inclusive para o `curl`,
+/// que vem no próprio sistema desde o Windows 10 e é como o Ditador baixa o
+/// modelo de 574 MB. O sintoma seria um botão de baixar que não baixa, dizendo
+/// que falta um programa que está ali.
+#[cfg(target_os = "windows")]
+fn nomes_possiveis(programa: &str) -> impl Iterator<Item = String> {
+    // O padrão do Windows, para o caso improvável de a variável não existir.
+    const RESERVA: &str = ".COM;.EXE;.BAT;.CMD";
+
+    let extensoes = std::env::var("PATHEXT").unwrap_or_else(|_| RESERVA.to_string());
+    // O nome pelado entra primeiro: um programa pode ter sido instalado sem
+    // extensão nenhuma, e alguns ambientes de desenvolvimento fazem isso.
+    let mut nomes = vec![programa.to_string()];
+    nomes.extend(
+        extensoes
+            .split(';')
+            .filter(|extensao| !extensao.is_empty())
+            .map(|extensao| format!("{programa}{extensao}")),
+    );
+    nomes.into_iter()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn nomes_possiveis(programa: &str) -> impl Iterator<Item = String> {
+    std::iter::once(programa.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Um programa que está no PATH de qualquer máquina onde o Ditador roda.
+    ///
+    /// No Unix, o `sh`. No Windows, o `cmd` — que mora no `System32` e é
+    /// encontrado **sem** a extensão que ele tem no disco (`cmd.exe`), o que faz
+    /// dele a sonda certa: um teste que procurasse "cmd.exe" passaria mesmo com
+    /// a busca por `PATHEXT` quebrada.
+    #[cfg(target_os = "windows")]
+    const SONDA: &str = "cmd";
+    #[cfg(not(target_os = "windows"))]
+    const SONDA: &str = "sh";
+
     #[test]
     fn acha_o_que_existe_e_nao_inventa_o_que_nao_existe() {
-        // O `sh` está no PATH de qualquer sistema onde este programa roda.
-        assert!(existe("sh"));
+        assert!(existe(SONDA));
         assert!(!existe("nao-existe-um-programa-com-este-nome"));
         assert_eq!(
-            primeiro(&["nao-existe-um-programa-com-este-nome", "sh"]),
-            Some("sh")
+            primeiro(&["nao-existe-um-programa-com-este-nome", SONDA]),
+            Some(SONDA)
         );
         assert_eq!(primeiro(&["nao-existe-um-programa-com-este-nome"]), None);
     }
@@ -64,9 +107,27 @@ mod tests {
     #[test]
     fn a_resposta_guardada_sobrevive_a_pergunta_repetida() {
         reler();
-        assert!(existe("sh"));
-        assert!(existe("sh"));
+        assert!(existe(SONDA));
+        assert!(existe(SONDA));
         reler();
-        assert!(existe("sh"));
+        assert!(existe(SONDA));
+    }
+
+    /// O `curl` é como o Ditador baixa o modelo, e o Windows o traz de fábrica
+    /// desde o Windows 10 — como `curl.exe`, dentro do System32.
+    ///
+    /// Este teste existe porque a versão anterior desta busca respondia "não
+    /// instalado" para ele: sem consultar o `PATHEXT`, ela procurava um arquivo
+    /// chamado exatamente `curl`, que não existe. O botão de baixar o modelo
+    /// ficaria desligado numa máquina que tem tudo de que precisa.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn o_curl_que_o_windows_traz_de_fabrica_e_encontrado() {
+        reler();
+        assert!(
+            existe("curl"),
+            "o curl.exe do System32 não foi encontrado; a busca no PATH \
+             provavelmente parou de consultar o PATHEXT"
+        );
     }
 }

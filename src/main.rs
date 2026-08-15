@@ -34,12 +34,12 @@ mod autostart;
 mod clipboard;
 mod config;
 mod controller;
-mod dbus;
 mod hotkey;
 mod icones;
 mod ipc;
 mod keys;
 mod modelo;
+mod plataforma;
 mod programas;
 mod resample;
 mod state;
@@ -193,6 +193,12 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
 
     // No GNOME/Wayland um aplicativo comum não escolhe onde sua janela aparece
     // nem consegue ficar por cima das outras. Pelo XWayland isso funciona.
+    //
+    // No Windows a pergunta não existe: `WS_EX_TOPMOST` e o posicionamento
+    // sempre funcionaram, e não há dois protocolos de janela disputando. O campo
+    // `force_x11` continua na configuração — apagá-lo quebraria os arquivos já
+    // gravados, e o `CLAUDE.md` proíbe — mas aqui ele simplesmente não é lido.
+    #[cfg(target_os = "linux")]
     if config.force_x11 && std::env::var_os("DISPLAY").is_some() {
         unsafe {
             std::env::set_var("WINIT_UNIX_BACKEND", "x11");
@@ -294,10 +300,13 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         })
         .expect("spawn controller");
 
-    // O D-Bus vem antes da bandeja porque é ele quem descobre se a extensão do
-    // GNOME já está no ar. Descobrindo primeiro, a bandeja nasce sabendo, e o
-    // ícone não chega a piscar na barra no login de quem usa as duas coisas.
-    dbus::start(shared.clone(), &sinal, ipc_tx.clone(), levels.clone());
+    // As integrações vêm antes da bandeja porque são elas que descobrem se
+    // alguém já está mostrando o Ditador na barra. Descobrindo primeiro, a
+    // bandeja nasce sabendo, e o ícone não chega a piscar no login de quem usa
+    // as duas coisas. É uma das armadilhas registradas no `CLAUDE.md`, e a
+    // ordem continua valendo — no Windows por não haver nada a inverter, no
+    // Linux pelo motivo medido lá.
+    plataforma::integracoes::start(shared.clone(), &sinal, ipc_tx.clone(), levels.clone());
     tray::start(shared.clone(), &sinal, ipc_tx.clone());
 
     if let Some(comando) = ao_iniciar {
@@ -365,15 +374,34 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
 }
 
 /// Sai imediatamente, pulando `atexit` e destrutores estáticos.
+///
+/// Não é otimização nem descuido: desmontar os buffers do ggml/Vulkan dá SIGSEGV
+/// no driver da NVIDIA, e o systemd trataria isso como falha e reiniciaria o
+/// aplicativo em laço. Todo caminho de saída passa por aqui, inclusive o de erro
+/// da interface — devolver o erro com `?` faria o processo terminar pelo runtime
+/// do Rust, que é exatamente o que se quer evitar.
+///
+/// A mesma decisão vale no Windows pelo mesmo motivo — o driver é o mesmo, o
+/// ggml é o mesmo —, com a chamada de lá: `ExitProcess`. O `_exit` da libc não
+/// serve aqui, porque com o MSVC ele é um detalhe interno do runtime C e não um
+/// símbolo estável para se ligar.
 fn sair_sem_desmontar(codigo: i32) -> ! {
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
 
-    unsafe extern "C" {
-        fn _exit(status: i32) -> !;
+    #[cfg(target_os = "linux")]
+    unsafe {
+        unsafe extern "C" {
+            fn _exit(status: i32) -> !;
+        }
+        _exit(codigo)
     }
-    unsafe { _exit(codigo) }
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        windows_sys::Win32::System::Threading::ExitProcess(codigo as u32)
+    }
 }
 
 /// Baixa o modelo pelo terminal, com a mesma máquina que a interface usa.
@@ -424,12 +452,24 @@ fn baixar_modelo(nome: &str) -> Result<()> {
 /// parecidas. Uma tela que responde "o que está faltando aqui?" custa menos que
 /// a soma das perguntas que ela evita.
 fn diagnostico() -> Result<()> {
-    fn linha(ok: bool, titulo: &str, detalhe: &str) -> bool {
+    /// Uma linha do relatório.
+    ///
+    /// `None` é informativo: a linha aparece, com `--` na frente, e **não** pesa
+    /// no veredito. Existe porque nem tudo que não está lá é problema — a
+    /// colagem automática no Windows não existe por decisão de projeto, e a
+    /// leitura do teclado não é mensurável de dentro deste processo. Marcá-las
+    /// com `!!` faria o comando terminar dizendo "há o que resolver" numa
+    /// máquina onde não há, que é justamente o erro que ele existe para evitar.
+    fn linha(situacao: Option<bool>, titulo: &str, detalhe: &str) -> bool {
         println!(
             "{} {titulo}\n    {detalhe}",
-            if ok { "ok  " } else { "!!  " }
+            match situacao {
+                Some(true) => "ok  ",
+                Some(false) => "!!  ",
+                None => "--  ",
+            }
         );
-        ok
+        situacao.unwrap_or(true)
     }
 
     println!(
@@ -441,24 +481,17 @@ fn diagnostico() -> Result<()> {
 
     let mut tudo_bem = true;
 
-    // 1. O atalho global. Sem o grupo `input` nada disso funciona.
-    let teclados = hotkey::teclados_legiveis();
-    tudo_bem &= linha(
-        teclados > 0,
-        "Leitura do teclado (/dev/input)",
-        &if teclados > 0 {
-            format!("{teclados} teclado(s) legível(is).")
-        } else {
-            "Nenhum. Rode: sudo usermod -aG input $USER — depois saia da sessão e entre de novo."
-                .to_string()
-        },
-    );
+    // 1. O atalho global. A pergunta é a mesma nos dois sistemas — "dá para ler
+    // o teclado daqui?" —, mas o motivo de falhar e o conselho para resolver não
+    // têm nada em comum, então quem monta a linha inteira é a plataforma.
+    let (teclado_ok, teclado_titulo, teclado_detalhe) = plataforma::teclado::diagnostico();
+    tudo_bem &= linha(teclado_ok, teclado_titulo, &teclado_detalhe);
 
     // 2. O modelo.
     let config = Config::load();
     let modelo_ok = config.model_path.exists();
     tudo_bem &= linha(
-        modelo_ok,
+        Some(modelo_ok),
         "Modelo de transcrição",
         &if modelo_ok {
             format!(
@@ -479,7 +512,7 @@ fn diagnostico() -> Result<()> {
     // 3. O microfone.
     let microfones = audio::list_input_devices();
     tudo_bem &= linha(
-        !microfones.is_empty(),
+        Some(!microfones.is_empty()),
         "Microfone",
         &match config.input_device.as_deref() {
             _ if microfones.is_empty() => "nenhum encontrado.".to_string(),
@@ -496,29 +529,30 @@ fn diagnostico() -> Result<()> {
         },
     );
 
-    // 4. Área de transferência e colagem — degradam, mas com aviso.
+    // 4. Área de transferência e colagem — degradam, mas com aviso. Nenhuma das
+    // duas entra no veredito: dá para ditar sem elas.
     linha(
-        clipboard::wl_copy_available(),
-        "Cópia no Wayland (wl-copy)",
-        if clipboard::wl_copy_available() {
-            "instalado."
-        } else {
-            "ausente; a cópia vai pelo X11. Para instalar: sudo apt install wl-clipboard"
-        },
+        Some(clipboard::aviso_da_copia().is_none()),
+        "Área de transferência",
+        clipboard::aviso_da_copia()
+            .unwrap_or("funcionando pelo caminho nativo desta área de trabalho."),
     );
     linha(
-        clipboard::paste_available(),
-        "Colagem automática (ydotool)",
+        // Informativo quando não há: no Windows a colagem automática não existe
+        // por decisão de projeto, e no Linux ela é um extra que o usuário
+        // escolhe instalar. Nos dois casos, "não tem" não é defeito.
+        clipboard::paste_available().then_some(true),
+        "Colagem automática",
         if clipboard::paste_available() {
-            "instalado. Ela também precisa do serviço: systemctl --user status ydotool"
+            "disponível. Ela também precisa do serviço: systemctl --user status ydotool"
         } else {
-            "ausente; a colagem automática fica desligada. Para instalar: sudo apt install ydotool"
+            clipboard::COMO_HABILITAR_A_COLAGEM
         },
     );
 
     // 5. Download do modelo.
     linha(
-        modelo::disponivel(),
+        Some(modelo::disponivel()),
         "Download do modelo (curl ou wget)",
         if modelo::disponivel() {
             "disponível."
@@ -531,7 +565,7 @@ fn diagnostico() -> Result<()> {
     // funciona sem nenhuma delas, e a bandeja é a reserva de todo mundo. Está
     // aqui porque a pergunta que ela responde — "por que o ícone do Ditador
     // sumiu da barra?" — não tem outro lugar onde ser respondida.
-    match dbus::integracoes_no_ar() {
+    match plataforma::integracoes::integracoes_no_ar() {
         Some(integracoes) => println!(
             "{}   Integração da área de trabalho\n    {}",
             if integracoes.mostram_o_icone() {
@@ -549,16 +583,7 @@ fn diagnostico() -> Result<()> {
                 (false, true) => "widget do Plasma no ar. O ícone da bandeja fica recolhido; \
                      o aviso de gravação continua sendo a janela do Ditador."
                     .to_string(),
-                (false, false) => format!(
-                    "nenhuma. O Ditador aparece pelo ícone da bandeja, que funciona \
-                     em toda área de trabalho que tenha um. Para instalar a do seu \
-                     desktop: {}",
-                    match std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default() {
-                        d if d.contains("KDE") => "./kde-plasma/instalar.sh",
-                        d if d.contains("GNOME") => "./gnome-extension/instalar.sh",
-                        _ => "veja o README",
-                    }
-                ),
+                (false, false) => plataforma::integracoes::sem_nenhuma(),
             }
         ),
         None => println!(
@@ -571,7 +596,8 @@ fn diagnostico() -> Result<()> {
     match ipc::send("status") {
         Some(resposta) => println!("ok   Instância em execução\n    {resposta}"),
         None => println!(
-            "--   Instância em execução\n    nenhuma. Para subir: systemctl --user start ditador"
+            "--   Instância em execução\n    {}",
+            plataforma::teclado::COMO_SUBIR_O_SERVICO
         ),
     }
 

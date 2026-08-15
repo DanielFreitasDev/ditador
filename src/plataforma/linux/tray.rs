@@ -100,6 +100,23 @@ impl Retrato {
     }
 }
 
+/// Os ícones embutidos, no formato que o StatusNotifierItem pede.
+///
+/// O `icones::bandeja` devolve um mapa de bits neutro porque o Windows precisa
+/// dos mesmos pixels para montar um `HICON`, e `ksni::Icon` é um tipo do
+/// protocolo do Linux. A conversão é uma mudança de nome de campo — os bytes já
+/// estão em ARGB32 na ordem de rede, que é justamente o que o protocolo espera.
+fn pixmaps(estado: Estado) -> Vec<ksni::Icon> {
+    icones::bandeja(estado)
+        .into_iter()
+        .map(|bitmap| ksni::Icon {
+            width: bitmap.largura as i32,
+            height: bitmap.altura as i32,
+            data: bitmap.argb,
+        })
+        .collect()
+}
+
 pub struct Icone {
     retrato: Retrato,
     comandos: Sender<IpcCommand>,
@@ -139,7 +156,7 @@ impl ksni::Tray for Icone {
     /// Reserva para quando o tema não tiver os nossos ícones. O protocolo manda
     /// o hospedeiro preferir o nome e só cair no mapa de bits se não achar.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        icones::bandeja(self.retrato.icone())
+        pixmaps(self.retrato.icone())
     }
 
     fn tool_tip(&self) -> ToolTip {
@@ -147,7 +164,7 @@ impl ksni::Tray for Icone {
             title: "Ditador".to_string(),
             description: self.retrato.resumo(),
             icon_name: self.retrato.icone().nome().to_string(),
-            icon_pixmap: icones::bandeja(self.retrato.icone()),
+            icon_pixmap: pixmaps(self.retrato.icone()),
         }
     }
 

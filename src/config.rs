@@ -45,8 +45,20 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.json")
 }
 
+/// Onde ficam os dados grandes: os modelos do Whisper.
+///
+/// **`data_local_dir`, e não `data_dir`.** No Linux os dois são a mesma pasta
+/// (`~/.local/share`), então a troca não muda nada lá. No Windows eles são
+/// coisas bem diferentes: `data_dir` é o **Roaming**, que o Windows sincroniza
+/// entre as máquinas de um mesmo perfil de domínio, e `data_local_dir` é o
+/// **Local**, que fica onde está.
+///
+/// O modelo padrão tem 574 MB. Deixá-lo no Roaming significaria meio giga
+/// atravessando a rede a cada login numa rede corporativa, e o perfil do usuário
+/// estourando a cota — um daqueles problemas que não aparecem na máquina de
+/// quem programou e arruínam o dia de quem instalou.
 pub fn data_dir() -> PathBuf {
-    dirs::data_dir()
+    dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(APP_NAME)
 }
@@ -55,11 +67,39 @@ pub fn models_dir() -> PathBuf {
     data_dir().join("models")
 }
 
-/// O caminho com a pasta pessoal trocada por `~`.
+/// O caminho encurtado para caber numa frase.
 ///
-/// Serve para caber numa frase: escrito por extenso, o caminho do modelo sozinho
-/// ocupa três linhas da janela de erro.
+/// Escrito por extenso, o caminho do modelo sozinho ocupa três linhas da janela
+/// de erro. A abreviação segue a convenção de cada sistema — `~/` no Unix,
+/// `%LOCALAPPDATA%` e companhia no Windows —, porque um `~/AppData\Roaming\…`
+/// não é como ninguém escreve um caminho no Windows e faz o leitor duvidar de
+/// que o programa saiba onde está.
 pub fn caminho_curto(caminho: &std::path::Path) -> String {
+    encurtar(caminho)
+}
+
+#[cfg(target_os = "windows")]
+fn encurtar(caminho: &std::path::Path) -> String {
+    // Da pasta mais específica para a mais geral: `LocalAppData` e o `Roaming`
+    // estão *dentro* do perfil do usuário, então conferi-los antes evita que a
+    // resposta seja o prefixo mais curto e menos informativo
+    // (`%USERPROFILE%\AppData\Local\…` em vez de `%LOCALAPPDATA%\…`).
+    for (variavel, pasta) in [
+        ("%LOCALAPPDATA%", dirs::data_local_dir()),
+        ("%APPDATA%", dirs::config_dir()),
+        ("%USERPROFILE%", dirs::home_dir()),
+    ] {
+        if let Some(pasta) = pasta
+            && let Ok(resto) = caminho.strip_prefix(&pasta)
+        {
+            return format!("{variavel}\\{}", resto.display());
+        }
+    }
+    caminho.display().to_string()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn encurtar(caminho: &std::path::Path) -> String {
     match dirs::home_dir().and_then(|casa| caminho.strip_prefix(casa).ok()) {
         Some(resto) => format!("~/{}", resto.display()),
         None => caminho.display().to_string(),
@@ -340,6 +380,72 @@ impl Config {
         } else {
             Some(self.language.as_str())
         }
+    }
+}
+
+#[cfg(test)]
+mod testes_de_caminho {
+    use super::*;
+
+    /// Os 574 MB do modelo não podem cair numa pasta que o Windows sincroniza.
+    ///
+    /// Este teste existe porque o erro já aconteceu: a primeira versão desta
+    /// portabilidade usava `dirs::data_dir()`, que no Linux é `~/.local/share` e
+    /// no Windows é o **Roaming** — e o `--diagnostico` da primeira execução no
+    /// Windows apontou alegremente para
+    /// `AppData\Roaming\ditador\models\`. Numa máquina de domínio isso seria
+    /// meio giga atravessando a rede a cada login.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn o_modelo_nao_vai_para_o_roaming() {
+        let modelos = models_dir();
+        let local = dirs::data_local_dir().expect("o Windows sempre tem LocalAppData");
+        assert!(
+            modelos.starts_with(&local),
+            "os modelos saíram de LocalAppData: {}",
+            modelos.display()
+        );
+        assert!(
+            !modelos.to_string_lossy().contains("Roaming"),
+            "os modelos foram parar no Roaming: {}",
+            modelos.display()
+        );
+    }
+
+    /// A configuração, ao contrário, *pode* acompanhar o usuário: são poucos
+    /// quilobytes de preferências, e sincronizá-las entre as máquinas de um mesmo
+    /// perfil é o comportamento desejável.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn a_configuracao_pode_acompanhar_o_usuario() {
+        let config = config_path();
+        assert!(
+            config.to_string_lossy().contains("Roaming"),
+            "a configuração saiu do Roaming: {}",
+            config.display()
+        );
+    }
+
+    #[test]
+    fn o_caminho_curto_usa_a_convencao_do_sistema() {
+        let curto = caminho_curto(&models_dir());
+        #[cfg(target_os = "windows")]
+        assert!(
+            curto.starts_with("%LOCALAPPDATA%\\"),
+            "no Windows o caminho abreviado deve usar a variável de ambiente: {curto}"
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert!(
+            curto.starts_with("~/"),
+            "no Unix o caminho abreviado deve usar o til: {curto}"
+        );
+        // Um caminho que não está debaixo de nenhuma pasta conhecida sai inteiro.
+        let alheio = std::path::Path::new(if cfg!(windows) {
+            r"D:\outra\coisa"
+        } else {
+            "/opt/outra/coisa"
+        });
+        assert_eq!(caminho_curto(alheio), alheio.display().to_string());
     }
 }
 

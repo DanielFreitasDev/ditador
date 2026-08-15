@@ -1,224 +1,82 @@
-//! Socket Unix para instância única e para o controle por linha de comando
-//! (`ditador --alternar`, usado pelo ícone e por atalhos do GNOME).
+//! O canal de controle local: instância única e linha de comando.
+//!
+//! É por aqui que `ditador --alternar`, `--status`, `--configuracoes` e
+//! `--encerrar` falam com a instância que já está rodando — e é a mesma porta
+//! que responde "já tem um Ditador de pé, não suba outro".
+//!
+//! O transporte muda de sistema para sistema e o protocolo não:
+//!
+//! * **Linux** — socket Unix em `$XDG_RUNTIME_DIR/ditador.sock`;
+//! * **Windows** — named pipe `\\.\pipe\Ditador-<SID>`, com DACL só do usuário.
+//!
+//! Os dois carregam a mesma coisa: **uma linha de comando, uma linha de
+//! resposta, ambas terminadas por `\n`**. É pouco e é de propósito. O volume é
+//! de alguns comandos por dia, o conteúdo cabe numa linha de terminal, e o
+//! formato é auditável com `nc -U` no Linux ou um `Get-Content` no Windows sem
+//! precisar de ferramenta nenhuma. Protobuf ou gRPC aqui seriam três camadas
+//! para transportar a palavra "toggle".
+//!
+//! ## Onde entra a interface do Windows
+//!
+//! O frontend WinUI precisa de mais do que isto: ele quer o estado inicial e
+//! depois um fluxo de eventos, sem ficar perguntando. Isso **não** vira um
+//! segundo protocolo nem um segundo canal — é um comando a mais nesta mesma
+//! linha (`assinar`), depois do qual a conexão para de ser pergunta-e-resposta e
+//! passa a receber uma linha por mudança de estado. Quem manda `status` e fecha
+//! continua funcionando exatamente como antes.
+//!
+//! A regra do `CLAUDE.md` para o contrato D-Bus vale aqui inteira:
+//! **acrescentar, nunca renomear**. Um comando novo é invisível para quem não o
+//! conhece; um comando renomeado quebra o atalho de teclado que alguém
+//! configurou no painel do sistema para chamar `ditador --alternar`.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::DirBuilderExt;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::Duration;
-
-/// Onde o socket de controle mora, ou `None` quando não há lugar seguro.
-///
-/// A resposta é decidida uma vez só, porque descobri-la cria a pasta de reserva.
-pub fn socket_path() -> Option<&'static Path> {
-    static CAMINHO: OnceLock<Option<PathBuf>> = OnceLock::new();
-    CAMINHO.get_or_init(escolher_o_lugar).as_deref()
-}
-
-/// O lugar certo é o `XDG_RUNTIME_DIR`: ele já é uma pasta só do usuário, criada
-/// pelo systemd-logind com permissão 0700.
-///
-/// Sem ele — sessão sem logind, contêiner, `su` para outro usuário —, a reserva
-/// é uma pasta nossa dentro do /tmp, criada com 0700 e conferida antes do uso. A
-/// conferência não é zelo: o /tmp é gravável por qualquer um, e um socket solto
-/// ali poderia ter sido deixado por outro usuário da máquina, que passaria a
-/// receber os comandos do Ditador — inclusive o de encerrar — no lugar dele.
-fn escolher_o_lugar() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return Some(PathBuf::from(dir).join("ditador.sock"));
-    }
-
-    let reserva = PathBuf::from(format!("/tmp/ditador-{}", unsafe { libc_getuid() }));
-    match std::fs::DirBuilder::new().mode(0o700).create(&reserva) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => {
-            log::warn!("não consegui criar {}: {e}", reserva.display());
-            return None;
-        }
-    }
-
-    if !so_nossa(&reserva) {
-        log::warn!(
-            "{} não é uma pasta só sua; sigo sem o socket de controle",
-            reserva.display()
-        );
-        return None;
-    }
-    Some(reserva.join("ditador.sock"))
-}
-
-/// Pasta de verdade, do usuário de agora e fechada para todo o resto do mundo.
-fn so_nossa(caminho: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    // `symlink_metadata`, e não `metadata`: um link simbólico apontando para a
-    // pasta de outro usuário passaria numa conferência feita no destino.
-    match std::fs::symlink_metadata(caminho) {
-        Ok(meta) => {
-            meta.is_dir()
-                && meta.uid() == unsafe { libc_getuid() }
-                && meta.permissions().mode() & 0o077 == 0
-        }
-        Err(_) => false,
-    }
-}
-
-// Evita puxar a crate `libc` só por isto.
-unsafe fn libc_getuid() -> u32 {
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    unsafe { getuid() }
-}
-
-/// Quanto tempo esperamos por um cliente calado antes de desistir dele.
-///
-/// O atendimento é em série, então uma conexão que nunca mandasse a linha
-/// prendia a thread inteira: a partir dali nenhum `ditador --alternar` — nem o
-/// do atalho do GNOME, nem o do lançador — era atendido, e cada um deles ficava
-/// pendurado esperando resposta. O atalho do evdev e a bandeja continuavam
-/// funcionando, o que tornava o sintoma difícil de entender.
-const PACIENCIA: Duration = Duration::from_secs(2);
-
-/// Teto do que aceitamos numa linha de comando.
-///
-/// O maior comando válido tem oito bytes. Sem teto, um cliente que mandasse
-/// bytes sem nunca mandar `\n` fazia a `String` crescer até acabar a memória.
-const LIMITE_DA_LINHA: u64 = 1024;
-
-/// Envia um comando para a instância que já está rodando.
-/// `None` significa que não há ninguém escutando.
-pub fn send(command: &str) -> Option<String> {
-    let mut stream = UnixStream::connect(socket_path()?).ok()?;
-    // Do lado do cliente os prazos também importam: sem eles, uma instância
-    // travada deixava `ditador --status` pendurado para sempre no terminal.
-    let _ = stream.set_read_timeout(Some(PACIENCIA));
-    let _ = stream.set_write_timeout(Some(PACIENCIA));
-    stream.write_all(command.as_bytes()).ok()?;
-    stream.write_all(b"\n").ok()?;
-    stream.flush().ok()?;
-
-    let mut reply = String::new();
-    BufReader::new(stream.take(LIMITE_DA_LINHA))
-        .read_line(&mut reply)
-        .ok()?;
-    Some(reply.trim_end().to_string())
-}
-
+/// O que o `bind` encontrou.
 pub enum Bind {
-    Escutando(UnixListener),
-    /// Outra instância já responde no socket.
+    /// O canal é nosso, e este é o ouvinte.
+    Escutando(Escuta),
+    /// Outra instância já responde. Não é erro: é o estado desejado, alcançado
+    /// por outro processo. Tratá-lo como falha faria o systemd reiniciar o
+    /// serviço sem parar.
     JaRodando,
-    /// Não há onde pendurar o socket, e o motivo.
+    /// Não há onde pendurar o canal, e o motivo.
     ///
-    /// Não é erro de inicialização: sem socket ainda dá para ditar, e o que se
-    /// perde é o controle por linha de comando. Derrubar o programa inteiro por
-    /// causa de um acessório seria trocar o todo pela parte que faltou.
+    /// Também não é erro de inicialização: sem ele ainda dá para ditar, e o que
+    /// se perde é o controle por linha de comando. Derrubar o programa inteiro
+    /// por causa de um acessório seria trocar o todo pela parte que faltou.
     SemSocket(String),
 }
 
-/// Assume o socket, a menos que outra instância já esteja atendendo nele.
-///
-/// "Já está rodando" não é erro: é o estado desejado. Tratá-lo como falha faria
-/// o systemd reiniciar o serviço sem parar.
+/// O ouvinte de cada plataforma — um `UnixListener` no Linux, a primeira
+/// instância do named pipe no Windows.
+pub use crate::plataforma::ipc::Escuta;
+
 pub fn bind() -> Bind {
-    let Some(path) = socket_path() else {
-        return Bind::SemSocket("sem um lugar seguro para o socket".to_string());
-    };
-
-    if UnixStream::connect(path).is_ok() {
-        return Bind::JaRodando;
+    match crate::plataforma::ipc::bind() {
+        Ok(escuta) => Bind::Escutando(escuta),
+        Err(crate::plataforma::ipc::Falha::JaRodando) => Bind::JaRodando,
+        Err(crate::plataforma::ipc::Falha::SemLugar(motivo)) => Bind::SemSocket(motivo),
     }
-    // Socket órfão de uma execução anterior.
-    let _ = std::fs::remove_file(path);
+}
 
-    match UnixListener::bind(path) {
-        Ok(listener) => Bind::Escutando(listener),
-        // Duas execuções simultâneas chegam aqui juntas e uma perde a corrida.
-        // A que perdeu confere de novo: se agora há alguém atendendo, o estado
-        // desejado foi alcançado por outro caminho.
-        Err(e) => {
-            if UnixStream::connect(path).is_ok() {
-                Bind::JaRodando
-            } else {
-                Bind::SemSocket(format!("criando {}: {e}", path.display()))
-            }
-        }
-    }
+/// Envia um comando para a instância que já está rodando.
+/// `None` significa que não há ninguém escutando.
+pub fn send(comando: &str) -> Option<String> {
+    crate::plataforma::ipc::send(comando)
 }
 
 /// Atende comandos numa thread própria. O handler devolve a resposta.
-pub fn serve<F>(listener: UnixListener, handler: F)
+pub fn serve<F>(escuta: Escuta, handler: F)
 where
-    F: Fn(&str) -> String + Send + 'static,
+    F: Fn(&str) -> String + Send + Sync + 'static,
 {
-    std::thread::Builder::new()
-        .name("ipc".into())
-        .spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
-                let _ = stream.set_read_timeout(Some(PACIENCIA));
-                let _ = stream.set_write_timeout(Some(PACIENCIA));
-
-                let mut line = String::new();
-                if BufReader::new((&stream).take(LIMITE_DA_LINHA))
-                    .read_line(&mut line)
-                    .is_err()
-                {
-                    log::debug!("cliente do socket desistiu antes de mandar o comando");
-                    continue;
-                }
-                let reply = handler(line.trim());
-                let _ = writeln!(stream, "{reply}");
-            }
-        })
-        .expect("spawn ipc thread");
+    crate::plataforma::ipc::serve(escuta, handler)
 }
 
+/// Desfaz o que precisar ser desfeito na saída.
+///
+/// No Linux é apagar o arquivo do socket; no Windows não é nada, porque o pipe
+/// deixa de existir sozinho quando o último handle fecha. A função existe nos
+/// dois para que o `main` não precise saber qual é qual.
 pub fn cleanup() {
-    if let Some(path) = socket_path() {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn so_serve_a_pasta_que_e_so_nossa() {
-        let base = std::env::temp_dir().join(format!("ditador-teste-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let fechada = base.join("fechada");
-        let aberta = base.join("aberta");
-        // As permissões vão depois da criação: o `mode` do `DirBuilder` ainda
-        // passa pela umask de quem roda o teste, e o que se quer aqui são dois
-        // valores exatos.
-        let criar = |caminho: &Path, modo: u32| {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .create(caminho)
-                .expect("criando a pasta do teste");
-            std::fs::set_permissions(caminho, std::fs::Permissions::from_mode(modo))
-                .expect("ajustando a pasta do teste");
-        };
-        criar(&fechada, 0o700);
-        criar(&aberta, 0o755);
-
-        assert!(so_nossa(&fechada));
-        // Com a pasta aberta, qualquer um da máquina troca o socket de lugar.
-        assert!(!so_nossa(&aberta));
-
-        // Um arquivo comum no lugar da pasta, ou nada, também não servem.
-        let arquivo = base.join("arquivo");
-        std::fs::write(&arquivo, b"").expect("criando o arquivo do teste");
-        assert!(!so_nossa(&arquivo));
-        assert!(!so_nossa(&base.join("nao-existe")));
-
-        let _ = std::fs::remove_dir_all(&base);
-    }
+    crate::plataforma::ipc::cleanup()
 }

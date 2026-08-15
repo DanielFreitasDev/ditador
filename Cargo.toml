@@ -19,6 +19,30 @@ unsafe_op_in_unsafe_fn = "deny"
 [features]
 # Vulkan é o padrão: usa a GPU NVIDIA/AMD/Intel sem precisar do CUDA Toolkit.
 #
+# E agora há número para isso, não só conveniência. Medido no Windows 11 com uma
+# RTX 3060 (12 GB), transcrevendo 17,7 s da mesma fala, com o modelo
+# `large-v3-turbo-q5_0` — duas rodadas independentes de três passadas cada, pelo
+# teste `stt::medicao::mede_o_backend`:
+#
+#     CPU      18,9 s     0,9× o tempo real
+#     Vulkan    0,42 s     42×   (0,42 · 0,42 · 0,42 · 0,41)
+#     CUDA      0,47 s     38×   (0,46 · 0,47 · 0,47 · 0,47)
+#
+# Duas conclusões, e a segunda é a que surpreende:
+#
+#  1. A CPU não serve para ditar. A 0,9× o tempo real, uma frase de dez segundos
+#     leva onze para virar texto — mais lento do que digitar. Ela existe como
+#     último recurso para máquina sem GPU, não como escolha.
+#  2. O **Vulkan é mais rápido que o CUDA nesta placa**, por uns 11%, de forma
+#     consistente. É o contrário do que se costuma supor sobre NVIDIA. Somado ao
+#     fato de o Vulkan também rodar em AMD e Intel e não exigir um toolkit de
+#     3 GB para compilar, não sobra argumento para trocar o padrão.
+#
+# O `cuda` continua existindo e funcionando — para quem tenha um caso em que ele
+# ganhe, e porque descobrir isso exigiu resolver a incompatibilidade entre o
+# nvcc e o MSVC (veja `windows-integration/scripts/build.ps1`), o que seria
+# desperdício jogar fora.
+#
 # Ativamos o backend direto no whisper-rs-sys em vez de usar `whisper-rs/vulkan`.
 # Motivo: o módulo auxiliar `vulkan` do whisper-rs 0.16 (só lista dispositivos,
 # que não usamos) referencia símbolos ausentes do bindings.rs pré-gerado do crate
@@ -41,12 +65,8 @@ dirs = "6"
 eframe = { version = "0.36", features = ["glow"] }
 egui = "0.36"
 env_logger = "0.11"
-evdev = "0.13"
 # Só PNG: os ícones embutidos e as capturas de diagnóstico (DITADOR_CAPTURA).
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-# `blocking` é só a fachada síncrona; o ksni ainda exige um executor por
-# baixo. async-io (smol) é bem mais leve que o tokio, que é o padrão.
-ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -54,7 +74,24 @@ whisper-rs = { version = "0.16", default-features = false, features = ["log_back
 # Dependência direta apenas para poder ligar o backend de GPU no crate -sys
 # (veja o comentário em [features]). O código só usa a API do whisper-rs.
 whisper-rs-sys = { version = "0.15", default-features = false }
-# A interface D-Bus que a extensão do GNOME Shell consome (`src/dbus.rs`).
+
+# As três abaixo não existem fora do Linux, e é por isso que elas moram aqui e
+# não na seção comum: `evdev` abre `/dev/input`, `ksni` fala o protocolo
+# StatusNotifierItem e `zbus` é o D-Bus inteiro. Declaradas na seção comum, o
+# `cargo build` no Windows nem chegava a compilar o nosso código — parava antes,
+# tentando construir três dependências que não têm o que fazer lá.
+#
+# Quem as usa está todo em `src/plataforma/linux/`, com uma exceção de propósito:
+# `src/keys.rs` pede o `evdev` emprestado só para a tabela de nomes de tecla, que
+# é grande demais para copiar e é o formato gravado em toda configuração que já
+# existe. O Windows tem a tabela dele no lado de lá.
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
+# `blocking` é só a fachada síncrona; o ksni ainda exige um executor por
+# baixo. async-io (smol) é bem mais leve que o tokio, que é o padrão.
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+# A interface D-Bus que a extensão do GNOME Shell e o widget do Plasma consomem
+# (`src/plataforma/linux/dbus.rs`).
 #
 # Não custa nada em tamanho: o ksni já fala com a barra superior pelo zbus, na
 # mesma versão e com as mesmas features (`async-io` + `blocking-api`, que são o
@@ -62,6 +99,40 @@ whisper-rs-sys = { version = "0.15", default-features = false }
 # a aresta de dependência. Trazer uma segunda biblioteca de D-Bus para o
 # projeto, além de maior, faria dois executores conviverem no mesmo processo.
 zbus = "5"
+
+# `windows-sys`, e não `windows`. As duas são oficiais e geradas dos mesmos
+# metadados; a diferença é a camada por cima. O `windows` embrulha tudo em tipos
+# com `Drop`, `Result` e COM — útil para quem consome WinRT, que não é o nosso
+# caso: o que precisamos daqui é Win32 cru (Raw Input, named pipes, ACL,
+# Shell_NotifyIcon), onde a assinatura em C é justamente a documentação que se
+# lê na Microsoft Learn. O `windows-sys` entrega exatamente isso, compila numa
+# fração do tempo e não traz máquina de COM que ninguém usaria.
+#
+# Misturar as duas seria pagar as duas: o CLAUDE.md do projeto não gosta de duas
+# tabelas para a mesma coisa, e dois conjuntos de `HANDLE` incompatíveis é isso.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    # O `Win32_Graphics_Gdi` entra por causa do `HBRUSH` do `WNDCLASSEXW`, e não
+    # porque desenhemos alguma coisa: a janela do Raw Input é *message-only* e
+    # nunca é pintada. É o tipo de dependência que parece errada na lista e é
+    # certa no código.
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    # `ReadFile`/`WriteFile` e o `ConnectNamedPipe` recebem um `*mut OVERLAPPED`,
+    # que mora aqui — mesmo passando sempre nulo, como fazemos.
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 opt-level = 3

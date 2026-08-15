@@ -1,21 +1,29 @@
 //! Área de transferência e colagem automática.
 //!
-//! No Wayland o caminho confiável é o `wl-copy`, que assume a posse do conteúdo
-//! num processo próprio. O `arboard` (X11, via XWayland) fica como reserva.
+//! Duas camadas: a plataforma tenta o caminho nativo dela, e o `arboard` é a
+//! reserva. No Linux o nativo é o `wl-copy`, que assume a posse do conteúdo num
+//! processo próprio — coisa que o `arboard` não faz bem no Wayland. No Windows
+//! não há nativo melhor que o `arboard`, então ele é o caminho único, e é a
+//! própria plataforma que diz isso devolvendo `Err`.
 
-use anyhow::{Context, Result, anyhow};
-use std::io::Write;
-use std::process::{Command, Stdio};
+use anyhow::{Context, Result};
 use std::sync::{Mutex, OnceLock};
 
-/// Guardamos o WAYLAND_DISPLAY original porque o modo X11 remove essa variável
-/// do processo — mas o `wl-copy` ainda precisa dela.
-static WAYLAND_DISPLAY: OnceLock<Option<String>> = OnceLock::new();
+use crate::plataforma::clipboard as nativo;
+
+pub use nativo::COMO_HABILITAR_A_COLAGEM;
+
 static ARBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
 
-/// Deve ser chamada no início do `main`, antes de mexer nas variáveis de ambiente.
+/// Deve ser chamada no início do `main`, antes de mexer nas variáveis de
+/// ambiente.
+///
+/// **Não reordene.** No Linux o modo X11 remove o `WAYLAND_DISPLAY` do processo,
+/// e sem o retrato tirado antes disso o `wl-copy` para de funcionar. É uma das
+/// armadilhas registradas no `CLAUDE.md`, e continua valendo — o que mudou foi
+/// só o endereço de quem tira o retrato.
 pub fn remember_environment() {
-    let _ = WAYLAND_DISPLAY.set(std::env::var("WAYLAND_DISPLAY").ok());
+    nativo::lembrar_o_ambiente();
 }
 
 pub fn copy(text: &str) -> Result<()> {
@@ -23,9 +31,9 @@ pub fn copy(text: &str) -> Result<()> {
         return Ok(());
     }
 
-    match copy_with_wl_copy(text) {
+    match nativo::copiar(text) {
         Ok(()) => return Ok(()),
-        Err(e) => log::debug!("wl-copy indisponível ({e:#}), usando arboard"),
+        Err(e) => log::debug!("caminho nativo indisponível ({e:#}), usando arboard"),
     }
 
     let holder = ARBOARD.get_or_init(|| Mutex::new(None));
@@ -41,64 +49,20 @@ pub fn copy(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn copy_with_wl_copy(text: &str) -> Result<()> {
-    let Some(Some(display)) = WAYLAND_DISPLAY.get() else {
-        return Err(anyhow!("sessão não é Wayland"));
-    };
-
-    let mut child = Command::new("wl-copy")
-        .env("WAYLAND_DISPLAY", display)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("executando wl-copy")?;
-
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| anyhow!("sem stdin no wl-copy"))?
-        .write_all(text.as_bytes())?;
-
-    // O wl-copy se desdobra em segundo plano para servir o conteúdo; o processo
-    // que chamamos termina logo em seguida.
-    let status = child.wait()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!("wl-copy terminou com {status}"))
-    }
-}
-
+/// Dá para colar sozinho na janela em foco?
+///
+/// No Linux depende do `ydotool` estar instalado; no Windows é sempre `false`, e
+/// por decisão — o porquê está em `plataforma/windows/clipboard.rs`.
 pub fn paste_available() -> bool {
-    crate::programas::existe("ydotool")
+    nativo::colagem_disponivel()
 }
 
 /// Envia Ctrl+V para a janela em foco.
 pub fn paste() -> Result<()> {
-    if !paste_available() {
-        return Err(anyhow!(
-            "ydotool não encontrado (instale com: sudo apt install ydotool)"
-        ));
-    }
-    // Códigos evdev: 29 = KEY_LEFTCTRL, 47 = KEY_V.
-    let status = Command::new("ydotool")
-        .args(["key", "29:1", "47:1", "47:0", "29:0"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .status()
-        .context("executando ydotool")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "ydotool falhou ({status}). O serviço ydotoold está ativo? \
-             Tente: systemctl --user status ydotool"
-        ))
-    }
+    nativo::colar()
 }
 
-pub fn wl_copy_available() -> bool {
-    crate::programas::existe("wl-copy")
+/// Aviso de que a cópia está indo por um caminho pior, se estiver.
+pub fn aviso_da_copia() -> Option<&'static str> {
+    nativo::aviso_da_copia()
 }

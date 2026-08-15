@@ -1040,16 +1040,11 @@ impl App {
                     }
                 }
             }
-            ui.label(nota(match crate::autostart::metodo() {
-                crate::autostart::Metodo::Systemd => {
-                    "Pelo serviço de usuário do systemd. Vale na hora, sem precisar salvar. \
-                     Para ver o que está acontecendo: journalctl --user -u ditador -f"
-                }
-                crate::autostart::Metodo::Xdg => {
-                    "Por um atalho em ~/.config/autostart. Vale na hora, sem precisar salvar. \
-                     Instalando pelo pacote, passa a usar o serviço do systemd."
-                }
-            }));
+            // A frase vem pronta da plataforma. A tela não tem o que fazer com a
+            // diferença entre systemd, autostart do XDG e a chave `Run` do
+            // Windows — e um `match` sobre um enum que só existe no Linux
+            // colocaria um `cfg` no meio do desenho da interface.
+            ui.label(nota(crate::autostart::explicacao()));
         });
     }
 
@@ -1124,18 +1119,16 @@ impl App {
                 ));
             }
 
-            let ydotool = clipboard::paste_available();
-            ui.add_enabled_ui(ydotool, |ui| {
+            let cola_sozinho = clipboard::paste_available();
+            ui.add_enabled_ui(cola_sozinho, |ui| {
                 widgets::interruptor(
                     ui,
                     &mut state.draft.auto_paste,
                     "Colar na janela em foco (Ctrl+V)",
                 );
             });
-            if !ydotool {
-                ui.label(nota(
-                    "Colagem automática requer o ydotool: sudo apt install ydotool",
-                ));
+            if !cola_sozinho {
+                ui.label(nota(clipboard::COMO_HABILITAR_A_COLAGEM));
             } else if state.draft.auto_paste {
                 ui.label(nota(
                     "Com a colagem automática a janela de resultado não aparece — \
@@ -1143,10 +1136,8 @@ impl App {
                 ));
             }
 
-            if !clipboard::wl_copy_available() {
-                ui.label(nota(
-                    "wl-copy não encontrado; usando a área de transferência do X11.",
-                ));
+            if let Some(aviso) = clipboard::aviso_da_copia() {
+                ui.label(nota(aviso));
             }
         });
     }

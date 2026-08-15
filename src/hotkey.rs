@@ -1,19 +1,57 @@
-//! Escuta global de teclado via evdev (/dev/input/event*).
+//! O atalho global: a parte que não depende de sistema operacional.
 //!
-//! No Wayland o GNOME não entrega o evento de *soltar* a tecla para aplicativos
-//! comuns, o que inviabiliza "segurar para falar". Lendo o evdev direto nós
-//! recebemos press e release de verdade. Isso exige que o usuário pertença ao
-//! grupo `input` (a leitura é passiva: as teclas continuam chegando normalmente
-//! ao aplicativo em foco).
+//! Aqui mora a máquina de teclas — quem está segurando o quê, quando a
+//! combinação fica completa, e a captura de uma combinação nova na tela de
+//! configurações. Ela não sabe de onde os eventos vêm.
+//!
+//! Quem os traz é `plataforma::teclado`: no Linux, o evdev lendo
+//! `/dev/input/event*`; no Windows, o Raw Input entregando `WM_INPUT` numa
+//! janela de mensagens escondida. Os dois chamam `evento()` com o mesmo código
+//! canônico de tecla (veja `plataforma/mod.rs` sobre por que a numeração é a do
+//! evdev nos dois lados) e com uma *origem*, que é o dispositivo que mandou.
+//!
+//! ## Por que a origem importa nas duas plataformas
+//!
+//! Este arquivo guarda, para cada tecla, o conjunto de dispositivos que a estão
+//! segurando — não um simples "está apertada". Isso nasceu de um bug do Linux: a
+//! colagem automática usa o `ydotool`, que cria um teclado virtual, e o "soltar"
+//! dele apagava a tecla que a pessoa ainda segurava de verdade, cortando o
+//! ditado pela metade.
+//!
+//! O Windows tem exatamente o mesmo problema com outro nome. O Raw Input entrega
+//! o `hDevice` de quem originou cada tecla, e input sintético — de um `SendInput`
+//! qualquer, do próprio Windows, de um software de macro — chega com um handle
+//! diferente do teclado físico. Guardar por origem resolve os dois casos com o
+//! mesmo código, o que é o melhor argumento que se pode ter de que a abstração
+//! está no lugar certo.
 
 use crate::keys;
 use crossbeam_channel::Sender;
-use evdev::{Device, EventSummary, KeyCode};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+
+/// De quem veio a tecla.
+///
+/// Um número opaco que só a plataforma sabe interpretar: no Linux é um contador
+/// por `/dev/input/event*` aberto, no Windows é o `hDevice` que o Raw Input
+/// carimba em cada evento. O que a máquina de teclas precisa é só conseguir
+/// distinguir um do outro e comparar por igualdade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Origem(pub u64);
+
+/// O que aconteceu com a tecla.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acao {
+    Apertou,
+    Soltou,
+    /// Repetição automática de uma tecla que já estava apertada.
+    ///
+    /// Não muda o estado de nada, e é por isso que existe em vez de virar um
+    /// segundo `Apertou`: contá-la abriria e fecharia a gravação a cada repique
+    /// enquanto a pessoa segura a tecla.
+    Repetiu,
+}
 
 #[derive(Debug, Clone)]
 pub enum HotkeyEvent {
@@ -38,24 +76,24 @@ pub struct HotkeyListener {
     /// Quem está segurando cada tecla, por dispositivo.
     ///
     /// Guardar só o código não bastava: com dois teclados — ou com o teclado
-    /// virtual que o `ydotool` cria para a colagem automática — o `release` de
-    /// um apagava a tecla que o outro ainda segurava, cortando um ditado em
-    /// curso pela metade. Agora a tecla só deixa de estar pressionada quando o
-    /// último dispositivo que a segurava a solta.
-    pressed: Mutex<HashMap<u16, HashSet<PathBuf>>>,
+    /// virtual que o `ydotool` cria para a colagem automática, ou com um
+    /// `SendInput` no Windows — o `release` de um apagava a tecla que o outro
+    /// ainda segurava, cortando um ditado em curso pela metade. Agora a tecla só
+    /// deixa de estar pressionada quando o último dispositivo que a segurava a
+    /// solta.
+    pressed: Mutex<HashMap<u16, HashSet<Origem>>>,
     engaged: AtomicBool,
     capturing: AtomicBool,
     capture_buf: Mutex<Vec<u16>>,
-    watched: Mutex<HashSet<PathBuf>>,
     tx: Sender<HotkeyEvent>,
 }
 
 impl HotkeyListener {
     /// Monta o ouvinte sem subir thread nenhuma.
     ///
-    /// Existe separado do `start` para os testes: `watch_devices` entra num
-    /// laço infinito e abre um `/dev/input/event*` por teclado de verdade, o
-    /// que faria `cargo test` passar a ler as teclas de quem roda.
+    /// Existe separado do `start` para os testes: a vigia da plataforma entra
+    /// num laço infinito e abre os teclados de verdade da máquina, o que faria
+    /// `cargo test` passar a ler as teclas de quem roda.
     pub fn novo(hotkey: &[String], tx: Sender<HotkeyEvent>) -> Arc<Self> {
         Arc::new(Self {
             target: RwLock::new(codes_of(hotkey, Some(&tx))),
@@ -63,20 +101,13 @@ impl HotkeyListener {
             engaged: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
             capture_buf: Mutex::new(Vec::new()),
-            watched: Mutex::new(HashSet::new()),
             tx,
         })
     }
 
     pub fn start(hotkey: &[String], tx: Sender<HotkeyEvent>) -> Arc<Self> {
         let listener = Self::novo(hotkey, tx);
-
-        let watcher = listener.clone();
-        std::thread::Builder::new()
-            .name("hotkey-watch".into())
-            .spawn(move || watcher.watch_devices())
-            .expect("spawn hotkey-watch");
-
+        crate::plataforma::teclado::vigiar(listener.clone());
         listener
     }
 
@@ -104,6 +135,12 @@ impl HotkeyListener {
         lock_mut(&self.capture_buf).clear();
     }
 
+    /// Manda um aviso para quem escuta o atalho. É por aqui que a plataforma
+    /// relata teclado ilegível e teclado de volta.
+    pub(crate) fn avisar(&self, evento: HotkeyEvent) {
+        let _ = self.tx.send(evento);
+    }
+
     /// Desfaz o atalho em curso, avisando quem precisa saber.
     fn desengatar(&self) {
         if self.engaged.swap(false, Ordering::SeqCst) {
@@ -111,117 +148,49 @@ impl HotkeyListener {
         }
     }
 
-    /// Reenumera os teclados periodicamente, cobrindo dispositivos conectados
-    /// depois que o programa já estava rodando.
-    fn watch_devices(self: Arc<Self>) {
-        let mut announced_failure = false;
-        loop {
-            let mut found_any = false;
-
-            for (path, device) in evdev::enumerate() {
-                if !is_keyboard(&device) {
-                    continue;
-                }
-                found_any = true;
-
-                {
-                    let mut watched = lock_mut(&self.watched);
-                    if !watched.insert(path.clone()) {
-                        continue;
-                    }
-                }
-
-                let me = self.clone();
-                let p = path.clone();
-                let name = device.name().unwrap_or("desconhecido").to_string();
-                log::info!("escutando teclado: {} ({})", name, p.display());
-                if let Err(e) = std::thread::Builder::new()
-                    .name("hotkey-read".into())
-                    .spawn(move || {
-                        let dono = p.clone();
-                        me.read_device(device, &dono);
-                        lock_mut(&me.watched).remove(&p);
-                        log::info!("parou de escutar {}", p.display());
-                    })
-                {
-                    log::warn!("não consegui criar a thread de leitura: {e}");
-                    lock_mut(&self.watched).remove(&path);
-                }
-            }
-
-            if !found_any && !announced_failure {
-                announced_failure = true;
-                let _ = self.tx.send(HotkeyEvent::Unavailable(
-                    "Nenhum teclado legível em /dev/input. Verifique se seu usuário \
-                     está no grupo 'input' (sudo usermod -aG input $USER) e reinicie a sessão."
-                        .to_string(),
-                ));
-            } else if found_any && announced_failure {
-                announced_failure = false;
-                let _ = self.tx.send(HotkeyEvent::Available);
-            }
-
-            std::thread::sleep(RONDA_DOS_TECLADOS);
-        }
-    }
-
-    fn read_device(&self, mut device: Device, dono: &Path) {
-        loop {
-            let events = match device.fetch_events() {
-                Ok(events) => events,
-                Err(e) => {
-                    log::debug!("leitura do dispositivo encerrada: {e}");
-                    // Um teclado que é desconectado com a tecla do atalho
-                    // pressionada nunca manda o evento de soltar. Sem isto o
-                    // código dela ficaria em `pressed` para sempre e a gravação
-                    // não teria como parar.
-                    self.soltar_tudo_de(dono);
-                    return;
-                }
-            };
-            for event in events {
-                if let EventSummary::Key(_, code, value) = event.destructure() {
-                    self.handle_key_de(code, value, dono);
-                }
-            }
-        }
-    }
-
-    /// Solta tudo o que este dispositivo estava segurando, como se os eventos
+    /// Solta tudo o que esta origem estava segurando, como se os eventos
     /// tivessem chegado.
-    fn soltar_tudo_de(&self, dono: &Path) {
+    ///
+    /// A plataforma chama isto quando perde o dispositivo de vista: um teclado
+    /// desconectado com a tecla do atalho pressionada nunca manda o evento de
+    /// soltar, e sem isto o código dela ficaria em `pressed` para sempre — a
+    /// gravação não teria como parar.
+    pub(crate) fn soltar_tudo_de(&self, origem: Origem) {
         let seus: Vec<u16> = lock_mut(&self.pressed)
             .iter()
-            .filter(|(_, donos)| donos.contains(dono))
+            .filter(|(_, origens)| origens.contains(&origem))
             .map(|(code, _)| *code)
             .collect();
         for code in seus {
-            self.handle_key_de(KeyCode::new(code), 0, dono);
+            self.evento(code, Acao::Soltou, origem);
         }
     }
 
-    fn handle_key_de(&self, code: KeyCode, value: i32, dono: &Path) {
-        // 2 = auto-repeat, não muda o estado de pressionado.
-        if value == 2 {
-            return;
-        }
-        let down = value == 1;
+    /// A porta de entrada de tudo: uma tecla mudou de estado em algum
+    /// dispositivo.
+    pub(crate) fn evento(&self, codigo: u16, acao: Acao, origem: Origem) {
+        // Repetição automática não muda o estado de pressionado.
+        let down = match acao {
+            Acao::Repetiu => return,
+            Acao::Apertou => true,
+            Acao::Soltou => false,
+        };
 
         {
             let mut pressed = lock_mut(&self.pressed);
             if down {
-                pressed.entry(code.code()).or_default().insert(dono.into());
-            } else if let Some(donos) = pressed.get_mut(&code.code()) {
-                donos.remove(dono);
+                pressed.entry(codigo).or_default().insert(origem);
+            } else if let Some(origens) = pressed.get_mut(&codigo) {
+                origens.remove(&origem);
                 // Só sai do mapa quando o último dispositivo soltou.
-                if donos.is_empty() {
-                    pressed.remove(&code.code());
+                if origens.is_empty() {
+                    pressed.remove(&codigo);
                 }
             }
         }
 
         if self.capturing.load(Ordering::SeqCst) {
-            self.handle_capture(code, down);
+            self.handle_capture(codigo, down);
             return;
         }
 
@@ -244,11 +213,11 @@ impl HotkeyListener {
         }
     }
 
-    fn handle_capture(&self, code: KeyCode, down: bool) {
+    fn handle_capture(&self, codigo: u16, down: bool) {
         if down {
             let mut buf = lock_mut(&self.capture_buf);
-            if !buf.contains(&code.code()) {
-                buf.push(code.code());
+            if !buf.contains(&codigo) {
+                buf.push(codigo);
             }
             return;
         }
@@ -260,18 +229,14 @@ impl HotkeyListener {
         }
         self.capturing.store(false, Ordering::SeqCst);
 
-        // Só entram teclas cujo nome volta a ser a mesma tecla. O `keys::name`
-        // sai do `Debug` do evdev, que devolve "unknown key: 217" para os
-        // códigos fora da tabela dele — gravar isso na configuração produziria
-        // um atalho que nunca mais dispara, e nada avisaria.
+        // Só entram teclas cujo nome volta a ser a mesma tecla. Gravar na
+        // configuração um código sem nome próprio produziria um atalho que nunca
+        // mais dispara, e nada avisaria.
         let mut names: Vec<String> = Vec::new();
-        for code in &buf {
-            let tecla = KeyCode::new(*code);
-            let nome = keys::name(tecla);
-            if keys::parse(&nome) == Some(tecla) {
-                names.push(nome);
-            } else {
-                log::warn!("tecla sem nome próprio ignorada na captura: código {code}");
+        for codigo in &buf {
+            match keys::name(*codigo) {
+                Some(nome) if keys::parse(&nome) == Some(*codigo) => names.push(nome),
+                _ => log::warn!("tecla sem nome próprio ignorada na captura: código {codigo}"),
             }
         }
         if names.is_empty() {
@@ -290,11 +255,7 @@ impl HotkeyListener {
     }
 }
 
-/// De quanto em quanto tempo a lista de teclados é reenumerada, para pegar os
-/// que forem conectados com o programa já rodando.
-const RONDA_DOS_TECLADOS: Duration = Duration::from_secs(3);
-
-/// Traduz os nomes gravados na configuração para códigos do evdev.
+/// Traduz os nomes gravados na configuração para códigos canônicos.
 ///
 /// O que não for reconhecido vira aviso — e, se nada sobrar, um `Unavailable`.
 /// Antes disto um `filter_map` engolia a tecla errada em silêncio: o arquivo é
@@ -306,7 +267,7 @@ fn codes_of(hotkey: &[String], avisar: Option<&Sender<HotkeyEvent>>) -> Vec<u16>
     let mut recusados = Vec::new();
     for nome in hotkey {
         match keys::parse(nome) {
-            Some(tecla) => codigos.push(tecla.code()),
+            Some(tecla) => codigos.push(tecla),
             None => {
                 log::warn!("tecla desconhecida na configuração do atalho: {nome}");
                 recusados.push(nome.as_str());
@@ -333,23 +294,6 @@ fn codes_of(hotkey: &[String], avisar: Option<&Sender<HotkeyEvent>>) -> Vec<u16>
     codigos
 }
 
-/// Quantos teclados dá para ler agora.
-///
-/// É o que o `ditador --diagnostico` pergunta: zero aqui significa, quase
-/// sempre, usuário fora do grupo `input` — a falha mais comum e mais silenciosa
-/// deste programa.
-pub fn teclados_legiveis() -> usize {
-    evdev::enumerate()
-        .filter(|(_, device)| is_keyboard(device))
-        .count()
-}
-
-fn is_keyboard(device: &Device) -> bool {
-    device
-        .supported_keys()
-        .is_some_and(|keys| keys.contains(KeyCode::KEY_ESC) && keys.contains(KeyCode::KEY_A))
-}
-
 fn lock<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
     l.read().unwrap_or_else(|e| e.into_inner())
 }
@@ -363,9 +307,16 @@ mod tests {
     use super::*;
 
     /// O teclado de mentira dos testes.
-    const TECLADO: &str = "/dev/input/event-de-teste";
+    const TECLADO: Origem = Origem(1);
     /// Um segundo, para os casos em que duas fontes seguram a mesma tecla.
-    const OUTRO: &str = "/dev/input/event-de-teste-2";
+    const OUTRO: Origem = Origem(2);
+
+    /// Os códigos que os testes usam, escritos pelo nome para não dependerem de
+    /// qual plataforma está compilando: `keys::parse` é a mesma porta que a
+    /// configuração de verdade atravessa.
+    fn codigo(nome: &str) -> u16 {
+        keys::parse(nome).unwrap_or_else(|| panic!("tecla desconhecida no teste: {nome}"))
+    }
 
     /// Um ouvinte sem thread nenhuma, para exercitar só a máquina de teclas.
     fn ouvinte(
@@ -380,31 +331,31 @@ mod tests {
     }
 
     /// Aperta ou solta uma tecla no teclado principal.
-    fn tecla(listener: &HotkeyListener, code: KeyCode, value: i32) {
-        listener.handle_key_de(code, value, Path::new(TECLADO));
+    fn tecla(listener: &HotkeyListener, nome: &str, acao: Acao) {
+        listener.evento(codigo(nome), acao, TECLADO);
     }
 
     #[test]
     fn segurar_e_soltar_a_tecla_liga_e_desliga_o_atalho() {
         let (listener, rx) = ouvinte(&["KEY_PAUSE"]);
-        tecla(&listener, KeyCode::KEY_PAUSE, 1);
+        tecla(&listener, "KEY_PAUSE", Acao::Apertou);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
         // Repetição automática não conta como um novo aperto.
-        tecla(&listener, KeyCode::KEY_PAUSE, 2);
+        tecla(&listener, "KEY_PAUSE", Acao::Repetiu);
         assert!(rx.try_recv().is_err());
-        tecla(&listener, KeyCode::KEY_PAUSE, 0);
+        tecla(&listener, "KEY_PAUSE", Acao::Soltou);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
     }
 
     #[test]
     fn o_teclado_que_some_com_a_tecla_presa_nao_deixa_a_gravacao_correndo() {
         let (listener, rx) = ouvinte(&["KEY_PAUSE"]);
-        tecla(&listener, KeyCode::KEY_PAUSE, 1);
+        tecla(&listener, "KEY_PAUSE", Acao::Apertou);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
 
         // O teclado é desconectado agora: o evento de soltar nunca chega, e
         // quem o inventa é a limpeza da leitura.
-        listener.soltar_tudo_de(Path::new(TECLADO));
+        listener.soltar_tudo_de(TECLADO);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
         assert!(lock_mut(&listener.pressed).is_empty());
     }
@@ -412,34 +363,36 @@ mod tests {
     #[test]
     fn a_combinacao_so_vale_com_todas_as_teclas_juntas() {
         let (listener, rx) = ouvinte(&["KEY_LEFTMETA", "KEY_SPACE"]);
-        tecla(&listener, KeyCode::KEY_LEFTMETA, 1);
+        tecla(&listener, "KEY_LEFTMETA", Acao::Apertou);
         assert!(rx.try_recv().is_err(), "meia combinação não grava");
-        tecla(&listener, KeyCode::KEY_SPACE, 1);
+        tecla(&listener, "KEY_SPACE", Acao::Apertou);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
         // Soltar uma só já desfaz a combinação.
-        tecla(&listener, KeyCode::KEY_SPACE, 0);
+        tecla(&listener, "KEY_SPACE", Acao::Soltou);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
     }
 
     #[test]
-    fn o_teclado_de_mentira_do_ydotool_nao_corta_o_ditado_do_teclado_de_verdade() {
-        // Com a colagem automática ligada e um atalho com Ctrl, o `ydotool key
-        // 29:0` volta pelo evdev num dispositivo virtual. Guardando só o código
-        // da tecla, aquele "soltar" apagava o Ctrl que a pessoa ainda segurava.
+    fn o_teclado_de_mentira_nao_corta_o_ditado_do_teclado_de_verdade() {
+        // No Linux é o `ydotool` da colagem automática, que devolve `29:0` por
+        // um dispositivo virtual; no Windows é qualquer `SendInput`, que chega
+        // com outro `hDevice`. Guardando só o código da tecla, aquele "soltar"
+        // apagava o Ctrl que a pessoa ainda segurava.
         let (listener, rx) = ouvinte(&["KEY_LEFTCTRL"]);
-        tecla(&listener, KeyCode::KEY_LEFTCTRL, 1);
+        tecla(&listener, "KEY_LEFTCTRL", Acao::Apertou);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
 
         // O dispositivo virtual aperta e solta a mesma tecla.
-        listener.handle_key_de(KeyCode::KEY_LEFTCTRL, 1, Path::new(OUTRO));
-        listener.handle_key_de(KeyCode::KEY_LEFTCTRL, 0, Path::new(OUTRO));
+        let ctrl = codigo("KEY_LEFTCTRL");
+        listener.evento(ctrl, Acao::Apertou, OUTRO);
+        listener.evento(ctrl, Acao::Soltou, OUTRO);
         assert!(
             rx.try_recv().is_err(),
             "o ditado foi cortado por um teclado que não era o de quem fala"
         );
 
         // Só o teclado de verdade encerra.
-        tecla(&listener, KeyCode::KEY_LEFTCTRL, 0);
+        tecla(&listener, "KEY_LEFTCTRL", Acao::Soltou);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
     }
 
@@ -450,7 +403,7 @@ mod tests {
         // o teto de duração estourar, quando o resultado arrancava a tela de
         // configurações de quem estava escolhendo a tecla nova.
         let (listener, rx) = ouvinte(&["KEY_PAUSE"]);
-        tecla(&listener, KeyCode::KEY_PAUSE, 1);
+        tecla(&listener, "KEY_PAUSE", Acao::Apertou);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
 
         listener.begin_capture();
@@ -465,7 +418,7 @@ mod tests {
             &["KEY_PAUSE".to_string(), "KEY_NAO_EXISTE".to_string()],
             Some(&tx),
         );
-        assert_eq!(codigos, [KeyCode::KEY_PAUSE.code()]);
+        assert_eq!(codigos, [codigo("KEY_PAUSE")]);
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Unavailable(_))));
 
         // Não sobrou nenhuma: o atalho não existe, e isso precisa aparecer.
@@ -475,7 +428,7 @@ mod tests {
 
         // Um atalho inteiro válido não gera aviso nenhum.
         let bom = codes_of(&["KEY_PAUSE".to_string()], Some(&tx));
-        assert_eq!(bom, [KeyCode::KEY_PAUSE.code()]);
+        assert_eq!(bom, [codigo("KEY_PAUSE")]);
         assert!(rx.try_recv().is_err());
     }
 }
