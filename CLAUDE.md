@@ -68,9 +68,25 @@ librsvg) e commite os PNGs — senão o binário continua com os ícones antigos
 O README não tem mais nenhuma versão escrita à mão: os nomes dos `.deb` viraram `ditador_*_amd64.deb` e o
 link aponta para `releases/latest`. Não reintroduza o número lá — era um passo que já foi esquecido.
 
-Depois: `cargo audit` (se instalado), commit `Versão X.Y.Z` (ou `Versão X.Y.Z: <o bug corrigido>`),
-**`git tag vX.Y.Z`**, `./empacotar.sh && ./empacotar.sh cpu`, e GitHub Release com os `.deb` como assets
-(`gh release create`).
+Depois: `cargo audit`, commit `Versão X.Y.Z` (ou `Versão X.Y.Z: <o bug corrigido>`),
+**`git tag vX.Y.Z`**, `./empacotar.sh && ./empacotar.sh cpu`, `sha256sum *.deb > SHA256SUMS` dentro de
+`target/deb/`, e GitHub Release com os dois `.deb` e o `SHA256SUMS` como assets (`gh release create`).
+
+O modelo não vai como asset: são 574 MB que não mudam entre versões, o app baixa sozinho e o
+`--baixar-modelo` resolve por terminal. A release 0.2.0 leva uma cópia dele por motivos históricos.
+
+### O que o `cargo audit` costuma dizer
+
+Na 0.5.0: **zero vulnerabilidades**, e um aviso de `ttf-parser` sem manutenção (RUSTSEC-2026-0192).
+Esse aviso não é acionável aqui e é esperado — a cadeia é
+`eframe → winit → sctk-adwaita → ab_glyph → owned_ttf_parser → ttf-parser`, cinco níveis abaixo, e o
+`sctk-adwaita` desenha a decoração de janela do Wayland, que este programa nem usa
+(`with_decorations(false)`, e o padrão é XWayland). Trocar pelo `skrifa` que o aviso sugere é trabalho do
+`ab_glyph`. Some sozinho quando o eframe atualizar.
+
+**Não silencie com `--ignore`.** O que interessa é a linha `vulnerabilities: 0` continuar zero; um aviso
+conhecido aparecendo duas ou três vezes por ano é o comportamento certo, e a lista de exceções é o que
+esconderia o dia em que ele virar problema de verdade.
 
 ⚠️ O `git tag` é o passo mais fácil de esquecer, e já foi pulado em quatro versões seguidas: o repositório
 chegou à 0.4.2 tendo `v0.2.0` como única tag, e o único release publicado ainda mostrava a interface de
