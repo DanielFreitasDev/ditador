@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<!--
+  O manifesto do pacote MSIX do Ditador.
+
+  ## Isto é o caminho alternativo, não o padrão
+
+  A instalação normal é o `instalar.ps1`, que copia para `%LOCALAPPDATA%` e não
+  pede senha nenhuma. O MSIX existe aqui porque ele traz coisas boas de verdade —
+  instalação e desinstalação atômicas, identidade de pacote, `StartupTask` com
+  interruptor no painel do Windows, atualização diferencial — e porque o dia em
+  que o Ditador for para a Microsoft Store ou para o `winget`, é deste arquivo que
+  ele parte.
+
+  O que impede o MSIX de ser o padrão hoje é uma coisa só, e não é técnica: um
+  pacote precisa estar **assinado por um certificado em que a máquina confie**, e
+  pôr um certificado de teste no armazenamento de Pessoas Confiáveis exige
+  privilégio de administrador. Um programa que lê o teclado do usuário não deveria
+  precisar de elevação para ser instalado — e não precisa, pelo outro caminho.
+  Quando houver um certificado de assinatura de verdade, esta ressalva cai.
+
+  ## O que está declarado aqui, e por quê
+
+  `runFullTrust` é a capacidade que faz este pacote conter um aplicativo de área
+  de trabalho comum, e não um aplicativo de sandbox. É ela que permite ao backend
+  abrir o microfone por WASAPI, falar com a GPU pelo Vulkan, ler o teclado por Raw
+  Input e criar o named pipe. Sem ela nada disso existe; com ela, o pacote é
+  apenas uma forma de instalar, e não uma jaula.
+
+  Os dois aplicativos (o frontend e o backend) vão no mesmo pacote, com o
+  frontend como ponto de entrada visível e o backend como executável ao lado. É
+  a mesma vizinhança que o `instalar.ps1` produz — e é o que faz o frontend achar
+  o backend sem procurar no PATH.
+
+  O `Version` é `0.0.0.0` de propósito, como o `metadata.json` do widget do
+  Plasma: quem o preenche é o `empacotar-msix.ps1`, lendo o `Cargo.toml`, que
+  continua sendo a única fonte da verdade da versão do projeto.
+-->
+
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+
+  <Identity
+    Name="DanielFreitasDev.Ditador"
+    Publisher="CN=Ditador (Desenvolvimento)"
+    Version="0.0.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Ditador</DisplayName>
+    <PublisherDisplayName>Daniel Freitas</PublisherDisplayName>
+    <Description>Ditado por voz offline com Whisper</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <!--
+      Windows 10 2004 como piso, pelo mesmo motivo do .csproj: o alvo é o
+      Windows 11, mas nada aqui exige API de 11, e fechar a porta para máquinas
+      que rodariam bem não ajuda ninguém.
+    -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="pt-BR" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Ditador" Executable="Ditador.Windows.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Ditador"
+        Description="Ditado por voz offline com Whisper"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Square71x71Logo="Assets\SmallTile.png" />
+      </uap:VisualElements>
+
+      <Extensions>
+        <!--
+          Iniciar com a sessão. Este é o equivalente empacotado da chave `Run`
+          que o `instalar.ps1` usa, e é melhor num ponto: o usuário o encontra em
+          Configurações → Aplicativos → Inicializar com o nome e o ícone certos, e
+          pode desligá-lo ali. `Enabled="false"` porque a decisão de subir junto
+          com o Windows é de quem instala, não de quem empacota — o Windows
+          pergunta na primeira execução.
+        -->
+        <desktop:Extension Category="windows.startupTask" Executable="Ditador.Windows.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="DitadorAoIniciar" Enabled="false" DisplayName="Ditador" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!--
+      Aplicativo de área de trabalho de confiança total. Veja o comentário do
+      topo: é isto que permite microfone, GPU, Raw Input e named pipe.
+    -->
+    <rescap:Capability Name="runFullTrust" />
+    <!--
+      O microfone é declarado porque quem o abre é o backend, dentro deste
+      pacote. Com a declaração, o Windows mostra o Ditador em Configurações →
+      Privacidade → Microfone, onde a pessoa pode revogar o acesso — que é
+      exatamente onde ela deve poder.
+    -->
+    <DeviceCapability Name="microphone" />
+  </Capabilities>
+
+</Package>

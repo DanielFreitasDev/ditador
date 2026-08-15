@@ -1,0 +1,109 @@
+// As APIs do Win32 que o Ditador.Windows usa, uma por linha.
+//
+// O CsWin32 gera o P/Invoke de cada uma a partir dos metadados oficiais do
+// Windows, em tempo de compilação. Nada aqui é escrito à mão, e nada que não
+// esteja nesta lista entra no binário — que é a diferença entre "usar Win32" e
+// "arrastar um wrapper de Win32 inteiro para dentro do projeto".
+//
+// Cada bloco diz para que serve. Quem acrescentar uma linha, acrescente a
+// explicação junto: uma lista de nomes sem motivo é a primeira coisa a virar
+// lixo que ninguém ousa remover.
+
+// --- A janela oculta que recebe os cliques do ícone e o "TaskbarCreated" ------
+// É uma janela de nível superior, e não uma "message-only" (HWND_MESSAGE): as
+// mensagens de difusão do sistema — e `TaskbarCreated` é uma delas — não chegam
+// a janelas message-only. Sem isso o ícone sumiria para sempre no primeiro
+// reinício do Explorer.
+CreateWindowEx
+RegisterClassEx
+UnregisterClass
+DestroyWindow
+DefWindowProc
+GetModuleHandle
+RegisterWindowMessage
+PostMessage
+WNDCLASSEXW
+WM_APP
+WM_NULL
+WM_SETTINGCHANGE
+WM_LBUTTONUP
+WM_RBUTTONUP
+WM_CONTEXTMENU
+
+// --- A área de notificação -----------------------------------------------
+// A API oficial continua sendo esta, e "antiga" não quer dizer "obsoleta": não
+// há substituto no Windows App SDK para pôr um ícone na área de notificação.
+// A versão 4 do protocolo é a recomendada — traz a posição do ícone junto com o
+// clique, dica desenhada pelo sistema e acessibilidade.
+Shell_NotifyIcon
+Shell_NotifyIconGetRect
+NOTIFYICONDATAW
+NOTIFYICONIDENTIFIER
+NOTIFYICON_VERSION_4
+
+// --- Ícones ---------------------------------------------------------------
+// `LoadImage` com LR_LOADFROMFILE, e não `LoadIconMetric`: o segundo só carrega
+// de recursos ligados a um módulo, e os nossos ícones são arquivos .ico ao lado
+// do executável (veja o comentário no .csproj). O tamanho pedido vem de
+// `GetSystemMetricsForDpi`, que é exatamente o que o `LoadIconMetric` usaria.
+LoadImage
+DestroyIcon
+GetSystemMetricsForDpi
+GDI_IMAGE_TYPE
+
+// --- O menu de contexto do ícone -----------------------------------------
+// Menu nativo do Win32, e não um `MenuFlyout` do WinUI. O menu de um ícone da
+// área de notificação precisa aparecer no clique, no lugar certo, com o tema e a
+// animação do sistema, e sumir quando se clica fora — um flyout do WinUI
+// precisaria de uma janela para se ancorar, e essa janela apareceria no Alt+Tab,
+// roubaria foco e chegaria um quadro depois.
+CreatePopupMenu
+InsertMenu
+DestroyMenu
+TrackPopupMenuEx
+SetForegroundWindow
+GetCursorPos
+// As opções do TrackPopupMenuEx e do CalculatePopupWindowPosition. Elas são
+// constantes soltas nos cabeçalhos do Windows, mas os metadados as agrupam neste
+// enum — e o CsWin32 exige que se peça o grupo, não a constante. `TPM_RETURNCMD`
+// é a que faz a função devolver o item escolhido em vez de mandar um
+// `WM_COMMAND` para a janela; com uma janela invisível, receber o resultado
+// direto é mais simples e não deixa mensagem perdida.
+TRACK_POPUP_MENU_FLAGS
+
+// --- Posicionar o popup junto ao ícone ------------------------------------
+// `CalculatePopupWindowPosition` é quem sabe encaixar um retângulo ao lado de
+// outro respeitando a área de trabalho, a barra de tarefas (inclusive de lado ou
+// em cima, inclusive com ocultar automático) e o monitor certo. Fazer essa conta
+// à mão é como se erra em multimonitor.
+CalculatePopupWindowPosition
+MonitorFromWindow
+MonitorFromPoint
+GetMonitorInfo
+MONITORINFO
+GetForegroundWindow
+GetDpiForWindow
+
+// --- Estilos da janela do aviso (o OSD) -----------------------------------
+// `WS_EX_NOACTIVATE` para não roubar o foco de quem está digitando,
+// `WS_EX_TOOLWINDOW` para não aparecer no Alt+Tab nem na barra de tarefas, e
+// `WS_EX_TRANSPARENT` para o clique atravessar — o aviso não tem nada em que se
+// clicar. Cada um está justificado em `AlcaDaJanela.TornarPassiva`.
+//
+// A variante `Ptr` é a que vale em 64 bits: a outra trunca ponteiros, e este
+// projeto é x64.
+GetWindowLongPtr
+SetWindowLongPtr
+WINDOW_LONG_PTR_INDEX
+
+// --- Cantos arredondados --------------------------------------------------
+// Uma janela sem barra de título do WinUI sai com cantos retos; o Windows 11
+// arredonda os das janelas comuns. Isto pede o mesmo tratamento para as nossas.
+DwmSetWindowAttribute
+DWM_WINDOW_CORNER_PREFERENCE
+
+// --- Identidade do aplicativo --------------------------------------------
+// O AppUserModelID estável é o que faz o Shell associar as notificações, o
+// ícone e o atalho ao mesmo aplicativo. Sem ele, cada caminho de instalação
+// vira um aplicativo diferente aos olhos do Windows.
+SetCurrentProcessExplicitAppUserModelID

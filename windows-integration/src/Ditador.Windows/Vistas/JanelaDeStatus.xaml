@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Ditador.Windows.Vistas.JanelaDeStatus"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        O popup do ícone: o que se quer saber num relance e as duas ações que se
+        faz com o mouse.
+
+        Deliberadamente pequeno. O download do modelo, a escolha de microfone, as
+        opções de GPU e o resto das configurações **não** estão aqui — eles moram
+        na tela de configurações do próprio Ditador, que já existe, funciona nos
+        dois sistemas e é uma só. Reimplementá-los em WinUI daria duas telas para
+        manter iguais, e a segunda começaria a divergir na primeira semana.
+    -->
+    <Grid
+        x:Name="Fundo"
+        Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+        BorderThickness="1"
+        CornerRadius="8"
+        Padding="20,16">
+
+        <StackPanel Spacing="14">
+
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <Image Source="ms-appx:///Assets/ditador-256.png" Width="24" Height="24" />
+                <TextBlock Text="Ditador" Style="{ThemeResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+            </StackPanel>
+
+            <!--
+                O estado, em texto e com um símbolo ao lado. Nunca só a cor: quem
+                não distingue vermelho de verde precisa da palavra, e o Narrator
+                só tem a palavra.
+            -->
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <FontIcon
+                    x:Name="Simbolo"
+                    FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                    FontSize="16"
+                    Glyph="&#xE73E;"
+                    VerticalAlignment="Center" />
+                <TextBlock
+                    x:Name="Estado"
+                    Text="Pronto"
+                    Style="{ThemeResource BodyStrongTextBlockStyle}"
+                    VerticalAlignment="Center" />
+            </StackPanel>
+
+            <!--
+                A faixa de aviso aparece só quando há o que dizer: backend fora do
+                ar, erro de microfone, modelo faltando. O `InfoBar` é o controle do
+                WinUI para isso e já vem com ícone, cor de severidade e semântica
+                de acessibilidade — desenhar uma tarja à mão perderia as três.
+            -->
+            <InfoBar
+                x:Name="Aviso"
+                IsOpen="False"
+                IsClosable="False"
+                Severity="Warning" />
+
+            <Button
+                x:Name="BotaoDitar"
+                Content="Ditar agora"
+                HorizontalAlignment="Stretch"
+                Style="{ThemeResource AccentButtonStyle}"
+                Click="DitarAgora" />
+
+            <!-- As três coisas que respondem "por que não está funcionando como
+                 eu esperava": qual modelo, que idioma, e qual tecla. -->
+            <StackPanel x:Name="Detalhes" Spacing="6">
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Atalho" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock x:Name="Atalho" Grid.Column="1" Text="—" HorizontalAlignment="Right" />
+                </Grid>
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Modelo" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock x:Name="Modelo" Grid.Column="1" Text="—" HorizontalAlignment="Right"
+                               TextTrimming="CharacterEllipsis" />
+                </Grid>
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Idioma" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock x:Name="Idioma" Grid.Column="1" Text="—" HorizontalAlignment="Right" />
+                </Grid>
+            </StackPanel>
+
+            <HyperlinkButton
+                x:Name="BotaoConfiguracoes"
+                Content="Configurações"
+                HorizontalAlignment="Left"
+                Padding="0,4"
+                Click="AbrirConfiguracoes" />
+        </StackPanel>
+    </Grid>
+</Window>

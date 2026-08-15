@@ -202,31 +202,53 @@ em execução: a integração nunca chama `sudo`, `pkexec` nem shell nenhum.
 
 ### Windows 11
 
-> **Em andamento.** O núcleo em Rust compila, roda e transcreve no Windows; o
-> ícone na área de notificação e o aviso de gravação na tela ainda não existem.
-> Hoje o Ditador funciona lá por atalho, transcrição e área de transferência, mas
-> não aparece na barra. Não há pacote pronto — quem quiser usar, compila.
-
 O mesmo código de domínio, com a plataforma trocada por baixo: **Raw Input** no
 lugar do evdev, **named pipe** no lugar do socket Unix, a chave `Run` do usuário
 no lugar do systemd. Nada de WSL, de D-Bus instalado à força nem de camada de
 compatibilidade — as duas APIs são diferentes e o que atravessa a fronteira é o
 propósito, não a chamada.
 
+Instalar é um comando, e **sem administrador**:
+
+```powershell
+.\windows-integration\scripts\instalar.ps1
+```
+
+Ele compila os dois lados, instala o .NET e o Windows App Runtime que faltarem,
+copia tudo para `%LOCALAPPDATA%\Programs\Ditador`, cria o atalho no menu Iniciar,
+registra o início com a sessão e sobe o programa. Para desfazer:
+`.\windows-integration\scripts\desinstalar.ps1`.
+
+<p align="center">
+  <img src="assets/capturas/windows-gravando.png" alt="O aviso de gravação no rodapé da tela, com cronômetro e nível do microfone" width="372">
+  &nbsp;&nbsp;
+  <img src="assets/capturas/windows-painel.png" alt="O painel de status do ícone da área de notificação" width="316">
+</p>
+
+São **dois processos**, e a divisão importa:
+
+* **`ditador.exe`** (Rust) faz o trabalho — lê o teclado, grava, transcreve,
+  copia. Não depende de interface nenhuma para nada disso.
+* **`Ditador.Windows.exe`** (C#, WinUI 3) desenha: o ícone na área de
+  notificação, o aviso de gravação no rodapé da tela e o painel de status. Se ele
+  cair, o ditado continua; perde-se o ícone, não o programa.
+
+Os dois conversam por um named pipe só do usuário, com permissão escrita à mão —
+nenhuma outra conta da máquina consegue mandar o Ditador de alguém começar a
+gravar. E a conversa é por evento: o backend avisa quando o estado muda, e não
+há nada perguntando de tempos em tempos.
+
 O atalho é o mesmo `Pause/Break`, com a mesma semântica de segurar para falar, e
 o `config.json` é compatível nos dois sentidos: uma configuração escrita no
 Ubuntu vale no Windows e vice-versa.
 
-```powershell
-.\windows-integration\scripts\build.ps1     # Vulkan, o padrão
-```
-
 Compilar o whisper.cpp no Windows tem cinco armadilhas, e cada uma falha com uma
 mensagem que aponta para o lugar errado — de `libclang` ausente a um estouro de
-`MAX_PATH` que se anuncia como erro de PDB. Estão todas resolvidas no script e
-explicadas uma a uma em
+`MAX_PATH` que se anuncia como erro de PDB. Estão todas resolvidas no
+`build.ps1` e explicadas uma a uma em
 [`windows-integration/README.md`](windows-integration/README.md), junto com a
-arquitetura, a ACL do named pipe e o que falta.
+arquitetura, o protocolo do canal de controle, a ACL do named pipe, o que foi
+testado e o que ainda falta.
 
 Uma medida que vale registrar aqui: numa RTX 3060, transcrevendo 17,7 s de fala,
 o **Vulkan leva 0,42 s e o CUDA 0,47 s** — o Vulkan ganha, o que contraria a

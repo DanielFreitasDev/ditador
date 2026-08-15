@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="Ditador.Windows.app" />
+
+  <!--
+    Reconhecimento de DPI por monitor, versão 2.
+    ============================================
+    É o que o WinUI 3 exige e o que faz a janela se redesenhar sozinha ao passar
+    de um monitor de 100% para um de 150% — sem isto o Windows estica o que já
+    estava desenhado, e o texto sai borrado no segundo monitor. Declarado aqui,
+    no manifesto, e não por chamada de API: o modo de DPI vale para o processo
+    inteiro desde o primeiro instante, e uma chamada depois de a primeira janela
+    existir chega tarde.
+
+    Os dois elementos dizem a mesma coisa para versões diferentes do Windows; o
+    de baixo é o que o Windows 10 1703 em diante lê, e é ele que vale aqui.
+  -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <!--
+        Caminhos longos. O nome de usuário do Windows entra em todos os caminhos
+        do Ditador (a configuração, os modelos, o log), e um nome comprido com
+        uma pasta funda passa dos 260 caracteres sem que ninguém tenha feito nada
+        de errado. Isto vale para este processo; o `cl.exe` que compila o Rust
+        **não** declara o mesmo, e é por isso que o `build.ps1` continua exigindo
+        uma pasta de build curta.
+      -->
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <!--
+        UTF-8 como página de código do processo. O Ditador é um programa em
+        português: nomes de microfone com acento, caminhos com "ç", o texto
+        transcrito. Sem isto, toda API ANSI da máquina interpretaria esses bytes
+        na página de código regional.
+      -->
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+
+  <!--
+    Compatibilidade declarada: Windows 10 e Windows 11. Sem esta lista o Windows
+    trata o processo como escrito para o Vista e devolve versões falsas em
+    `GetVersionEx` — além de ligar camadas de compatibilidade que este programa
+    não quer.
+  -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}" />
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}" />
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}" />
+      <supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}" />
+    </application>
+  </compatibility>
+
+  <!--
+    Usuário comum, sempre. O Ditador lê o teclado, abre o microfone e escreve na
+    área de transferência — tudo o que uma conta comum pode fazer. Pedir elevação
+    daria a ele mais poder do que precisa e, de quebra, o impediria de conversar
+    com o Explorer (a área de notificação) e de receber arrastar-e-soltar de
+    aplicativos não elevados.
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+</assembly>

@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Ditador.Windows.Vistas.Sobreposicao"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        O aviso que aparece na tela enquanto se dita.
+
+        Uma faixa pequena, no rodapé do monitor em que a pessoa está trabalhando,
+        que diz o estado e sai de cena sozinha. Não é uma janela: não recebe
+        foco, não recebe clique, não aparece no Alt+Tab. Quem fala está com as
+        mãos em outro programa, e a única coisa que este aviso não pode fazer é
+        atrapalhar.
+
+        Sem Mica e sem Acrílico. Os dois custam composição para produzir um efeito
+        que ninguém vai admirar num aviso de três segundos, e o acrílico ainda
+        deixaria o texto por cima de um fundo que muda conforme a janela de trás —
+        o oposto de legível. Um pincel sólido do sistema segue o tema claro, o
+        escuro e o de alto contraste sem uma linha nossa.
+    -->
+    <Border
+        x:Name="Cartao"
+        Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+        BorderThickness="1"
+        CornerRadius="12"
+        Padding="16,12"
+        Opacity="0">
+
+        <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+
+            <!--
+                O símbolo. Segoe Fluent Icons é a fonte de ícones do Windows 11 e
+                já está em toda máquina — nada de emoji, que mudaria de desenho
+                conforme a fonte e sairia colorido no meio de uma faixa sóbria.
+            -->
+            <FontIcon
+                x:Name="Simbolo"
+                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                FontSize="18"
+                Glyph="&#xE720;"
+                VerticalAlignment="Center" />
+
+            <StackPanel Spacing="4" VerticalAlignment="Center" MinWidth="180">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock
+                        x:Name="Rotulo"
+                        Text="Gravando"
+                        Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                    <TextBlock
+                        x:Name="Cronometro"
+                        Text=""
+                        Style="{ThemeResource BodyTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+
+                <!--
+                    A barra do microfone. É a única coisa que se mexe aqui, e só
+                    enquanto o microfone está aberto — quinze quadros por segundo,
+                    que é a taxa em que o backend manda o nível. Fora da gravação
+                    ela desaparece e nada nesta janela é redesenhado.
+
+                    Ela serve a uma pergunta prática: "ele está me ouvindo?". Um
+                    microfone mudo é a falha mais comum de qualquer ditado, e uma
+                    barra parada responde isso antes de a pessoa falar a frase
+                    inteira à toa.
+                -->
+                <Grid x:Name="Medidor" Height="4" Visibility="Collapsed">
+                    <Rectangle
+                        Fill="{ThemeResource ControlStrongFillColorDefaultBrush}"
+                        RadiusX="2" RadiusY="2" />
+                    <Rectangle
+                        x:Name="Preenchimento"
+                        HorizontalAlignment="Left"
+                        Width="0"
+                        Fill="{ThemeResource AccentFillColorDefaultBrush}"
+                        RadiusX="2" RadiusY="2" />
+                </Grid>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

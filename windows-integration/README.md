@@ -3,15 +3,36 @@
 Documentação técnica do suporte a Windows. Para o uso normal, veja o `README.md`
 da raiz.
 
-> **Estado em 15/08/2026.** O núcleo em Rust compila, roda e transcreve no
-> Windows, com o atalho global verificado em hardware real. O frontend em
-> WinUI 3 — ícone na área de notificação, aviso de gravação na tela e popup de
-> status — **ainda não existe**. Sem ele o Ditador funciona por atalho,
-> transcrição e área de transferência, mas não aparece na barra.
+> **Estado em 15/08/2026.** Completo e em uso nesta máquina: o núcleo em Rust
+> compila e transcreve, o atalho global funciona em hardware real, e o frontend
+> `Ditador.Windows` (WinUI 3) põe o ícone na área de notificação, desenha o aviso
+> de gravação na tela e abre o painel de status. Instala-se com um comando e sem
+> pedir senha.
 >
 > **O lado Linux não foi recompilado depois desta portabilidade.** Ela mexeu em
 > código compartilhado, e a máquina onde foi feita é Windows. É o primeiro item
-> da lista no fim deste arquivo, e deve ser feito antes de qualquer coisa nova.
+> da lista no fim deste arquivo.
+
+## As duas metades
+
+```
+┌──────────────────────────┐        ┌──────────────────────────────┐
+│      ditador.exe         │        │    Ditador.Windows.exe       │
+│      (Rust)              │        │    (C# · WinUI 3)            │
+│                          │        │                              │
+│  Raw Input (atalho)      │◀──────▶│  ícone na área de notificação│
+│  áudio (WASAPI/cpal)     │  named │  aviso de gravação na tela   │
+│  Whisper (Vulkan/CPU)    │  pipe  │  painel de status            │
+│  área de transferência   │        │  notificações do sistema     │
+│  estado e regras         │        │                              │
+└──────────────────────────┘        └──────────────────────────────┘
+     a fonte da verdade                   só desenha o que recebe
+```
+
+O backend não depende do frontend para nada: sem ele o atalho, a transcrição e a
+área de transferência continuam funcionando — perde-se o ícone e o aviso. O
+contrário também vale: sem o backend, o frontend mostra "indisponível" e oferece
+iniciá-lo.
 
 ## O que muda entre Linux e Windows
 
@@ -24,14 +45,18 @@ interface do egui, regras de transcrição. O que muda mora todo em
 | Atalho global | evdev (`/dev/input/event*`) | Raw Input (`WM_INPUT`, `RIDEV_INPUTSINK`) |
 | Nomes de tecla | tabela do evdev | tabela `VK_*` → código canônico |
 | Canal de controle | socket Unix em `$XDG_RUNTIME_DIR` | named pipe `\\.\pipe\Ditador-<SID>` |
-| Instância única | `connect()` no socket | `FILE_FLAG_FIRST_PIPE_INSTANCE` |
-| Ícone na barra | StatusNotifierItem (ksni) | do frontend WinUI, não deste processo |
-| Integração de desktop | nomes no barramento D-Bus | presença do frontend no pipe |
+| Instância única (backend) | `connect()` no socket | `FILE_FLAG_FIRST_PIPE_INSTANCE` |
+| Instância única (frontend) | — | `AppInstance` do Windows App SDK |
+| Observador de estado | D-Bus (`PropertiesChanged`) | `assinar` no mesmo pipe |
+| Ícone na barra | StatusNotifierItem (ksni) | `Shell_NotifyIcon` v4, no frontend |
+| Aviso de gravação | OSD da extensão do GNOME | janela `WS_EX_NOACTIVATE` do frontend |
+| Integração de desktop | nomes no barramento D-Bus | presença do assinante no pipe |
 | Início automático | systemd `--user` ou `.desktop` do XDG | `HKCU\…\CurrentVersion\Run` |
 | Colagem automática | `ydotool` (opcional) | não existe, por decisão |
 | Área de transferência | `wl-copy`, com `arboard` de reserva | `arboard` |
 | Configuração | `~/.config/ditador/` | `%APPDATA%\ditador\` |
 | Modelos | `~/.local/share/ditador/models/` | `%LOCALAPPDATA%\ditador\models\` |
+| Log do frontend | — | `%LOCALAPPDATA%\ditador\logs\` |
 
 Duas escolhas merecem explicação, e as duas estão comentadas por extenso no
 código:
@@ -47,33 +72,64 @@ tem 574 MB: no Roaming ele atravessaria a rede a cada login num perfil de
 domínio. A configuração são poucos quilobytes de preferências, e acompanhar o
 usuário entre máquinas é o comportamento desejável. Há teste para os dois.
 
-## Requisitos de compilação
+## Instalar
 
 ```powershell
-winget install --id Rustlang.Rustup            # alvo stable-x86_64-pc-windows-msvc
-winget install --id Microsoft.VisualStudio.2026.BuildTools   # workload C++
-winget install --id Kitware.CMake
-winget install --id LLVM.LLVM                  # libclang, para o bindgen
-winget install --id KhronosGroup.VulkanSDK     # só para a feature vulkan
+.\windows-integration\scripts\instalar.ps1
 ```
 
-O CUDA Toolkit é opcional e só serve à feature `cuda`; baixe-o pela NVIDIA.
+Compila os dois lados, confere as dependências, instala em
+`%LOCALAPPDATA%\Programs\Ditador`, cria o atalho no menu Iniciar, registra o
+início com a sessão e sobe o programa. **Sem administrador** — nada em
+`Program Files`, nada em `HKLM`, nada de serviço.
+
+```powershell
+.\windows-integration\scripts\instalar.ps1 -Backend cpu          # sem GPU
+.\windows-integration\scripts\instalar.ps1 -SemCompilar          # usa o já compilado
+.\windows-integration\scripts\instalar.ps1 -SemIniciarComOWindows
+.\windows-integration\scripts\desinstalar.ps1                    # e -ApagarDados
+```
+
+Atualizar é rodar o `instalar.ps1` de novo: ele encerra o que está rodando (pelo
+canal de controle, para o microfone fechar e a configuração ser gravada), troca
+os arquivos e sobe outra vez.
+
+### As duas dependências, e por que elas não vêm dentro
+
+O frontend é **dependente de framework**: usa o .NET 10 Desktop Runtime e o
+Windows App Runtime 2.x que estiverem instalados. O `instalar.ps1` confere os
+dois e instala o que faltar (winget para o .NET, instalador oficial para o App
+Runtime).
+
+A alternativa — autocontido — poria uma cópia dos dois dentro da pasta do
+Ditador, o que resolveria a instalação e criaria um problema pior: correções de
+segurança do .NET e do WinUI chegariam pelo Windows Update para o sistema e
+**não** para a nossa cópia, que só se atualizaria quando o Ditador lançasse uma
+versão nova. Para um programa que fica de pé o dia inteiro lendo o teclado, essa
+troca não vale a pena.
 
 ## Compilar
 
 ```powershell
-.\windows-integration\scripts\build.ps1                 # Vulkan, o padrão
+.\windows-integration\scripts\build.ps1                 # os dois, Vulkan
 .\windows-integration\scripts\build.ps1 -Backend cpu
-.\windows-integration\scripts\build.ps1 -Backend cuda
+.\windows-integration\scripts\build.ps1 -SomenteFrontend
 .\windows-integration\scripts\build.ps1 -Testar         # fmt, testes e clippy antes
 ```
 
-O script carrega o ambiente do Visual Studio, confere a caixa de ferramentas e
-ajusta as quatro variáveis que o build exige. Para trabalhar à mão numa sessão:
+Requisitos:
 
 ```powershell
-. .\windows-integration\scripts\ambiente.ps1
+winget install --id Rustlang.Rustup                          # alvo stable-x86_64-pc-windows-msvc
+winget install --id Microsoft.VisualStudio.2026.BuildTools   # workload C++
+winget install --id Kitware.CMake
+winget install --id LLVM.LLVM                                # libclang, para o bindgen
+winget install --id KhronosGroup.VulkanSDK                   # só para a feature vulkan
+winget install --id Microsoft.DotNet.SDK.10                  # só para o frontend
 ```
+
+O CUDA Toolkit é opcional e só serve à feature `cuda`; baixe-o pela NVIDIA. Para
+trabalhar à mão numa sessão: `. .\windows-integration\scripts\ambiente.ps1`.
 
 ## As cinco armadilhas do build
 
@@ -100,7 +156,8 @@ em `C:\Users\<nome>\<pasta>\<projeto>\target` passa disso. Use um
 
 E **não adianta ligar `LongPathsEnabled` no registro**: o `cl.exe` não declara
 suporte a caminhos longos no manifesto dele. Verificado nesta máquina com a
-chave já ligada.
+chave já ligada. (O `Ditador.Windows.exe` declara — veja o `app.manifest` —, e por
+isso ele lida bem com nomes de usuário compridos.)
 
 **4. `unsupported Microsoft Visual Studio version`.** O `nvcc` tem uma lista
 fechada de versões de MSVC, num `#error` dentro de `include/crt/host_config.h`.
@@ -193,6 +250,24 @@ Sem SYSTEM e sem Administradores: nenhum dos dois tem o que fazer com "começar 
 gravar". Há teste conferindo que `WD`, `AN`, `BU`, `BA` e `SY` não estão na
 lista.
 
+**Conferindo na máquina de verdade** (com o Ditador rodando):
+
+```powershell
+$sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+(Get-Acl "\\.\pipe\Ditador-$sid").Sddl
+```
+
+O que sai é, exatamente:
+
+```
+O:S-1-5-21-…-1001G:S-1-5-21-…-1001D:P(A;;FA;;;S-1-5-21-…-1001)
+```
+
+Dono e grupo são o usuário; a DACL é protegida (`P`) e tem **uma** entrada:
+acesso total para esse mesmo usuário. Nenhum `WD` (Everyone), nenhum `AN`
+(anônimo), nenhum `BA` (administradores), nenhum `SY` (SYSTEM). Outro usuário da
+máquina, mesmo sabendo o nome do pipe, recebe acesso negado.
+
 ### Instância única sai de graça
 
 `FILE_FLAG_FIRST_PIPE_INSTANCE` faz o `CreateNamedPipeW` falhar se o nome já
@@ -205,6 +280,59 @@ do erro justamente por não ter isso.)
 Detalhe contraintuitivo: o erro devolvido quando o nome já existe é
 `ERROR_ACCESS_DENIED`, que parece problema de permissão.
 
+O **frontend** tem a instância única dele, e por outro caminho:
+`AppInstance.FindOrRegisterForKey` do Windows App SDK. Ela faz o que um mutex não
+faz — **redireciona a ativação** para quem chegou primeiro —, então clicar de novo
+no atalho não cria um segundo ícone: leva o painel de status à tela.
+
+### O protocolo do canal de controle
+
+Uma linha de comando, uma linha de resposta, terminadas por `\n`. É o mesmo
+protocolo do socket Unix do Linux, com um comando a mais:
+
+| Comando | Resposta |
+|---|---|
+| `status` | uma linha com modelo, atalho, microfone e backend |
+| `toggle` | `ok` |
+| `iniciar` / `parar` | `ok` |
+| `settings` | `ok` |
+| `quit` | `encerrando` |
+| `integracoes` | `frontend` ou `nenhuma` |
+| `assinar` | **a conexão vira um fluxo de eventos** |
+
+Depois de `assinar`, o backend manda uma linha JSON por mensagem:
+
+```json
+{"t":"ola","protocolo":1,"aplicativo":"ditador","versao":"0.5.0","backend":"Vulkan"}
+{"t":"estado","estado":"pronto","mensagem":"","gravandoDesde":0,"modelo":"large-v3-turbo-q5_0","idioma":"Português","atalho":"Pause/Break"}
+{"t":"nivel","valor":0.42}
+```
+
+O `ola` primeiro, para um frontend antigo poder desistir com uma frase em vez de
+interpretar campos que não conhece. O `estado` logo em seguida é o retrato de
+agora — quem conecta não espera a próxima mudança para saber em que pé as coisas
+estão. Depois, uma linha a cada mudança, e mais nada quando nada muda: **não há
+pergunta em laço em lugar nenhum deste programa**.
+
+O `nivel` é o pico do microfone, a 15 Hz e só durante a gravação — as mesmas
+decisões do sinal `Nivel` do D-Bus, pelos mesmos motivos.
+
+Dá para ver o fluxo sem compilar nada:
+
+```powershell
+$sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+$cano = New-Object System.IO.Pipes.NamedPipeClientStream('.', "Ditador-$sid", 'InOut')
+$cano.Connect(3000)
+$w = New-Object System.IO.StreamWriter($cano); $w.AutoFlush = $true
+$r = New-Object System.IO.StreamReader($cano)
+$w.Write("assinar`n")
+while ($true) { $r.ReadLine() }
+```
+
+**A regra de evolução é a do contrato D-Bus: acrescentar, nunca renomear.** Um
+comando novo é invisível para quem não o conhece; um renomeado quebra o atalho
+que alguém configurou no painel do sistema para chamar `ditador --alternar`.
+
 ### Raw Input, e não `WH_KEYBOARD_LL` nem `RegisterHotKey`
 
 `RegisterHotKey` entrega um evento só, sem o "soltou" — não serve a
@@ -214,10 +342,20 @@ segurar-para-falar, que é a semântica inteira deste programa.
 qualquer aplicativo passaria pelo nosso processo antes de chegar ao destino. A
 própria documentação da Microsoft recomenda Raw Input para monitoramento e avisa
 que um gancho lento é **removido em silêncio** pelo sistema — falha que aparece
-como "o atalho parou de funcionar depois de um tempo". Fica como reserva.
+como "o atalho parou de funcionar depois de um tempo". Fica como reserva, e não
+foi preciso.
 
 Usamos `RIDEV_INPUTSINK` e **nada além**. Em particular, nada de
 `RIDEV_NOLEGACY`: o Ditador observa o teclado, não o consome.
+
+**O atalho não pode ser testado com tecla sintética, e isso é uma qualidade.**
+`keybd_event` e `SendInput` inserem a tecla na fila de mensagens do sistema, não
+na pilha de entrada bruta: eles produzem `WM_KEYDOWN` para quem tem foco e
+**nenhum `WM_INPUT`**. Foi verificado aqui — segurar `Pause` por software não
+abre o microfone, e segurar a tecla de verdade abre. A consequência prática é
+boa: o Ditador não é acionável por automação de software, e o microfone de quem
+o usa não abre por um script. A consequência chata é que a verificação do atalho
+é manual, com um teclado, e não há como automatizá-la.
 
 Duas peculiaridades tratadas em `plataforma/windows/teclado.rs`:
 
@@ -246,6 +384,70 @@ mensagens para o OSD e o popup, o menu de clique é interface, e o
 O backend nunca cria ícone no Windows. Sem o frontend não há ícone — e o atalho,
 a transcrição e a área de transferência continuam funcionando.
 
+**A janela oculta que recebe os cliques é de nível superior, e não
+"message-only".** Uma janela `HWND_MESSAGE` seria a escolha óbvia e estaria
+errada: ela **não recebe mensagens de difusão**, e `TaskbarCreated` é uma
+difusão. Com ela, o ícone sumiria no primeiro reinício do Explorer e não voltaria
+nunca — sem nada no log dizendo por quê.
+
+**Os ícones são dois conjuntos, claro e escuro.** O Windows não recolore ícone de
+bandeja: o que o `Shell_NotifyIcon` recebe é o que aparece. Um glifo branco some
+na barra clara e um preto some na escura, então o frontend troca de conjunto
+quando o tema do sistema muda (`WM_SETTINGCHANGE` com `ImmersiveColorSet`). Os
+`.ico` são gerados por `scripts/gerar-icones.py` e commitados; cada um traz oito
+tamanhos, de 16 a 256 px, e o tamanho pedido ao `LoadImage` vem de
+`GetSystemMetricsForDpi`.
+
+Cada estado tem **forma** própria, e não só cor: ponto cheio para gravando, anel
+para trabalhando, triângulo para erro. Em 16 pixels e em tela monocromática eles
+continuam distinguíveis, e a dica de ferramenta diz o estado por extenso — que é
+o que o Narrator lê.
+
+### O aviso na tela é uma janela passiva
+
+Uma faixa no rodapé do monitor em uso, com o estado, o cronômetro e o nível do
+microfone. Três estilos a tornam passiva, e cada um resolve uma coisa diferente:
+
+* `WS_EX_NOACTIVATE` — não vira primeiro plano quando aparece. Sem ele, começar a
+  ditar tiraria o foco do editor onde o texto vai ser colado.
+* `WS_EX_TOOLWINDOW` — fora do Alt+Tab e da barra de tarefas.
+* `WS_EX_TRANSPARENT` — o clique atravessa. Só é usada porque o aviso não tem
+  nada em que clicar; o painel de status, que tem botões, não a recebe.
+
+Mais `AppWindow.Show(activateWindow: false)` e `IsShownInSwitchers = false`. O
+que **não** se faz é receber o clique e repassá-lo com `SendInput`: a janela é
+passiva de verdade, e não há nada a repassar.
+
+O monitor é o da janela em primeiro plano, com o do cursor como reserva — nunca o
+primário. Numa mesa de várias telas, o primário raramente é aquele para onde a
+pessoa está olhando. A posição sai da **área de trabalho** do monitor
+(`GetMonitorInfo`), que já exclui a barra de tarefas esteja ela embaixo, em cima
+ou de lado.
+
+E o backend sabe disso: enquanto o frontend está assinando, `Integracoes::frontend`
+fica ligado e a janela do egui para de desenhar as telas de gravação e de
+transcrição (`Shared::tela_visivel`). Dois avisos do mesmo ditado seriam o mesmo
+recado duas vezes, e um deles roubaria o foco.
+
+### O menu do ícone é Win32, e o painel é WinUI
+
+O menu de contexto usa `TrackPopupMenuEx`. Um `MenuFlyout` do WinUI precisaria de
+uma janela para se ancorar, e essa janela apareceria no Alt+Tab, roubaria foco e
+chegaria um quadro depois do clique.
+
+O painel de status é WinUI, com os controles do sistema (`InfoBar`, `Button`
+com `AccentButtonStyle`, `HyperlinkButton`) e nenhuma cor escrita à mão — o que
+faz ele seguir o tema claro, o escuro e o de alto contraste sem uma linha nossa.
+Ele se posiciona com `Shell_NotifyIconGetRect` + `CalculatePopupWindowPosition`,
+que são as funções que sabem encaixar um retângulo ao lado de outro respeitando
+monitor, barra de tarefas e DPI.
+
+**Limitação conhecida: o menu do botão direito sai em tema claro mesmo com o
+Windows em tema escuro.** Menus clássicos do Win32 só seguem o tema escuro por
+APIs não documentadas do `uxtheme` (ordinais 133/135), e o Ditador não usa API
+não documentada — o preço seria quebrar numa atualização do Windows sem aviso. O
+painel de status, que é WinUI, segue o tema corretamente.
+
 ### A colagem automática não existe no Windows
 
 No Linux o Ditador cola com `ydotool`, que é opcional e que o usuário escolhe
@@ -262,6 +464,35 @@ fora por três motivos:
 
 O texto vai para a área de transferência e o Ctrl+V é da pessoa.
 
+### Empacotado ou não: por que o padrão não é MSIX
+
+O MSIX traz coisas boas de verdade — instalação e desinstalação atômicas,
+identidade de pacote, `StartupTask` com interruptor no painel do Windows,
+atualização diferencial — e o projeto tem um: `packaging/AppxManifest.xml`, gerado
+e assinado por `scripts/empacotar-msix.ps1`, que produz um `.msix` válido.
+
+O que impede o MSIX de ser o caminho padrão **não é técnico**: um pacote precisa
+estar assinado por um certificado em que a máquina confie, e pôr um certificado
+de teste no armazenamento de Pessoas Confiáveis exige **administrador**. Um
+programa que só lê o teclado do usuário não deveria precisar de elevação para ser
+instalado — e não precisa, pelo `instalar.ps1`. Quando houver um certificado de
+assinatura de verdade, essa ressalva cai e o MSIX passa a ser o caminho
+recomendado, inclusive para `winget` e Microsoft Store.
+
+```powershell
+.\windows-integration\scripts\empacotar-msix.ps1 -Assinar
+# → %USERPROFILE%\.ditador-build\msix\Ditador_0.5.0.0_x64.msix
+```
+
+Para instalar numa máquina de testes, uma vez, **como administrador**:
+
+```powershell
+Import-Certificate -FilePath <certificado.cer> -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+Add-AppxPackage 'C:\…\Ditador_0.5.0.0_x64.msix'
+```
+
+Nenhum certificado é versionado: o `.gitignore` barra `*.pfx` e `*.snk`.
+
 ## Diagnóstico
 
 ```powershell
@@ -276,70 +507,99 @@ atalho está funcionando — quem observa o teclado é a instância em execuçã
 linha aparece como informativa (`--`), não como falha. Para a resposta de
 verdade, use `--status`.
 
-## O que está pronto e o que falta
+Onde ficam os rastros:
 
-Pronto e verificado nesta máquina:
+| O quê | Onde |
+|---|---|
+| Log do frontend | `%LOCALAPPDATA%\ditador\logs\Ditador.Windows.log` (e `.old`) |
+| Log do backend | no console de quem o iniciou; para ver, rode-o de um terminal com `$env:RUST_LOG='ditador=debug'` |
+| Configuração | `%APPDATA%\ditador\config.json` |
+| Modelos | `%LOCALAPPDATA%\ditador\models\` |
+| Falhas do sistema | Visualizador de Eventos → Aplicativo; Monitor de Confiabilidade |
 
-- [x] o núcleo em Rust compila no MSVC, com os três backends
-- [x] `cargo fmt`, `cargo test` (78) e `cargo clippy` limpos nos três
-- [x] áudio pelo cpal/WASAPI — lista e escolhe dispositivos
-- [x] Whisper transcrevendo, com o modelo baixado pelo próprio programa
-- [x] caminhos de configuração e de modelo corretos para Windows
-- [x] named pipe com DACL restrita e instância única; `--status` e `--encerrar`
-      atravessando o pipe
-- [x] **o atalho global em hardware real**: segurar `Pause` com outra janela em
-      foco abre o microfone, soltar transcreve, e o texto chega à área de
-      transferência
-- [x] início automático pela chave `Run`
+O Ditador **não** envia nada para lugar nenhum: sem telemetria, sem análise de
+uso, sem envio automático de falhas. O log é um arquivo de texto na máquina, e é
+só isso.
 
-Duas coisas que só o teste em hardware revelou:
+Processos esperados: `ditador.exe` (o que grava e transcreve) e
+`Ditador.Windows.exe` (o que desenha). Os dois juntos, em repouso, medidos nesta
+máquina:
 
-* **A tecla `Pause` faz auto-repetição.** Segurá-la produz um par de mensagens
-  (`VKey=0x13` com E1, depois `VKey=0xFF`) a cada repique — treze delas em três
-  segundos. A máquina de teclas absorve isso porque só reage à transição; se
-  algum dia ela passar a contar apertos, o microfone vai abrir e fechar treze
-  vezes por ditado.
-* **A primeira transcrição da máquina leva ~22 s**, contra 0,4 s nas seguintes.
-  É o driver compilando os pipelines de shader do Vulkan, e o cache é por
-  executável — depois disso nem o reinício do programa paga de novo. Vale um
-  aviso na tela algum dia; não vale uma mudança de arquitetura.
+| | Memória (working set) | Privada | CPU em repouso | Threads |
+|---|---|---|---|---|
+| `ditador.exe` | 175 MB | 1,5 GB¹ | 0,01% | 27 |
+| `Ditador.Windows.exe` | 128 MB | 85 MB | 0,06% | 37 |
 
-Falta — e o primeiro item é o mais urgente:
+¹ o modelo de 574 MB mapeado mais os buffers do Vulkan; o que está de fato
+residente é a coluna do working set.
 
-- [ ] **Compilar e testar no Linux.** A portabilidade mexeu em código Linux:
-      `dbus.rs` e `tray.rs` mudaram de lugar, `hotkey.rs` foi partido entre a
-      máquina de teclas e a leitura do evdev, e `keys.rs`, `ipc.rs`,
-      `clipboard.rs`, `autostart.rs`, `icones.rs`, `ui.rs` e `main.rs` foram
-      editados. **Nada disso foi compilado no Linux** — a máquina onde o porte
-      foi feito é Windows e não tem WSL. Houve revisão estática e mais nada.
+## Testes
+
+O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
+3060, um monitor a 1920×1080 em 100%):
+
+- [x] `cargo fmt`, `cargo test` (84) e `cargo clippy` limpos
+- [x] `dotnet build` Debug e Release, **zero avisos** (o projeto trata aviso como
+      erro)
+- [x] o atalho global **com um teclado de verdade**: segurar `Pause` com outra
+      janela em foco abre o microfone, soltar transcreve, e o texto chega à área
+      de transferência. Não há como automatizar isto — veja acima por que a tecla
+      sintética não serve
+- [x] o ciclo inteiro pelo canal de controle (`--alternar` para gravar e parar),
+      com o aviso na tela acompanhando: "Gravando" com cronômetro, depois
+      "Processando fala…", depois some
+- [x] o fluxo `assinar` pelo pipe, conferido com PowerShell puro
+- [x] ícone na área de notificação, com os quatro estados e a dica
+- [x] aviso na tela com cronômetro e nível do microfone, sem roubar foco
+- [x] painel de status pelo clique esquerdo, posicionado junto ao ícone
+- [x] menu de contexto pelo clique direito
+- [x] instância única do frontend: a segunda execução redireciona e abre o painel
+- [x] **reinício do Explorer**: o ícone volta sozinho, sem duplicar
+- [x] backend morto e reiniciado: o frontend reconecta em ~1 s
+- [x] frontend iniciado sem backend: sobe o backend uma vez e conecta
+- [x] ACL do named pipe conferida na máquina (uma ACE, só o usuário)
+- [x] instalação, atualização por cima e desinstalação limpas
+- [x] MSIX gerado e assinado com certificado de teste
+- [x] memória e CPU em repouso medidas
+
+O que **não** foi verificado, e por quê:
+
+- **DPI diferente de 100%** e **múltiplos monitores**: esta máquina tem um
+  monitor a 100%. O código usa `GetDpiForWindow`, `GetSystemMetricsForDpi` e a
+  área de trabalho do monitor da janela ativa — nada é coordenada fixa —, mas
+  isso é revisão, não teste.
+- **Suspender e retomar**: interromperia a sessão em que este trabalho foi feito.
+  O caminho de código é o mesmo da reconexão, que foi testado matando o backend.
+- **Tema claro do sistema**: os `.ico` claros existem e a troca acontece em
+  `WM_SETTINGCHANGE`, mas a máquina esteve em tema escuro o tempo todo.
+- **Instalação limpa numa VM do zero**: o `instalar.ps1` instala o .NET e o
+  Windows App Runtime que faltarem, mas esta máquina já tinha os dois.
+- **Narrator**: os nomes de automação estão definidos, sem verificação com o
+  leitor de tela ligado.
+
+## O que falta
+
+- [ ] **Compilar e testar no Linux.** A portabilidade mexeu em código
+      compartilhado: `dbus.rs` e `tray.rs` mudaram de lugar, o `hotkey.rs` foi
+      partido entre a máquina de teclas e a leitura do evdev, o `Retrato` saiu do
+      `dbus.rs` para `src/retrato.rs`, e `state.rs`, `ipc.rs`, `icones.rs`,
+      `stt.rs`, `keys.rs`, `clipboard.rs`, `autostart.rs`, `ui.rs` e `main.rs`
+      foram editados. **Nada disso foi compilado no Linux** — a máquina onde o
+      porte foi feito é Windows e não tem WSL. Houve revisão estática e mais nada.
 
       O que confere de uma vez: `cargo fmt --check`, `cargo test`,
       `cargo clippy`, `cargo build --release` e o
-      `o_contrato_canonico_bate_com_os_tres_lados`, que só existe no build
-      Linux e é quem garante que o XML, o zbus e os dois clientes continuam
-      dizendo a mesma coisa. Depois, `./gnome-extension/scripts/testar.sh` e
+      `o_contrato_canonico_bate_com_os_tres_lados`, que só existe no build Linux
+      e é quem garante que o XML, o zbus e os dois clientes continuam dizendo a
+      mesma coisa. Depois, `./gnome-extension/scripts/testar.sh` e
       `./kde-plasma/testar.sh`.
 
       As pastas `gnome-extension/`, `kde-plasma/` e o `dbus/contrato.xml` não
-      foram tocados — verificado por `git diff --name-only`. Mas o Rust que
-      conversa com elas, sim.
+      foram tocados — verificado por `git diff --name-only`.
 
-- [ ] o fluxo de eventos no pipe (o comando `assinar`), para o frontend receber
-      mudanças de estado sem perguntar
-- [ ] o frontend `Ditador.Windows` em WinUI 3: ícone, popup, OSD, notificações,
-      e a instância única pelo `AppInstance` do Windows App SDK
-- [ ] um `AppUserModelID` estável, para o Shell associar notificações e ícone ao
-      aplicativo certo
-- [ ] empacotamento (MSIX ou instalador) e `install.ps1` / `uninstall.ps1`;
-      com MSIX, trocar a chave `Run` pelo `StartupTask`
-- [ ] documentar a assinatura de código (o `.pfx` já está no `.gitignore`;
-      falta o procedimento)
-- [ ] os roteiros de teste: multimonitor, DPI misto, reinício do Explorer,
-      suspender e retomar, ACL vista de outra conta, e a instalação limpa numa
-      VM do zero
-- [ ] medir e registrar memória e CPU em repouso, do backend e do frontend
+- [ ] os testes que a máquina não permitiu: DPI misto, multimonitor, suspender e
+      retomar, tema claro, VM limpa, Narrator
 - [ ] avisar na tela que a primeira transcrição da máquina demora (~22 s
-      compilando shaders) em vez de deixar parecer que travou
-- [ ] considerar uma matriz de CI (`ubuntu-latest` + `windows-latest`), que hoje
-      não existe — o projeto nunca teve CI, e é ela que pegaria justamente o
-      primeiro item desta lista
+      compilando os shaders do Vulkan) em vez de deixar parecer que travou
+- [ ] certificado de assinatura de verdade — e então trocar o caminho padrão de
+      instalação para o MSIX

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application
+    x:Class="Ditador.Windows.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        Só os recursos do WinUI. Nenhum estilo próprio, nenhuma cor escrita à
+        mão: o que dá ao Ditador cara de aplicativo do Windows 11 é exatamente
+        usar os pincéis do sistema — eles seguem o tema claro, o escuro e o de
+        alto contraste sem uma linha nossa. Um `#FFFFFF` aqui seria um texto
+        invisível no alto contraste de alguém.
+    -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

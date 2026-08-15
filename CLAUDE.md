@@ -39,6 +39,14 @@ As três features de backend são mutuamente exclusivas e há `compile_error!` n
 `src/main.rs` garantindo isso — esquecer o `--no-default-features` falha em segundos, com a
 receita certa na mensagem, em vez de compilar o Vulkan junto em silêncio.
 
+No Windows, o mesmo, com o ambiente carregado antes (o `build.ps1` faz isso
+sozinho):
+
+```
+.\windows-integration\scripts\build.ps1 -Testar        # fmt, testes e clippy no Rust
+dotnet build windows-integration\Ditador.Windows.sln   # o frontend, aviso = erro
+```
+
 ## Build e empacotamento
 
 Features de GPU são mutuamente exclusivas; `vulkan` é o padrão.
@@ -116,6 +124,32 @@ grep -A40 'name: "PlasmoidItem"' /usr/lib/x86_64-linux-gnu/qt6/qml/org/kde/plasm
 ```
 
 Documentação técnica, incluindo a pesquisa sobre OSD nativo e por que não há um: `kde-plasma/README.md`.
+
+## Integração com o Windows 11 (`windows-integration/`)
+
+São **duas metades**, como no Plasma, mas a divisão é outra: o `ditador.exe` em
+Rust faz tudo o que é trabalho (atalho por Raw Input, áudio, Whisper, área de
+transferência) e o `Ditador.Windows.exe` (C#, WinUI 3, .NET 10, Windows App SDK
+2.4) faz tudo o que é interface (ícone na área de notificação, aviso na tela,
+painel de status, notificações). Eles conversam pelo **mesmo canal de controle**
+do `ditador --status`, com um comando a mais: `assinar`.
+
+```
+.\windows-integration\scripts\instalar.ps1        # compila, instala, sobe. Sem admin.
+.\windows-integration\scripts\desinstalar.ps1     # e -ApagarDados
+.\windows-integration\scripts\build.ps1           # os dois lados
+.\windows-integration\scripts\empacotar-msix.ps1  # o pacote, para o futuro
+python windows-integration\scripts\gerar-icones.py  # depois de mexer no desenho dos .ico
+```
+
+**A fonte da verdade das APIs é a documentação da Microsoft**, e o que está em
+`NativeMethods.txt` é gerado dela pelo CsWin32 — nenhum P/Invoke é escrito à mão.
+Nada de API não documentada: o menu do ícone sai em tema claro mesmo no Windows
+escuro porque escurecê-lo exigiria os ordinais 133/135 do `uxtheme`, e o preço de
+usá-los é quebrar numa atualização sem aviso.
+
+O `windows-integration/README.md` tem a arquitetura, o protocolo do `assinar`, a
+ACL do pipe conferida na máquina, o que foi testado e o que não foi.
 
 ## O contrato D-Bus é um só
 
@@ -270,6 +304,32 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
   Plasma 6.6 produzem os mesmos — confira rodando-o no `org.kde.plasma.vault`. O `testar.sh` filtra
   exatamente esses quatro e falha em qualquer outro. Os demais foram **resolvidos**, não silenciados
   (`KI18nContext` no lugar do `i18nd` solto; `Plasmoid` alcançado só do arquivo raiz).
+- **`ConnectNamedPipe` que falha precisa de um `DisconnectNamedPipe` antes da
+  próxima volta** (`src/plataforma/windows/ipc.rs`). Um cliente que abre o pipe e
+  vai embora sem dizer nada — o `Get-Acl` do PowerShell faz exatamente isso —
+  deixa a instância devolvendo `ERROR_NO_DATA` para sempre. Com um `continue`
+  seco, o laço girava nesse erro consumindo um núcleo inteiro e **nenhum
+  `ditador --status` era atendido nunca mais**, num Ditador que continuava
+  gravando e transcrevendo normalmente. Há teste de regressão
+  (`um_cliente_que_some_nao_derruba_o_canal`).
+- **A janela que recebe os cliques do ícone é de nível superior, e não
+  `HWND_MESSAGE`.** Janelas *message-only* não recebem mensagens de difusão, e
+  `TaskbarCreated` — o aviso de que o Explorer voltou — é uma difusão. Com ela, o
+  ícone sumiria no primeiro reinício do Explorer e não voltaria nunca.
+- **O `Retrato` mora em `src/retrato.rs`, e não no `dbus.rs`.** Ele nasceu lá,
+  quando o D-Bus era o único jeito de o mundo de fora enxergar o Ditador; hoje o
+  named pipe publica o mesmo estado para o `Ditador.Windows`, e duas cópias da
+  mesma tabela é o que este arquivo proíbe em tantas palavras.
+- **`ipc::Fluxo` carrega um `Sender` que nunca envia nada.** É o que avisa a
+  thread da assinatura de que o cliente foi embora: sem ele, ela dormia à espera
+  da próxima mudança de estado — que num Ditador parado nunca vem — e
+  `Integracoes::frontend` ficava ligado num programa sem frontend nenhum, com a
+  janela do egui escondida e o usuário sem ícone e sem aviso.
+- **Os ícones da área de notificação vêm em dois conjuntos, claro e escuro.** O
+  Windows não recolore ícone de bandeja: um glifo branco some na barra clara. A
+  troca é feita no `WM_SETTINGCHANGE` com `ImmersiveColorSet` — e mudar só a
+  chave do registro não a dispara, é preciso a difusão (foi assim que o teste
+  passou a valer).
 - **`dbus::start` vem antes de `tray::start` em `main.rs`.** É o D-Bus que descobre se alguma integração já
   está no ar; descobrindo primeiro, a bandeja nasce sabendo e o ícone não pisca na barra no login.
   No Plasma isto é ainda mais apertado do que no GNOME, e é o que faz o widget não piscar: o

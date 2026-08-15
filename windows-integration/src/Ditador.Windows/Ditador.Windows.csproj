@@ -1,0 +1,90 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    O frontend do Ditador no Windows: ícone na área de notificação, aviso de
+    gravação na tela e um popup de status. Quem grava, transcreve e escreve na
+    área de transferência é o `ditador.exe` em Rust; aqui não há áudio, não há
+    modelo e não há regra de negócio nenhuma.
+
+    ## Desempacotado (unpackaged), e por quê
+
+    `WindowsPackageType=None` faz o Windows App SDK subir pelo bootstrapper em
+    vez de depender de identidade de pacote. A escolha está explicada por extenso
+    no `windows-integration/README.md`; em uma frase: o MSIX exige assinatura
+    para instalar, e um certificado de teste precisa ser posto no armazenamento
+    de Pessoas Confiáveis da máquina — o que pede elevação. O prompt deste
+    trabalho e o bom senso dizem que instalar o Ditador não pode exigir
+    administrador, então o caminho padrão é uma pasta em `%LOCALAPPDATA%`. O
+    empacotamento MSIX continua existindo, em `packaging/`, para quem quiser.
+
+    ## Dependente de framework, e por quê
+
+    Nem `SelfContained` nem `WindowsAppSDKSelfContained`. As duas coisas de que
+    isto depende — o .NET 10 Desktop Runtime e o Windows App Runtime 2.4 —
+    recebem correções de segurança pelo Windows Update e pelo próprio .NET, e um
+    aplicativo autocontido ficaria com a cópia congelada do dia do build. O
+    `instalar.ps1` confere as duas e instala o que faltar, que é o passo que
+    torna essa escolha aceitável para quem só quer usar o programa.
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <!--
+      O piso é o Windows 10 2004. O Ditador tem o Windows 11 como alvo e é lá que
+      ele é testado, mas nada aqui exige API de 11: baixar o piso não custa nada
+      e evita que o instalador recuse uma máquina que rodaria bem.
+    -->
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>Ditador.Windows</RootNamespace>
+    <AssemblyName>Ditador.Windows</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\ditador.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <SelfContained>false</SelfContained>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- O interop com Win32 precisa de ponteiros em alguns pontos (a fila de
+         mensagens, o NOTIFYICONDATA). Está confinado a `Interop/`. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Sem janela de console atrás da interface. -->
+    <DisableRuntimeMarshalling>false</DisableRuntimeMarshalling>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <!--
+      Aviso vira erro. O `CLAUDE.md` do projeto trata os avisos do clippy como
+      erro do lado Rust pelo mesmo motivo: um aviso que ninguém lê é um defeito
+      que ninguém corrige. Se algum dia um gerador de código produzir aviso
+      inevitável, silencie **aquele** com justificativa, e não a régua inteira.
+    -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <!-- O ponto de entrada é o `Program.cs`, escrito à mão. O motivo está lá:
+         a instância única precisa decidir antes de o XAML subir. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <!--
+      Os P/Invoke são **gerados** a partir dos metadados oficiais do Windows, e
+      não escritos à mão: uma assinatura errada de `Shell_NotifyIcon` compila sem
+      reclamar e falha em tempo de execução, que é o pior lugar para descobrir.
+      O `NativeMethods.txt` lista, uma por linha, exatamente o que é gerado —
+      nada além disso entra no binário.
+    -->
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.298" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Os ícones vão para a saída como arquivos: o tray os carrega com
+         `LoadImage` no tamanho exato que o DPI pede, o que um recurso embutido
+         no assembly gerenciado não permitiria sem um passo de .rc. -->
+    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

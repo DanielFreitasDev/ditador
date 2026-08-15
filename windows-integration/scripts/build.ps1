@@ -1,9 +1,11 @@
-# Compila o Ditador para Windows.
+# Compila o Ditador para Windows — o backend em Rust e o frontend em WinUI.
 #
-#     .\windows-integration\scripts\build.ps1                # Vulkan (padrão)
+#     .\windows-integration\scripts\build.ps1                # os dois, Vulkan
 #     .\windows-integration\scripts\build.ps1 -Backend cpu
 #     .\windows-integration\scripts\build.ps1 -Backend cuda
-#     .\windows-integration\scripts\build.ps1 -Testar        # roda fmt, clippy e testes antes
+#     .\windows-integration\scripts\build.ps1 -Testar        # fmt, clippy e testes antes
+#     .\windows-integration\scripts\build.ps1 -SemFrontend   # só o Rust
+#     .\windows-integration\scripts\build.ps1 -SomenteFrontend
 #
 # Este arquivo é, sobretudo, um registro. Compilar o whisper.cpp no Windows exige
 # quatro ajustes de ambiente que não são óbvios, e cada um deles falha com uma
@@ -16,6 +18,16 @@ param(
     [string] $Backend = 'vulkan',
 
     [switch] $Testar,
+
+    # Compila só o backend em Rust.
+    [switch] $SemFrontend,
+
+    # Compila só o frontend em C#. Não precisa de nada do lado do Rust — nem do
+    # Visual Studio, nem do CMake, nem do Vulkan SDK.
+    [switch] $SomenteFrontend,
+
+    [ValidateSet('Debug', 'Release')]
+    [string] $Configuracao = 'Release',
 
     # Onde o cargo grava os artefatos. Não mexa sem ler o comentário sobre
     # MAX_PATH mais abaixo — este valor não é gosto pessoal.
@@ -101,7 +113,44 @@ Instale um CUDA mais novo, ou compile com -Backend vulkan (que nesta máquina
 "@
 }
 
+function Build-Frontend {
+    param([string] $Raiz, [string] $Configuracao)
+
+    # O frontend não passa por nada do ambiente do Visual Studio: ele é C# puro,
+    # construído pelo SDK do .NET, e a única coisa de que precisa é do `dotnet` no
+    # caminho. É por isso que ele pode ser compilado sozinho, com `-SomenteFrontend`,
+    # numa máquina que nunca compilou o Rust.
+    $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+    if (-not $dotnet) {
+        $padrao = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'
+        if (Test-Path $padrao) {
+            $dotnet = Get-Item $padrao
+        } else {
+            throw @"
+O SDK do .NET 10 não foi encontrado. Instale com:
+    winget install --id Microsoft.DotNet.SDK.10
+"@
+        }
+    }
+
+    $solucao = Join-Path $Raiz 'windows-integration\Ditador.Windows.sln'
+    Write-Host "`nCompilando o frontend WinUI ($Configuracao)" -ForegroundColor Cyan
+    & $dotnet.Source build $solucao -c $Configuracao --nologo
+    if ($LASTEXITCODE) { throw 'dotnet build falhou' }
+
+    $saida = Join-Path $Raiz "windows-integration\src\Ditador.Windows\bin\x64\$Configuracao\net10.0-windows10.0.26100.0\win-x64\Ditador.Windows.exe"
+    if (-not (Test-Path $saida)) { throw "o build terminou sem erro mas não produziu $saida" }
+    Write-Host "  $saida"
+}
+
 $raiz = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+
+if ($SomenteFrontend) {
+    Build-Frontend -Raiz $raiz -Configuracao $Configuracao
+    Write-Host "`nPronto." -ForegroundColor Green
+    return
+}
+
 Push-Location $raiz
 try {
     . (Join-Path $PSScriptRoot 'ambiente.ps1')
@@ -196,9 +245,15 @@ caminho mais curto, por exemplo C:\Users\$env:USERNAME\.ditador-build
     if (-not (Test-Path $exe)) { throw "o build terminou sem erro mas não produziu $exe" }
 
     $tamanho = [math]::Round((Get-Item $exe).Length / 1MB, 1)
-    Write-Host "`nPronto." -ForegroundColor Green
+    Write-Host "`nBackend pronto." -ForegroundColor Green
     Write-Host "  $exe  ($tamanho MB)"
     Write-Host "  Confira com: & '$exe' --versao"
+
+    if (-not $SemFrontend) {
+        Build-Frontend -Raiz $raiz -Configuracao $Configuracao
+    }
+
+    Write-Host "`nPronto." -ForegroundColor Green
 } finally {
     Pop-Location
 }
