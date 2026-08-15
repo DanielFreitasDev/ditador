@@ -79,6 +79,52 @@ internal readonly struct AlcaDaJanela
     }
 
     /// <summary>
+    /// Faz o clique atravessar também as janelas internas do WinUI.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// O <c>WS_EX_TRANSPARENT</c> aplicado à janela de nível superior não basta:
+    /// o WinUI 3 desenha o conteúdo numa janela filha (a
+    /// <c>Microsoft.UI.Content.DesktopChildSiteBridge</c>), e <c>WindowFromPoint</c>
+    /// no meio do aviso devolve **ela**, não a janela de baixo. Por isso o estilo
+    /// é aplicado às filhas também, e só depois de a janela aparecer — antes
+    /// disso elas ainda não existem.
+    /// </para>
+    /// <para>
+    /// <b>Até onde isto foi comprovado:</b> os quatro <c>HWND</c> (a janela e as
+    /// três internas do WinUI) ficam com <c>WS_EX_TRANSPARENT</c> ligado — isso
+    /// foi medido lendo <c>GWL_EXSTYLE</c> de cada um com o aviso na tela. O que
+    /// <b>não</b> foi possível comprovar é o efeito: montar um teste de clique com
+    /// automação, com uma janela conhecida embaixo, deu resultado inconclusivo até
+    /// no grupo de controle, e um teste que não distingue os dois casos não prova
+    /// nada. Fica registrado como está: o estilo aplicado onde a documentação
+    /// manda, e a limitação escrita no README em vez de uma afirmação que não se
+    /// sustenta. O impacto prático é pequeno — a faixa tem 360 por 78 pontos, vive
+    /// alguns segundos e não cobre nada com que se interaja.
+    /// </para>
+    /// </remarks>
+    public void AtravessarCliques()
+    {
+        TornarPassiva();
+
+        var aplicar = new WNDENUMPROC((filha, _) =>
+        {
+            var estilos = (WINDOW_EX_STYLE)PInvoke.GetWindowLongPtr(filha, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
+            PInvoke.SetWindowLongPtr(
+                filha,
+                WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE,
+                (nint)(estilos | WINDOW_EX_STYLE.WS_EX_TRANSPARENT));
+            return true;
+        });
+
+        PInvoke.EnumChildWindows(_janela, aplicar, IntPtr.Zero);
+        // O delegate precisa continuar vivo durante a enumeração inteira, e a
+        // enumeração é síncrona — esta linha existe para que o compilador (e
+        // quem lê) saiba que ele não pode ser coletado antes.
+        GC.KeepAlive(aplicar);
+    }
+
+    /// <summary>
     /// Tira a janela do Alt+Tab e da barra de tarefas, mas a deixa clicável.
     /// </summary>
     /// <remarks>

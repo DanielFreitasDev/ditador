@@ -60,6 +60,7 @@ public sealed partial class Sobreposicao : Window
     private readonly UISettings _preferencias = new();
     private RetratoDoDitador _retrato = RetratoDoDitador.Indisponivel;
     private bool _visivel;
+    private bool _cliquesJaAtravessam;
 
     public Sobreposicao()
     {
@@ -131,7 +132,11 @@ public sealed partial class Sobreposicao : Window
                 Rotulo.Text = "Processando fala…";
                 Cronometro.Text = string.Empty;
                 Medidor.Visibility = Visibility.Collapsed;
-                _relogio.Stop();
+                // O relógio continua batendo, agora contando a paciência: se a
+                // transcrição passar de alguns segundos, o aviso abaixo explica
+                // por quê.
+                _transcrevendoDesde = DateTimeOffset.UtcNow;
+                _relogio.Start();
                 Aparecer();
                 break;
 
@@ -179,8 +184,34 @@ public sealed partial class Sobreposicao : Window
         Close();
     }
 
+    /// <summary>Quanto tempo de transcrição já é demora, e não trabalho normal.</summary>
+    /// <remarks>
+    /// A primeira transcrição depois de instalar leva uns vinte segundos com o
+    /// backend Vulkan: o driver compila os pipelines de shader antes de rodar
+    /// qualquer coisa, e guarda o resultado — as seguintes voltam a levar meio
+    /// segundo. Sem aviso, o que se vê é uma faixa dizendo "processando" por
+    /// vinte segundos, que é indistinguível de um programa travado. Seis
+    /// segundos é folga para um parágrafo longo numa máquina modesta e é pouco o
+    /// bastante para o aviso chegar antes da desconfiança.
+    /// </remarks>
+    private static readonly TimeSpan DemoraDemais = TimeSpan.FromSeconds(6);
+
+    private DateTimeOffset? _transcrevendoDesde;
+
     private void AtualizarCronometro()
     {
+        if (_retrato.Estado == Estado.Transcrevendo)
+        {
+            if (_transcrevendoDesde is { } desde && DateTimeOffset.UtcNow - desde > DemoraDemais)
+            {
+                Cronometro.Text = "preparando a placa de vídeo…";
+            }
+
+            return;
+        }
+
+        _transcrevendoDesde = null;
+
         if (_retrato.GravandoDesde <= 0)
         {
             Cronometro.Text = string.Empty;
@@ -228,6 +259,15 @@ public sealed partial class Sobreposicao : Window
             // cursor do editor de quem está ditando, exatamente no instante em
             // que a pessoa começou a falar.
             _janela.Show(activateWindow: false);
+
+            // Só depois de aparecer é que as janelas internas do WinUI existem,
+            // e é nelas que o clique parava apesar do `WS_EX_TRANSPARENT` da
+            // janela de fora. Uma vez basta: elas não são recriadas.
+            if (!_cliquesJaAtravessam)
+            {
+                _cliquesJaAtravessam = true;
+                new AlcaDaJanela(this).AtravessarCliques();
+            }
         }
 
         Desvanecer(para: 1);

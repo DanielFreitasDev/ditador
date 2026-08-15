@@ -92,6 +92,7 @@ GetDpiForWindow
 //
 // A variante `Ptr` é a que vale em 64 bits: a outra trunca ponteiros, e este
 // projeto é x64.
+EnumChildWindows
 GetWindowLongPtr
 SetWindowLongPtr
 WINDOW_LONG_PTR_INDEX

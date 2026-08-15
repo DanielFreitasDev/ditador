@@ -411,8 +411,11 @@ microfone. Três estilos a tornam passiva, e cada um resolve uma coisa diferente
 * `WS_EX_NOACTIVATE` — não vira primeiro plano quando aparece. Sem ele, começar a
   ditar tiraria o foco do editor onde o texto vai ser colado.
 * `WS_EX_TOOLWINDOW` — fora do Alt+Tab e da barra de tarefas.
-* `WS_EX_TRANSPARENT` — o clique atravessa. Só é usada porque o aviso não tem
-  nada em que clicar; o painel de status, que tem botões, não a recebe.
+* `WS_EX_TRANSPARENT` — para o clique atravessar. Só é usada porque o aviso não
+  tem nada em que clicar; o painel de status, que tem botões, não a recebe.
+  Ela é aplicada à janela **e às três janelas internas do WinUI**, porque é uma
+  delas (a `DesktopChildSiteBridge`) que responde ao ponteiro — conferido lendo
+  o `GWL_EXSTYLE` dos quatro `HWND` com o aviso na tela.
 
 Mais `AppWindow.Show(activateWindow: false)` e `IsShownInSwitchers = false`. O
 que **não** se faz é receber o clique e repassá-lo com `SendInput`: a janela é
@@ -550,7 +553,11 @@ O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
       "Processando fala…", depois some
 - [x] o fluxo `assinar` pelo pipe, conferido com PowerShell puro
 - [x] ícone na área de notificação, com os quatro estados e a dica
-- [x] aviso na tela com cronômetro e nível do microfone, sem roubar foco
+- [x] aviso na tela com cronômetro e nível do microfone
+- [x] **o foco não muda**: com o Bloco de Notas em primeiro plano, o ciclo
+      inteiro de gravação foi disparado e `GetForegroundWindow` continuou
+      apontando para ele antes, durante e depois — que é a razão de existir o
+      `WS_EX_NOACTIVATE` e o requisito mais importante de um aviso passivo
 - [x] painel de status pelo clique esquerdo, posicionado junto ao ícone
 - [x] menu de contexto pelo clique direito
 - [x] instância única do frontend: a segunda execução redireciona e abre o painel
@@ -558,9 +565,16 @@ O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
 - [x] backend morto e reiniciado: o frontend reconecta em ~1 s
 - [x] frontend iniciado sem backend: sobe o backend uma vez e conecta
 - [x] ACL do named pipe conferida na máquina (uma ACE, só o usuário)
+- [x] **notificação do sistema**: escondendo o modelo, o backend entra em erro e
+      o aviso aparece na Central de Ações com o ícone e o texto do Ditador —
+      `AppNotificationManager` funcionando em aplicativo desempacotado
 - [x] instalação, atualização por cima e desinstalação limpas
 - [x] MSIX gerado e assinado com certificado de teste
 - [x] memória e CPU em repouso medidas
+- [x] troca de tema do sistema: com a difusão de `WM_SETTINGCHANGE`, o ícone
+      passa para o conjunto claro e volta para o escuro (conferido no log —
+      mudar só a chave do registro **não** dispara a mensagem, e foi assim que o
+      primeiro teste passou sem testar nada)
 
 O que **não** foi verificado, e por quê:
 
@@ -576,6 +590,14 @@ O que **não** foi verificado, e por quê:
   Windows App Runtime que faltarem, mas esta máquina já tinha os dois.
 - **Narrator**: os nomes de automação estão definidos, sem verificação com o
   leitor de tela ligado.
+- **O clique atravessando o aviso**: o `WS_EX_TRANSPARENT` está aplicado nos
+  quatro `HWND` (medido), mas o efeito não foi comprovado. Montar o teste com
+  automação de mouse e uma janela conhecida embaixo deu resultado inconclusivo
+  **até no grupo de controle** — o clique fora da área do aviso também não
+  ativou a janela de baixo —, e um teste que não distingue os dois casos não
+  prova nada. Fica registrado como não verificado em vez de marcado como feito.
+  O impacto, se ele não atravessar, é pequeno: uma faixa de 360 por 78 pontos no
+  rodapé, por alguns segundos, e um clique perdido.
 
 ## O que falta
 
@@ -598,8 +620,6 @@ O que **não** foi verificado, e por quê:
       foram tocados — verificado por `git diff --name-only`.
 
 - [ ] os testes que a máquina não permitiu: DPI misto, multimonitor, suspender e
-      retomar, tema claro, VM limpa, Narrator
-- [ ] avisar na tela que a primeira transcrição da máquina demora (~22 s
-      compilando os shaders do Vulkan) em vez de deixar parecer que travou
+      retomar, VM limpa, Narrator
 - [ ] certificado de assinatura de verdade — e então trocar o caminho padrão de
       instalação para o MSIX

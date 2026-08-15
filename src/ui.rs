@@ -603,8 +603,28 @@ impl App {
 
     // ----------------------------------------------------------- processando
 
+    /// Quantos segundos de transcrição já são demora, e não trabalho normal.
+    ///
+    /// Uma frase comum vira texto em menos de um segundo nesta máquina. Seis é
+    /// tempo de sobra para não incomodar quem ditou um parágrafo inteiro numa
+    /// máquina modesta, e curto o bastante para o aviso chegar antes de a pessoa
+    /// concluir que o programa travou.
+    const DEMORA_DEMAIS: f64 = 6.0;
+
     fn processing(&self, ui: &mut egui::Ui, state: &crate::state::Shared) {
-        let tempo = ui.input(|i| i.time) as f32;
+        let agora = ui.input(|i| i.time);
+        let tempo = agora as f32;
+
+        // Quando esta transcrição começou, guardado na memória da própria
+        // interface e chaveado pelo número do ditado. Assim não é preciso um
+        // campo novo no estado compartilhado só para desenhar um aviso — e o
+        // valor de um ditado nunca é confundido com o do seguinte, que é
+        // justamente o tipo de coisa que este projeto já errou.
+        let chave = egui::Id::new(("transcrevendo-desde", state.ditado_atual));
+        let inicio = ui
+            .ctx()
+            .data_mut(|dados| *dados.get_temp_mut_or_insert_with(chave, || agora));
+
         ui.vertical_centered(|ui| {
             ui.add_space(12.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
@@ -614,6 +634,17 @@ impl App {
             ui.label(medio("Transcrevendo…", 15.0));
             if !state.status.is_empty() {
                 ui.label(nota(&state.status));
+            } else if agora - inicio > Self::DEMORA_DEMAIS {
+                // A primeira transcrição depois de instalar leva uns vinte
+                // segundos com o backend Vulkan: o driver compila os pipelines
+                // de shader antes de rodar qualquer coisa, e guarda o resultado
+                // em cache — as seguintes voltam a levar meio segundo. Sem esta
+                // linha, o que se vê é um indicador girando por vinte segundos,
+                // que é indistinguível de um programa travado.
+                ui.label(nota(
+                    "A primeira transcrição depois de instalar demora:\n\
+                     a placa de vídeo está preparando o modelo. As próximas são rápidas.",
+                ));
             }
         });
     }
