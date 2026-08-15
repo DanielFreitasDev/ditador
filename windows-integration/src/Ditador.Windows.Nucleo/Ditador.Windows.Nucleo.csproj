@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    O domínio do frontend, separado da interface.
+    ============================================
+    Aqui mora o que o `Ditador.Windows` sabe **sem precisar de uma tela**: o
+    estado do Ditador e a leitura do protocolo do canal de controle. Nada de
+    WinUI, nada de Win32, nada de Windows — o alvo é `net10.0` puro.
+
+    A separação não é arquitetura por arquitetura. Ela existe porque a primeira
+    tentativa de testar isto vivia dentro do projeto do aplicativo, e o
+    `dotnet test` **pendurou** no agente da CI: o executor de testes carregava o
+    assembly do WinUI e ficava esperando um runtime gráfico que um servidor de
+    build não tem. Com o domínio num assembly que não conhece WinUI, o teste roda
+    em qualquer lugar — e a fronteira que isso desenha é a mesma que o
+    `src/plataforma/` desenha do lado Rust: regra de um lado, sistema do outro.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Ditador.Windows</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

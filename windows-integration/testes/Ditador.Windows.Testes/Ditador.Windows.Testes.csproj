@@ -13,16 +13,17 @@
     que vira "pronto" quando devia ser "erro". O lado de lá tem teste para a
     escrita das mesmas linhas (`retrato::tests`); este é o lado da leitura.
 
-    O projeto não referencia WinUI: ele aponta para o `Ditador.Windows.csproj`
-    mas só toca em `Modelos`, que é C# puro. É por isso que ele roda num
-    executor de testes comum, sem janela nenhuma.
+    O projeto aponta para o `Ditador.Windows.Nucleo`, e **não** para o aplicativo.
+    A primeira versão apontava para o aplicativo — ele compila, os testes passam
+    na máquina de quem tem o Windows App Runtime instalado, e o `dotnet test`
+    **pendura para sempre** no agente da CI: o executor carregava o assembly do
+    WinUI e ficava esperando um runtime gráfico que um servidor de build não tem.
+    Foi assim que a separação entre domínio e interface deixou de ser estética e
+    virou requisito.
   -->
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
-    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
-    <Platforms>x64</Platforms>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
@@ -36,7 +37,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Ditador.Windows\Ditador.Windows.csproj" />
+    <ProjectReference Include="..\..\src\Ditador.Windows.Nucleo\Ditador.Windows.Nucleo.csproj" />
   </ItemGroup>
 
 </Project>

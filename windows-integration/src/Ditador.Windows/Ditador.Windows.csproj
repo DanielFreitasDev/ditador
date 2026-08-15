@@ -81,6 +81,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- O domínio: o estado do Ditador e a leitura do protocolo, sem uma linha
+         de WinUI. Veja o .csproj de lá para o motivo da separação. -->
+    <ProjectReference Include="..\Ditador.Windows.Nucleo\Ditador.Windows.Nucleo.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Os ícones vão para a saída como arquivos: o tray os carrega com
          `LoadImage` no tamanho exato que o DPI pede, o que um recurso embutido
          no assembly gerenciado não permitiria sem um passo de .rc. -->

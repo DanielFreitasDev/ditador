@@ -119,6 +119,17 @@ troca não vale a pena.
 dotnet test windows-integration\Ditador.Windows.sln     # os testes do frontend
 ```
 
+O frontend é dividido em dois assemblies, e a fronteira tem motivo:
+
+* **`Ditador.Windows.Nucleo`** (`net10.0`, sem uma linha de Windows) — o estado do
+  Ditador e a leitura do protocolo. É o que dá para testar sem uma tela.
+* **`Ditador.Windows`** (WinUI 3) — janela, ícone, menu, posição, notificações.
+
+A separação virou requisito depois de uma tentativa fracassada: com os testes
+dentro do projeto do aplicativo, o `dotnet test` **pendurava** no agente da CI —
+o executor carregava o assembly do WinUI e esperava um runtime gráfico que um
+servidor de build não tem.
+
 Há CI desde esta versão (`.github/workflows/ci.yml`): a régua do `CLAUDE.md` roda
 no `ubuntu-latest` e no `windows-latest` a cada push, mais o build e os testes do
 frontend. Ela existe por um motivo específico — o porte para Windows foi feito
