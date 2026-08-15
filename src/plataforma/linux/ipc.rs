@@ -159,7 +159,7 @@ pub fn bind() -> Result<Escuta, Falha> {
 /// Atende comandos numa thread própria. O handler devolve a resposta.
 pub fn serve<F>(listener: Escuta, handler: F)
 where
-    F: Fn(&str) -> String + Send + Sync + 'static,
+    F: Fn(&str) -> crate::ipc::Resposta + Send + Sync + 'static,
 {
     std::thread::Builder::new()
         .name("ipc".into())
@@ -177,8 +177,40 @@ where
                     log::debug!("cliente do socket desistiu antes de mandar o comando");
                     continue;
                 }
-                let reply = handler(line.trim());
-                let _ = writeln!(stream, "{reply}");
+                match handler(line.trim()) {
+                    crate::ipc::Resposta::Linha(reply) => {
+                        let _ = writeln!(stream, "{reply}");
+                    }
+                    // Uma assinatura fica de pé enquanto o cliente quiser, e o
+                    // atendimento aqui é em série: escrevê-la nesta thread
+                    // travaria todos os comandos seguintes — o mesmo defeito que
+                    // o `PACIENCIA` acima existe para evitar, só que sem prazo
+                    // para acabar. Por isso ela vai para uma thread própria, e o
+                    // laço volta na hora a aceitar conexões.
+                    //
+                    // No Linux ninguém assina hoje: quem observa o Ditador aqui
+                    // fala D-Bus, que já entrega mudanças sem perguntar. O
+                    // caminho existe porque o protocolo do canal de controle é
+                    // um só nos dois sistemas, e um `assinar` que respondesse
+                    // "não sei o que é isso" de um lado e funcionasse do outro
+                    // seria a primeira rachadura entre eles.
+                    crate::ipc::Resposta::Fluxo(linhas) => {
+                        // Sem prazo de escrita: o de dois segundos acima é para
+                        // uma resposta que sai inteira agora, e mataria uma
+                        // assinatura calada — que é o estado normal dela entre
+                        // dois ditados.
+                        let _ = stream.set_write_timeout(None);
+                        let _ = std::thread::Builder::new()
+                            .name("ipc-assinatura".into())
+                            .spawn(move || {
+                                for linha in linhas {
+                                    if writeln!(stream, "{linha}").is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+                    }
+                }
             }
         })
         .expect("spawn ipc thread");

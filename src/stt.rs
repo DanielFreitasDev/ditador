@@ -391,19 +391,18 @@ mod medicao {
             })
             .expect("mandando carregar");
 
-        let mut carga = None;
-        loop {
+        // Sem `Option` no meio: todo caminho de saída deste laço ou entrega o
+        // tempo ou entra em pânico, então a variável só existe depois de medida.
+        // A versão anterior começava em `None` e o compilador avisava que aquele
+        // valor nunca era lido — estava certo.
+        let carga = loop {
             match eventos.recv().expect("esperando o modelo carregar") {
                 SttEvent::Loading => {}
-                SttEvent::Ready => {
-                    carga = Some(relogio.elapsed());
-                    break;
-                }
+                SttEvent::Ready => break relogio.elapsed(),
                 SttEvent::LoadFailed(e) => panic!("o modelo não carregou: {e}"),
                 outro => panic!("evento inesperado durante a carga: {outro:?}"),
             }
-        }
-        let carga = carga.expect("carga medida");
+        };
 
         // Três passadas com o mesmo áudio, e as três são relatadas.
         //

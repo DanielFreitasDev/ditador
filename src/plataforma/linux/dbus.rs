@@ -40,11 +40,10 @@
 //! só, um segundo nome seria só mais uma coisa para digitar errado.
 
 use crate::audio::Levels;
-use crate::config::Config;
 use crate::controller::IpcCommand;
-use crate::state::{EstadoPublico, SharedState, Sinal, lock};
+use crate::retrato::Retrato;
+use crate::state::{SharedState, Sinal, lock};
 use crossbeam_channel::Sender;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Nome bem-conhecido no barramento de sessão, e também o nome da interface.
 pub const NOME: &str = "io.github.danielfreitasdev.Ditador";
@@ -72,74 +71,12 @@ pub const NOME_DA_EXTENSAO_GNOME: &str = "io.github.danielfreitasdev.Ditador.Gno
 /// isso que este lado pergunta "alguém detém o nome?", e nunca "quantos são".
 pub const NOME_DA_INTEGRACAO_PLASMA: &str = "io.github.danielfreitasdev.Ditador.PlasmaIntegration";
 
-/// O que a interface publica, tirado do estado compartilhado.
-///
-/// É um retrato, e não uma leitura ao vivo, pelo mesmo motivo do `tray.rs`: os
-/// métodos do D-Bus rodam na thread da conexão, e travar ali o mutex principal
-/// seria deixar o barramento decidir quando o controlador anda.
-#[derive(Clone, PartialEq)]
-struct Retrato {
-    estado: EstadoPublico,
-    mensagem: String,
-    /// O instante em que a gravação começou, guardado só para reconhecer se a
-    /// que está correndo agora é a mesma de antes. Não viaja pelo barramento.
-    inicio: Option<Instant>,
-    /// O mesmo instante em milissegundos desde a época, que é o que viaja.
-    gravando_desde: u64,
-    modelo: String,
-    idioma: String,
-    atalho: String,
-}
-
-impl Retrato {
-    /// Tira o retrato de agora. O anterior entra porque o
-    /// `gravando_desde` é derivado, e derivá-lo de novo daria um número
-    /// ligeiramente diferente a cada vez (veja `epoca_ms`) — o que faria a
-    /// interface do GNOME receber um "a gravação começou em outro instante" a
-    /// cada mudança de estado, e reiniciar o cronômetro no meio da frase.
-    fn tirar(shared: &SharedState, anterior: Option<&Retrato>) -> Self {
-        let estado = lock(shared);
-        let inicio = estado.recording_since;
-        Self {
-            estado: estado.estado_publico(),
-            mensagem: estado.message.clone(),
-            gravando_desde: match (inicio, anterior) {
-                (None, _) => 0,
-                // A mesma gravação continua: o valor publicado não muda.
-                (Some(i), Some(a)) if a.inicio == Some(i) => a.gravando_desde,
-                (Some(i), _) => epoca_ms(i),
-            },
-            inicio,
-            modelo: nome_do_modelo(&estado.config),
-            idioma: crate::config::nome_do_idioma(&estado.config.language).to_string(),
-            atalho: crate::keys::combo_label(&estado.config.hotkey),
-        }
-    }
-}
-
-/// Um `Instant` em milissegundos desde a época.
-///
-/// O `Instant` do Rust é monotônico e não tem origem conhecida — ele não
-/// atravessa o barramento. A conversão é "a hora de agora menos o quanto já se
-/// passou", e erra pelos microssegundos entre as duas leituras do relógio: para
-/// um cronômetro que conta segundos, é exato.
-fn epoca_ms(inicio: Instant) -> u64 {
-    let agora = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    agora.saturating_sub(inicio.elapsed()).as_millis() as u64
-}
-
-/// O nome curto do modelo: `ggml-large-v3-turbo-q5_0.bin` vira
-/// `large-v3-turbo-q5_0`. O prefixo e a extensão são iguais em todos eles, e o
-/// que sobra é o que cabe numa linha de menu.
-fn nome_do_modelo(config: &Config) -> String {
-    let Some(nome) = config.model_path.file_stem() else {
-        return String::new();
-    };
-    let nome = nome.to_string_lossy();
-    nome.strip_prefix("ggml-").unwrap_or(&nome).to_string()
-}
+// O `Retrato` que esta interface publica mora em `src/retrato.rs`, e não aqui.
+// Ele nasceu neste arquivo, quando o D-Bus era o único jeito de o mundo de fora
+// enxergar o Ditador; hoje o named pipe do Windows publica o mesmo estado para o
+// `Ditador.Windows`, e duas cópias da mesma tabela é o que o `CLAUDE.md` proíbe
+// em tantas palavras. O que continua sendo daqui é *como* ele viaja: propriedade
+// por propriedade, com `PropertiesChanged` — veja `publicar`.
 
 struct Servico {
     comandos: Sender<IpcCommand>,
@@ -436,6 +373,12 @@ pub fn integracoes_no_ar() -> Option<crate::state::Integracoes> {
     Some(crate::state::Integracoes {
         gnome: tem(NOME_DA_EXTENSAO_GNOME),
         plasma: tem(NOME_DA_INTEGRACAO_PLASMA),
+        // O `frontend` é a assinatura do canal de controle, que no Linux ninguém
+        // usa (quem observa o Ditador aqui fala D-Bus). E, mesmo que usasse,
+        // este comando roda em **outro processo**: quem sabe a resposta é a
+        // instância viva, e perguntar a ela daqui exigiria abrir o socket — que
+        // é justamente o que a linha seguinte do `--diagnostico` já faz.
+        ..Default::default()
     })
 }
 
@@ -562,73 +505,17 @@ fn anotar(shared: &SharedState, sinal: &Sinal, qual: Qual, presente: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{ModelState, Shared, View};
+    use crate::config::Config;
+    use crate::state::{EstadoPublico, Shared};
     use std::sync::{Arc, Mutex};
 
     fn bancada() -> SharedState {
         Arc::new(Mutex::new(Shared::new(Config::default(), Vec::new())))
     }
 
-    #[test]
-    fn o_nome_do_modelo_perde_o_ggml_e_a_extensao() {
-        let config = Config {
-            model_path: "/casa/modelos/ggml-large-v3-turbo-q5_0.bin".into(),
-            ..Config::default()
-        };
-        assert_eq!(nome_do_modelo(&config), "large-v3-turbo-q5_0");
-
-        // Um arquivo que não segue a convenção continua sendo dito por inteiro:
-        // o caminho é escolhido pelo usuário e não temos o que prometer sobre ele.
-        let outro = Config {
-            model_path: "/casa/modelos/meu-modelo.bin".into(),
-            ..Config::default()
-        };
-        assert_eq!(nome_do_modelo(&outro), "meu-modelo");
-    }
-
-    #[test]
-    fn o_inicio_da_gravacao_nao_dança_enquanto_a_gravacao_e_a_mesma() {
-        // O cronômetro da extensão é desenhado a partir deste número. Se ele
-        // mudar no meio da frase, o contador na tela volta para zero.
-        let shared = bancada();
-        {
-            let mut estado = lock(&shared);
-            estado.model = ModelState::Ready;
-            estado.recording_since = Some(Instant::now());
-            estado.view = View::Recording;
-        }
-
-        let primeiro = Retrato::tirar(&shared, None);
-        assert_eq!(primeiro.estado, EstadoPublico::Gravando);
-        assert_ne!(primeiro.gravando_desde, 0);
-
-        // Outra coisa qualquer muda, e o retrato é tirado de novo.
-        lock(&shared).message = "algo aconteceu".to_string();
-        let segundo = Retrato::tirar(&shared, Some(&primeiro));
-        assert_eq!(
-            segundo.gravando_desde, primeiro.gravando_desde,
-            "o começo da gravação foi recalculado no meio dela"
-        );
-
-        // Uma gravação nova é outro começo, e aí o número é recalculado. Os
-        // cinco segundos para trás são só para o relógio de parede ter como
-        // separar as duas: `Instant::now()` duas vezes seguidas cabe no mesmo
-        // milissegundo, e o teste passaria por acidente em vez de por mérito.
-        let cinco_segundos_atras = Instant::now() - std::time::Duration::from_secs(5);
-        lock(&shared).recording_since = Some(cinco_segundos_atras);
-        let terceiro = Retrato::tirar(&shared, Some(&segundo));
-        let recuou = segundo.gravando_desde - terceiro.gravando_desde;
-        assert!(
-            (4_900..=5_100).contains(&recuou),
-            "o começo devia ter recuado uns 5 s, e recuou {recuou} ms"
-        );
-
-        // E parar zera.
-        lock(&shared).recording_since = None;
-        let quarto = Retrato::tirar(&shared, Some(&terceiro));
-        assert_eq!(quarto.gravando_desde, 0);
-        assert_eq!(quarto.estado, EstadoPublico::Pronto);
-    }
+    // O que era testado aqui sobre o `Retrato` — o nome curto do modelo e o
+    // começo da gravação que não pode ser recalculado no meio da frase — mudou
+    // de casa junto com ele, para `src/retrato.rs`.
 
     /// Os membros de um XML de introspecção, em texto e em ordem estável.
     ///

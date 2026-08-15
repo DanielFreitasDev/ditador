@@ -29,6 +29,7 @@ compile_error!(
      ou --no-default-features --features cpu|cuda"
 );
 
+mod assinatura;
 mod audio;
 mod autostart;
 mod clipboard;
@@ -42,6 +43,7 @@ mod modelo;
 mod plataforma;
 mod programas;
 mod resample;
+mod retrato;
 mod state;
 mod stt;
 mod tema;
@@ -230,53 +232,88 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
     let levels = audio.levels.clone();
     let stt_cmd_tx = stt::spawn(stt_tx);
 
-    // Socket de controle: ícone do aplicativo, atalho do GNOME, terminal.
+    // Canal de controle: ícone do aplicativo, atalho do GNOME, terminal e — no
+    // Windows — o `Ditador.Windows`, que assina e fica ouvindo.
+    //
+    // A regra de evolução é a do contrato D-Bus, e vale palavra por palavra:
+    // **acrescentar, nunca renomear**. Um comando novo é invisível para quem não
+    // o conhece; um renomeado quebra o atalho que alguém configurou no painel do
+    // sistema para chamar `ditador --alternar`.
     if let Some(listener) = listener {
         let ipc_tx = ipc_tx.clone();
         let shared = shared.clone();
+        let sinal_do_ipc = sinal.clone();
+        let niveis_do_ipc = levels.clone();
         ipc::serve(listener, move |linha| match linha {
-            "toggle" => {
-                let _ = ipc_tx.send(IpcCommand::Toggle);
-                "ok".to_string()
+            "assinar" => {
+                ipc::Resposta::Fluxo(assinatura::abrir(&shared, &sinal_do_ipc, &niveis_do_ipc))
             }
-            "settings" => {
-                let _ = ipc_tx.send(IpcCommand::Settings);
-                "ok".to_string()
-            }
-            "quit" => {
-                let _ = ipc_tx.send(IpcCommand::Quit);
-                "encerrando".to_string()
-            }
-            "status" => {
-                let estado = state::lock(&shared);
-                // O aviso do atalho entra aqui porque é a falha mais comum e a
-                // mais silenciosa deste programa (usuário fora do grupo
-                // `input`): quem for descobrir por que "não acontece nada ao
-                // segurar a tecla" digita `ditador --status` antes de qualquer
-                // outra coisa.
-                format!(
-                    "modelo: {} · atalho: {} · microfone: {} · backend: {}{}",
-                    match estado.model {
-                        ModelState::Loading => "carregando",
-                        ModelState::Ready => "pronto",
-                        ModelState::Failed => "falhou",
-                    },
-                    keys::combo_label(&estado.config.hotkey),
-                    if estado.gravando() {
-                        "gravando"
+            outro => ipc::Resposta::Linha(match outro {
+                "toggle" => {
+                    let _ = ipc_tx.send(IpcCommand::Toggle);
+                    "ok".to_string()
+                }
+                // `iniciar` e `parar` existem para o mesmo que o `IniciarGravacao` e
+                // o `PararGravacao` do D-Bus: quem desenha um botão de "gravar" quer
+                // dizer o que quer, e não "inverta o que estiver valendo" — que dá
+                // resultado errado quando dois cliques se cruzam.
+                "iniciar" => {
+                    let _ = ipc_tx.send(IpcCommand::Start);
+                    "ok".to_string()
+                }
+                "parar" => {
+                    let _ = ipc_tx.send(IpcCommand::Stop);
+                    "ok".to_string()
+                }
+                "settings" => {
+                    let _ = ipc_tx.send(IpcCommand::Settings);
+                    "ok".to_string()
+                }
+                "quit" => {
+                    let _ = ipc_tx.send(IpcCommand::Quit);
+                    "encerrando".to_string()
+                }
+                // Quem pergunta isto é o `ditador --diagnostico`, que roda em outro
+                // processo e por isso não tem como ver o estado compartilhado daqui.
+                // É o equivalente da consulta que o Linux faz ao barramento.
+                "integracoes" => {
+                    if state::lock(&shared).integracoes.frontend {
+                        "frontend".to_string()
                     } else {
-                        "parado"
-                    },
-                    stt::BACKEND,
-                    // Numa linha só: a resposta trafega pelo socket terminada
-                    // por `\n`, e o cliente lê exatamente uma linha.
-                    match &estado.aviso_atalho {
-                        Some(aviso) => format!(" · atenção: {aviso}"),
-                        None => String::new(),
+                        "nenhuma".to_string()
                     }
-                )
-            }
-            outro => format!("comando desconhecido: {outro}"),
+                }
+                "status" => {
+                    let estado = state::lock(&shared);
+                    // O aviso do atalho entra aqui porque é a falha mais comum e a
+                    // mais silenciosa deste programa (usuário fora do grupo
+                    // `input`): quem for descobrir por que "não acontece nada ao
+                    // segurar a tecla" digita `ditador --status` antes de qualquer
+                    // outra coisa.
+                    format!(
+                        "modelo: {} · atalho: {} · microfone: {} · backend: {}{}",
+                        match estado.model {
+                            ModelState::Loading => "carregando",
+                            ModelState::Ready => "pronto",
+                            ModelState::Failed => "falhou",
+                        },
+                        keys::combo_label(&estado.config.hotkey),
+                        if estado.gravando() {
+                            "gravando"
+                        } else {
+                            "parado"
+                        },
+                        stt::BACKEND,
+                        // Numa linha só: a resposta trafega pelo socket terminada
+                        // por `\n`, e o cliente lê exatamente uma linha.
+                        match &estado.aviso_atalho {
+                            Some(aviso) => format!(" · atenção: {aviso}"),
+                            None => String::new(),
+                        }
+                    )
+                }
+                desconhecido => format!("comando desconhecido: {desconhecido}"),
+            }),
         });
     }
 
@@ -577,17 +614,20 @@ fn diagnostico() -> Result<()> {
             } else {
                 "--"
             },
-            match (integracoes.gnome, integracoes.plasma) {
-                (true, true) => "extensão do GNOME e widget do Plasma, os dois no ar. \
+            match (integracoes.frontend, integracoes.gnome, integracoes.plasma) {
+                (true, _, _) => "Ditador.Windows no ar. O ícone na área de notificação e o \
+                     aviso de gravação na tela são dele."
+                    .to_string(),
+                (_, true, true) => "extensão do GNOME e widget do Plasma, os dois no ar. \
                      O ícone da bandeja fica recolhido."
                     .to_string(),
-                (true, false) => "extensão do GNOME Shell no ar. O ícone da bandeja fica \
+                (_, true, false) => "extensão do GNOME Shell no ar. O ícone da bandeja fica \
                      recolhido e o aviso de gravação é o OSD do Shell."
                     .to_string(),
-                (false, true) => "widget do Plasma no ar. O ícone da bandeja fica recolhido; \
+                (_, false, true) => "widget do Plasma no ar. O ícone da bandeja fica recolhido; \
                      o aviso de gravação continua sendo a janela do Ditador."
                     .to_string(),
-                (false, false) => plataforma::integracoes::sem_nenhuma(),
+                (false, false, false) => plataforma::integracoes::sem_nenhuma(),
             }
         ),
         None => println!(

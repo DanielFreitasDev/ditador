@@ -50,8 +50,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ,
-    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -84,13 +84,23 @@ const LIMITE_DA_LINHA: u64 = 1024;
 
 /// Quantas instâncias do pipe podem existir ao mesmo tempo.
 ///
-/// Cada cliente conectado ocupa uma. Quatro é folgado para o que existe: a
-/// interface WinUI mantém uma conexão de pé, e o resto são comandos de linha de
-/// comando que duram milissegundos. O limite existe para que um cliente em laço
-/// não consiga consumir handles do sistema sem parar.
-const INSTANCIAS: u32 = 4;
+/// Cada cliente conectado ocupa uma, e quem assina ocupa a dele **enquanto
+/// estiver de pé** — o `Ditador.Windows` mantém uma conexão aberta o dia
+/// inteiro. Oito deixa folga para o frontend, para um segundo assinante de
+/// depuração e para os comandos de linha de comando, que duram milissegundos.
+///
+/// O limite existe para que um cliente em laço não consiga consumir handles do
+/// sistema sem parar; ele é por nome de pipe, e o nome já é só do usuário.
+const INSTANCIAS: u32 = 8;
 
 const TAMANHO_DO_BUFFER: u32 = 4096;
+
+/// Quanto o laço de atendimento espera quando não consegue mais criar instâncias.
+///
+/// Existe para que uma falha persistente do sistema não vire laço quente. Um
+/// quinto de segundo é imperceptível para quem digita `ditador --status` e é uma
+/// eternidade para um núcleo de CPU.
+const RESPIRO: Duration = Duration::from_millis(200);
 
 /// `\\.\pipe\Ditador-<SID>`, decidido uma vez só.
 fn caminho_do_pipe() -> Option<&'static str> {
@@ -98,9 +108,27 @@ fn caminho_do_pipe() -> Option<&'static str> {
     CAMINHO
         .get_or_init(|| {
             let sid = sid_do_usuario()?;
-            Some(format!(r"\\.\pipe\Ditador-{sid}"))
+            // Nos testes o nome leva o número do processo. Sem isso, rodar
+            // `cargo test` com o Ditador de pé faria o teste disputar o pipe da
+            // instância de verdade — o `bind` falharia com "já rodando" e, pior,
+            // o teste passaria a mandar comandos para o programa que a pessoa
+            // está usando. A forma de produção continua sendo conferida, e por
+            // `montar_caminho`, logo abaixo.
+            if cfg!(test) {
+                Some(format!(
+                    r"\\.\pipe\Ditador-teste-{}-{sid}",
+                    std::process::id()
+                ))
+            } else {
+                Some(montar_caminho(&sid))
+            }
         })
         .as_deref()
+}
+
+/// O nome do pipe como ele é em produção.
+fn montar_caminho(sid: &str) -> String {
+    format!(r"\\.\pipe\Ditador-{sid}")
 }
 
 /// O SID textual do usuário deste processo, ex.: `S-1-5-21-…-1001`.
@@ -332,7 +360,7 @@ pub fn bind() -> Result<Escuta, Falha> {
 /// Daí o cão de guarda abaixo.
 pub fn serve<F>(primeira: Escuta, handler: F)
 where
-    F: Fn(&str) -> String + Send + Sync + 'static,
+    F: Fn(&str) -> crate::ipc::Resposta + Send + Sync + 'static,
 {
     use std::sync::Arc;
 
@@ -350,7 +378,40 @@ where
                     || codigo_do_erro() == ERROR_PIPE_CONNECTED;
 
                 if !conectou {
+                    // Aqui havia um `continue` seco, e ele custou o canal de
+                    // controle inteiro.
+                    //
+                    // O que acontece de verdade: um cliente abre o pipe e vai
+                    // embora sem dizer nada — o `Get-Acl` do PowerShell faz
+                    // exatamente isso ao ler o descritor de segurança, e
+                    // qualquer ferramenta que "espie" pipes faz igual. A
+                    // instância fica no estado *cliente foi embora*, e a partir
+                    // daí todo `ConnectNamedPipe` nela devolve
+                    // `ERROR_NO_DATA`. Com o `continue` seco, o laço girava
+                    // nesse erro para sempre: um núcleo a 100% e nenhum
+                    // `ditador --status` respondendo nunca mais, num Ditador que
+                    // continuava gravando e transcrevendo normalmente. Levou
+                    // dois minutos para reproduzir e não aparecia em teste
+                    // nenhum.
+                    //
+                    // A instância só volta a servir depois de um
+                    // `DisconnectNamedPipe`, e é isso que falta abaixo.
+                    let codigo = codigo_do_erro();
                     log::debug!("ConnectNamedPipe falhou: {}", ultimo_erro());
+                    unsafe { DisconnectNamedPipe(atual.0) };
+
+                    if codigo != ERROR_NO_DATA {
+                        // Outro erro qualquer: a instância pode estar
+                        // inutilizável. Troca-se por uma nova, e a espera curta
+                        // impede que uma falha permanente vire laço quente —
+                        // que é a mesma lição, aplicada ao caso geral.
+                        if let Ok(nova) = criar_instancia(false).or_else(|_| criar_instancia(true))
+                        {
+                            atual = nova;
+                        } else {
+                            std::thread::sleep(RESPIRO);
+                        }
+                    }
                     continue;
                 }
 
@@ -394,10 +455,11 @@ where
         .expect("spawn ipc thread");
 }
 
-/// Lê a linha de um cliente, responde e encerra a conexão.
+/// Lê a linha de um cliente, responde e encerra a conexão — ou fica escrevendo,
+/// se ele tiver assinado.
 fn atender<F>(instancia: Instancia, handler: std::sync::Arc<F>)
 where
-    F: Fn(&str) -> String + Send + Sync + 'static,
+    F: Fn(&str) -> crate::ipc::Resposta + Send + Sync + 'static,
 {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -433,15 +495,43 @@ where
             respondido.store(true, Ordering::SeqCst);
 
             if leu && !linha.trim().is_empty() {
-                let resposta = handler(linha.trim());
-                let _ = writeln!(conversa, "{resposta}");
-                // O cliente lê exatamente uma linha e fecha; esperar que ele
-                // termine evita que o `Drop` derrube a conexão antes de a
-                // resposta ter saído do buffer do sistema.
-                let _ = conversa.flush();
+                match handler(linha.trim()) {
+                    crate::ipc::Resposta::Linha(resposta) => {
+                        let _ = writeln!(conversa, "{resposta}");
+                        // O cliente lê exatamente uma linha e fecha; esperar que
+                        // ele termine evita que o `Drop` derrube a conexão antes
+                        // de a resposta ter saído do buffer do sistema.
+                        let _ = conversa.flush();
+                    }
+                    crate::ipc::Resposta::Fluxo(linhas) => escoar(&mut conversa, linhas),
+                }
             }
             drop(instancia);
         });
+}
+
+/// Escreve as linhas de uma assinatura até o cliente ir embora.
+///
+/// A saída normal deste laço é a **escrita falhar**: o frontend fechou, travou e
+/// foi morto, ou o Windows encerrou a sessão. É de propósito que não há
+/// protocolo de despedida — ele perderia justamente os casos em que ninguém teve
+/// chance de se despedir, que são a maioria (veja o `integracoes.rs` desta
+/// pasta). Largar o `Receiver` ao sair é o que avisa a thread da assinatura de
+/// que não há mais para quem escrever.
+///
+/// Um cliente vivo que pare de ler prende esta thread num `WriteFile` quando o
+/// buffer do pipe enche — quatro quilobytes, umas quarenta linhas de estado.
+/// Prende só a conexão dele: a instância seguinte já foi criada antes de chegar
+/// aqui, e os `ditador --status` da vida continuam sendo atendidos. Do outro
+/// lado, a fila da assinatura tem prazo próprio e desiste sozinha.
+fn escoar(conversa: &mut Conversa<'_>, linhas: crate::ipc::Fluxo) {
+    log::debug!("um cliente assinou o canal de controle");
+    for linha in linhas {
+        if writeln!(conversa, "{linha}").is_err() {
+            break;
+        }
+    }
+    log::debug!("a assinatura do canal de controle terminou");
 }
 
 /// Empresta o handle da instância para o `std::io`, sem lhe dar a posse.
@@ -636,10 +726,74 @@ mod tests {
 
     #[test]
     fn o_nome_do_pipe_e_por_usuario() {
-        let caminho = caminho_do_pipe().expect("sem caminho de pipe");
+        let sid = sid_do_usuario().expect("o processo do teste precisa ter um SID");
+        let caminho = montar_caminho(&sid);
         assert!(caminho.starts_with(r"\\.\pipe\Ditador-"));
         // Sem o SID, dois usuários logados ao mesmo tempo disputariam um nome só
         // e o segundo ficaria sem Ditador.
         assert!(caminho.contains("S-1-"), "o nome do pipe perdeu o SID");
+    }
+
+    /// Um cliente que abre a conexão e vai embora sem dizer nada não pode
+    /// derrubar o canal de controle.
+    ///
+    /// Este teste existe porque isso aconteceu. O `Get-Acl` do PowerShell — e
+    /// qualquer ferramenta que inspecione pipes — abre e fecha exatamente assim.
+    /// A instância ficava presa devolvendo `ERROR_NO_DATA` em todo
+    /// `ConnectNamedPipe`, o laço de atendimento girava nesse erro consumindo um
+    /// núcleo inteiro, e nenhum `ditador --status` era atendido nunca mais. O
+    /// programa seguia gravando e transcrevendo, o que tornava o sintoma ainda
+    /// mais confuso: "o Ditador funciona, mas a linha de comando diz que ele não
+    /// está rodando".
+    #[test]
+    fn um_cliente_que_some_nao_derruba_o_canal() {
+        use std::time::Duration;
+
+        let escuta = match bind() {
+            Ok(escuta) => escuta,
+            Err(_) => panic!("o teste precisa conseguir criar o próprio pipe"),
+        };
+        serve(escuta, |linha| {
+            crate::ipc::Resposta::Linha(format!("eco: {linha}"))
+        });
+
+        // Antes: o canal atende.
+        assert_eq!(send("oi").as_deref(), Some("eco: oi"));
+
+        // O cliente malcomportado: abre e fecha sem escrever nem ler.
+        let nome = para_utf16(caminho_do_pipe().expect("sem caminho"));
+        let handle = unsafe {
+            CreateFileW(
+                nome.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle, INVALID_HANDLE_VALUE, "não consegui abrir o pipe");
+        unsafe { CloseHandle(handle) };
+
+        // Depois: o canal continua atendendo. Sem a correção, daqui para a
+        // frente todo `send` devolvia `None`.
+        //
+        // A espera é para dar tempo de o laço perceber e se recompor; ela é
+        // generosa de propósito, porque o custo de um teste instável é maior do
+        // que o de duas voltas a mais.
+        let mut resposta = None;
+        for _ in 0..40 {
+            resposta = send("oi");
+            if resposta.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            resposta.as_deref(),
+            Some("eco: oi"),
+            "o canal de controle morreu depois de um cliente que só abriu e fechou"
+        );
     }
 }

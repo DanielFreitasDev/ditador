@@ -50,6 +50,69 @@ pub enum Bind {
 /// instância do named pipe no Windows.
 pub use crate::plataforma::ipc::Escuta;
 
+/// O que o atendimento faz com uma conexão depois de ler a linha dela.
+///
+/// São dois desfechos, e não um, porque há dois públicos: quem pergunta e vai
+/// embora (`ditador --status`, o atalho do painel) e quem fica observando (o
+/// `Ditador.Windows`). O transporte de cada plataforma sabe escrever uma linha e
+/// sabe escrever muitas; o que ele **não** sabe é de onde elas vêm, e é por isso
+/// que a decisão chega até ele já tomada, num enum, em vez de o transporte
+/// aprender o vocabulário dos comandos.
+pub enum Resposta {
+    /// Uma linha e a conversa acaba — o caso de quase tudo.
+    Linha(String),
+    /// O cliente assinou: a conexão fica aberta e recebe uma linha por mensagem
+    /// até ele ir embora. Quem produz as linhas é `crate::assinatura`.
+    Fluxo(Fluxo),
+}
+
+/// As linhas de uma assinatura, e o aviso de quando ela acaba.
+///
+/// Podia ser um `Receiver<String>` seco, e foi — até um teste mostrar o buraco:
+/// quem **produz** as linhas passa a maior parte do tempo dormindo à espera da
+/// próxima mudança de estado, e um `Receiver` largado não acorda ninguém. O
+/// frontend morria, nada mudava no Ditador (que é o normal: ninguém está
+/// ditando), e a thread da assinatura ficava dormindo para sempre — com a
+/// presença do frontend ligada, o que faz a janela do egui continuar escondida.
+/// O usuário ficava sem ícone e sem aviso de gravação, e nada no programa sabia.
+///
+/// O `_vivo` resolve isso sem protocolo nenhum: é a ponta de um canal vazio que
+/// nunca carrega nada. Quando o transporte larga este `Fluxo` — que é o que ele
+/// faz assim que a escrita falha —, o canal fecha, e quem produz acorda na hora
+/// pelo `select!`. É o mesmo princípio que faz a conexão ser a fonte da verdade
+/// no D-Bus e no pipe: a morte avisa sozinha, sem depender de despedida.
+pub struct Fluxo {
+    linhas: crossbeam_channel::Receiver<String>,
+    _vivo: crossbeam_channel::Sender<()>,
+}
+
+impl Fluxo {
+    pub fn novo(
+        linhas: crossbeam_channel::Receiver<String>,
+        vivo: crossbeam_channel::Sender<()>,
+    ) -> Self {
+        Self {
+            linhas,
+            _vivo: vivo,
+        }
+    }
+
+    /// A próxima linha, esperando no máximo o prazo. Existe para os testes: o
+    /// transporte usa o iterador, que bloqueia até o fim do fluxo.
+    #[cfg(test)]
+    pub fn proxima(&self, prazo: std::time::Duration) -> Option<String> {
+        self.linhas.recv_timeout(prazo).ok()
+    }
+}
+
+impl Iterator for Fluxo {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        self.linhas.recv().ok()
+    }
+}
+
 pub fn bind() -> Bind {
     match crate::plataforma::ipc::bind() {
         Ok(escuta) => Bind::Escutando(escuta),
@@ -67,7 +130,7 @@ pub fn send(comando: &str) -> Option<String> {
 /// Atende comandos numa thread própria. O handler devolve a resposta.
 pub fn serve<F>(escuta: Escuta, handler: F)
 where
-    F: Fn(&str) -> String + Send + Sync + 'static,
+    F: Fn(&str) -> Resposta + Send + Sync + 'static,
 {
     crate::plataforma::ipc::serve(escuta, handler)
 }

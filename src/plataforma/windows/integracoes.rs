@@ -1,5 +1,5 @@
 //! Quem mais está mostrando o Ditador na área de trabalho — no Windows, o
-//! frontend WinUI.
+//! frontend `Ditador.Windows`.
 //!
 //! ## A pergunta é a mesma; a resposta vem de outro lugar
 //!
@@ -12,23 +12,15 @@
 //! os casos em que ela não teve chance de avisar.
 //!
 //! O Windows não tem barramento de sessão, mas tem a mesma propriedade no lugar
-//! certo: **a conexão do named pipe**. O frontend `Ditador.Windows` conecta e
-//! fica conectado; se ele fechar, travar ou for morto pelo Gerenciador de
-//! Tarefas, o sistema derruba a ponta dele e o servidor descobre na leitura
-//! seguinte. Mesma garantia, mesmo motivo, mecanismo diferente — que é
-//! exatamente o que uma camada de plataforma deve fazer.
+//! certo: **a conexão do named pipe**. O frontend manda `assinar` e fica
+//! conectado; se ele fechar, travar ou for morto pelo Gerenciador de Tarefas, o
+//! sistema derruba a ponta dele, a escrita seguinte falha e a assinatura se
+//! solta. Mesma garantia, mesmo motivo, mecanismo diferente — que é exatamente o
+//! que uma camada de plataforma deve fazer.
 //!
-//! ## Por que ainda não faz nada
-//!
-//! A vigia da conexão pertence ao marco do IPC orientado a eventos, junto com o
-//! comando `assinar` que põe o frontend a receber mudanças de estado. Enquanto
-//! ele não existe, a resposta honesta é "nenhuma integração no ar" — que é a
-//! verdade: sem frontend, quem mostra o Ditador é ninguém, e o `--diagnostico`
-//! deve dizer isso.
-//!
-//! O que **não** se faz aqui é devolver `None` fingindo que a pergunta não pode
-//! ser respondida. `None` no Linux quer dizer "não há barramento de sessão para
-//! perguntar"; no Windows sempre há como saber, e a resposta é zero.
+//! Quem conta os assinantes é `crate::assinatura`, que escreve em
+//! `Integracoes::frontend`. Este módulo é só a porta pela qual **outro processo**
+//! — o `ditador --diagnostico` — faz a mesma pergunta.
 
 use crate::audio::Levels;
 use crate::controller::IpcCommand;
@@ -37,19 +29,26 @@ use crossbeam_channel::Sender;
 
 /// Sobe o que o Windows tem no lugar do D-Bus.
 ///
-/// Hoje, nada: o servidor do named pipe já é criado pelo `ipc::bind`, no
-/// `main.rs`, e o fluxo de eventos para o frontend ainda não existe. A função
-/// existe com a assinatura do lado Linux para que o `main.rs` continue sendo um
-/// arquivo só, sem `cfg` no meio da inicialização.
+/// Nada, e é a implementação completa. O servidor do named pipe já foi criado
+/// pelo `ipc::bind` no `main.rs`, e é ele quem atende o `assinar` — não há um
+/// segundo serviço para publicar. A função existe com a assinatura do lado Linux
+/// para que o `main.rs` continue sendo um arquivo só, sem `cfg` no meio da
+/// inicialização.
 pub fn start(_shared: SharedState, _sinal: &Sinal, _comandos: Sender<IpcCommand>, _niveis: Levels) {
 }
 
-/// Que integrações estão no ar.
+/// Que integrações estão no ar, perguntando de fora do processo.
 ///
-/// `Some(nenhuma)` e não `None`: no Windows sempre dá para responder. Veja o
-/// comentário do módulo.
+/// `Some(...)` e nunca `None`: no Linux o `None` quer dizer "não há barramento
+/// de sessão para perguntar", que é uma resposta possível numa sessão por SSH.
+/// Aqui sempre há como saber — ou o Ditador está rodando e responde pelo pipe, ou
+/// não está e a resposta é zero, que também é uma resposta.
 pub fn integracoes_no_ar() -> Option<Integracoes> {
-    Some(Integracoes::default())
+    let frontend = matches!(crate::ipc::send("integracoes").as_deref(), Some("frontend"));
+    Some(Integracoes {
+        frontend,
+        ..Integracoes::default()
+    })
 }
 
 /// O que o `--diagnostico` diz quando não há integração nenhuma no ar.

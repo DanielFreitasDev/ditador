@@ -107,6 +107,17 @@ pub struct Integracoes {
     pub gnome: bool,
     /// O widget do Plasma (`kde-plasma/`).
     pub plasma: bool,
+    /// Um frontend assinando o canal de controle — hoje, o `Ditador.Windows`.
+    ///
+    /// Aqui não há barramento para vigiar, e o que faz o papel dele é a conexão:
+    /// quem detém a assinatura é o cliente conectado, e o sistema derruba a
+    /// ponta dele quando o processo morre. Mesma garantia, mesmo motivo,
+    /// mecanismo de cada casa — veja `src/assinatura.rs`.
+    ///
+    /// Vale nos dois sistemas porque o canal de controle é dos dois. No Linux
+    /// ninguém assina hoje (quem observa o Ditador lá fala D-Bus), e é por isso
+    /// que este campo fica falso lá sem que nada precise desligá-lo.
+    pub frontend: bool,
 }
 
 impl Integracoes {
@@ -114,10 +125,10 @@ impl Integracoes {
     /// sai de cena, porque dois ícones do mesmo programa lado a lado é o tipo de
     /// coisa que ninguém escolhe de propósito.
     ///
-    /// Vale para as duas: tanto o indicador do Shell quanto o widget do Plasma
-    /// ocupam esse lugar.
+    /// Vale para as três: o indicador do Shell, o widget do Plasma e o ícone que
+    /// o `Ditador.Windows` põe na área de notificação ocupam esse mesmo lugar.
     pub fn mostram_o_icone(self) -> bool {
-        self.gnome || self.plasma
+        self.gnome || self.plasma || self.frontend
     }
 
     /// Alguém já avisa **na tela** que se está gravando — e então a nossa
@@ -139,8 +150,15 @@ impl Integracoes {
     /// que aliás funciona bem lá — ela sobe pelo XWayland, e o KWin honra o
     /// "sempre por cima" que o GNOME/Wayland recusa. O widget cuida da barra; a
     /// sobreposição continua nossa.
+    ///
+    /// O frontend do Windows responde que sim, e sem a ressalva do Plasma: lá o
+    /// OSD é uma janela `WS_EX_NOACTIVATE` comum, que o compositor do Windows
+    /// deixa qualquer aplicativo criar. Ele desenha "Gravando" com o cronômetro e
+    /// "Processando fala…" no mesmo lugar em que o Windows põe os próprios
+    /// avisos, e a janela do egui por cima seria o mesmo recado duas vezes — só
+    /// que roubando o foco de quem está digitando.
     pub fn mostram_o_aviso(self) -> bool {
-        self.gnome
+        self.gnome || self.frontend
     }
 }
 
@@ -331,14 +349,24 @@ impl Sinal {
         {
             ctx.request_repaint();
         }
-        for observador in self
-            .observadores
+        // O `retain` não é enfeite: cada assinatura do canal de controle
+        // registra um observador, e o frontend do Windows reconecta a cada
+        // reinício do Explorer, a cada volta da suspensão e a cada vez que ele
+        // próprio é reiniciado. Guardando os mortos, esta lista cresceria para
+        // sempre num programa que fica meses de pé — e a cada mudança de estado
+        // se percorreria uma fila de fantasmas.
+        //
+        // `Full` fica: quem ainda não leu o aviso anterior já está avisado, e é
+        // exatamente para isso que o canal tem capacidade 1.
+        self.observadores
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .iter()
-        {
-            let _ = observador.try_send(());
-        }
+            .retain(|observador| {
+                !matches!(
+                    observador.try_send(()),
+                    Err(crossbeam_channel::TrySendError::Disconnected(()))
+                )
+            });
     }
 }
 
@@ -391,15 +419,20 @@ mod tests {
         for integracoes in [
             Integracoes {
                 gnome: true,
-                plasma: false,
+                ..Integracoes::default()
             },
             Integracoes {
-                gnome: false,
                 plasma: true,
+                ..Integracoes::default()
+            },
+            Integracoes {
+                frontend: true,
+                ..Integracoes::default()
             },
             Integracoes {
                 gnome: true,
                 plasma: true,
+                frontend: false,
             },
         ] {
             assert!(
@@ -410,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn so_o_gnome_assume_o_aviso_de_gravacao() {
+    fn o_plasma_e_o_unico_que_nao_assume_o_aviso_de_gravacao() {
         // A outra pergunta, que é outra coisa: alguém já avisa *na tela*?
         //
         // Só o GNOME. O widget do Plasma cuida da barra e nada mais, porque no
@@ -422,27 +455,65 @@ mod tests {
         assert!(
             Integracoes {
                 gnome: true,
-                plasma: false
+                ..Integracoes::default()
             }
             .mostram_o_aviso()
         );
         assert!(
             !Integracoes {
-                gnome: false,
-                plasma: true
+                plasma: true,
+                ..Integracoes::default()
             }
             .mostram_o_aviso(),
             "o widget do Plasma levou um aviso que ele não desenha"
         );
+        // O frontend do Windows desenha, sim: lá o OSD é uma janela comum, que
+        // qualquer aplicativo pode criar por cima das outras.
+        assert!(
+            Integracoes {
+                frontend: true,
+                ..Integracoes::default()
+            }
+            .mostram_o_aviso()
+        );
         assert!(!Integracoes::default().mostram_o_aviso());
+    }
+
+    #[test]
+    fn o_sinal_esquece_quem_foi_embora() {
+        let sinal = Sinal::default();
+        let fica = sinal.observar();
+        let vai_embora = sinal.observar();
+
+        sinal.mudou();
+        assert!(fica.try_recv().is_ok());
+        assert!(vai_embora.try_recv().is_ok());
+
+        drop(vai_embora);
+        // A primeira mudança depois da morte é o que descobre o defunto: o
+        // `try_send` falha e ele sai da lista.
+        sinal.mudou();
+        assert_eq!(
+            sinal
+                .observadores
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1,
+            "o observador morto ficou na lista"
+        );
+        // E quem ficou continua sendo avisado.
+        assert!(fica.try_recv().is_ok());
+        sinal.mudou();
+        assert!(fica.try_recv().is_ok());
     }
 
     #[test]
     fn a_tela_de_gravacao_continua_nossa_no_plasma() {
         let mut s = shared();
         s.integracoes = Integracoes {
-            gnome: false,
             plasma: true,
+            ..Integracoes::default()
         };
 
         // O widget do Plasma recolhe o ícone, mas não a sobreposição: lá ela é

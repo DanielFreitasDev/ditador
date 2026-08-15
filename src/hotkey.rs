@@ -50,6 +50,14 @@ pub enum Acao {
     /// Não muda o estado de nada, e é por isso que existe em vez de virar um
     /// segundo `Apertou`: contá-la abriria e fecharia a gravação a cada repique
     /// enquanto a pessoa segura a tecla.
+    ///
+    /// Quem a produz é o evdev. O Raw Input do Windows não distingue repique de
+    /// aperto — lá as repetições chegam como uma sucessão de "apertou", e a
+    /// máquina de teclas as absorve por só reagir à transição (veja
+    /// `plataforma/windows/teclado.rs`). Por isso, e só por isso, esta variante
+    /// aparece como nunca construída no build do Windows: o vocabulário é do
+    /// hardware, não de um sistema operacional.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     Repetiu,
 }
 
@@ -155,6 +163,14 @@ impl HotkeyListener {
     /// desconectado com a tecla do atalho pressionada nunca manda o evento de
     /// soltar, e sem isto o código dela ficaria em `pressed` para sempre — a
     /// gravação não teria como parar.
+    ///
+    /// Só o Linux chama, porque só lá há dispositivo para perder: o evdev abre um
+    /// arquivo por teclado, e desconectar o teclado fecha o arquivo. O Raw Input
+    /// do Windows entrega os eventos de todos os teclados numa fila só, que não
+    /// vai a lugar nenhum quando um deles é desconectado — o sistema manda os
+    /// "soltou" que faltam. Daí o aviso de código morto no build de lá, e daí
+    /// este comentário em vez de uma segunda cópia da função no lado Linux.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub(crate) fn soltar_tudo_de(&self, origem: Origem) {
         let seus: Vec<u16> = lock_mut(&self.pressed)
             .iter()

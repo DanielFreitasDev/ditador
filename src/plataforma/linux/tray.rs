@@ -45,6 +45,12 @@ use ksni::{Category, MenuItem, OfflineReason, Status, ToolTip};
 /// Retrato do estado que o ícone precisa. Guardamos uma cópia para que os
 /// callbacks do ksni, que rodam na thread do D-Bus, nunca travem o mutex
 /// principal.
+///
+/// Não confundir com o `crate::retrato::Retrato`, que é o que os frontends
+/// externos leem. São dois recortes do mesmo estado para públicos diferentes:
+/// aquele carrega modelo, idioma e atalho, que uma extensão do Shell mostra num
+/// menu; este carrega o que cabe num ícone de 22 pixels e nas duas frases do
+/// menu da bandeja. Juntá-los faria cada lado carregar o que o outro precisa.
 #[derive(Clone, PartialEq)]
 struct Retrato {
     /// O estado publicado, o mesmo que vai pelo D-Bus. A regra de qual estado é

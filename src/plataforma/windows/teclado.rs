@@ -103,15 +103,15 @@ pub fn vigiar(listener: Arc<HotkeyListener>) {
         .expect("spawn hotkey-rawinput");
 }
 
-/// Quantos teclados dá para ler agora.
-///
-/// No Windows a pergunta não é sobre permissão — Raw Input não exige nenhuma —,
-/// então a resposta é sobre o registro ter dado certo. `GetRawInputDeviceList`
-/// contaria os teclados físicos, mas isso responderia outra pergunta: o que
-/// interessa é se *nós* estamos recebendo, e quem sabe disso é o registro.
-pub fn teclados_legiveis() -> usize {
-    usize::from(registrado())
-}
+// Não há aqui um `teclados_legiveis()`, que o lado Linux tem.
+//
+// Lá ele conta quantos `/dev/input/event*` o processo consegue abrir, e a
+// resposta muda conforme o usuário esteja ou não no grupo `input` — é a falha
+// mais comum do Ditador no Linux, e a contagem é o que a diagnostica. Aqui a
+// pergunta não existe: o Raw Input não pede permissão nenhuma e não abre
+// dispositivo nenhum; ou o registro deu certo, e recebemos tudo, ou não deu. Quem
+// responde isso é o `registrado()`, logo abaixo, e uma função a mais dizendo a
+// mesma coisa em outra unidade de medida seria só mais uma para manter.
 
 /// A linha do `ditador --diagnostico` sobre a leitura do teclado.
 ///

@@ -6,9 +6,21 @@
 //! sistema não tiver os nossos símbolos (alguém rodando `cargo run` sem ter
 //! passado pelo `instalar.sh`).
 
+#[cfg(target_os = "linux")]
 use crate::state::EstadoPublico;
 
+// Daqui até o `janela()` é tudo do ícone que **este processo** desenha na barra —
+// e isso só existe no Linux. No Windows quem põe o ícone na área de notificação é
+// o `Ditador.Windows`, com os .ico dele (veja `plataforma/windows/tray.rs`), e
+// compilar estes PNGs e esta máquina de estados para dentro do binário de lá
+// seria carregar código que ninguém chama. O compilador diz isso em forma de
+// aviso; os `cfg` abaixo são a resposta a ele, e não um silenciador.
+//
+// O `janela()`, no fim do arquivo, continua valendo para os dois: a janela do
+// egui existe nos dois sistemas e precisa do ícone antes de qualquer instalação.
+
 /// Estados que a barra superior distingue.
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Estado {
     Pronto,
@@ -17,6 +29,7 @@ pub enum Estado {
     Falhou,
 }
 
+#[cfg(target_os = "linux")]
 impl Estado {
     /// Qual símbolo a barra mostra, para cada estado publicado.
     ///
@@ -83,6 +96,7 @@ impl Estado {
 /// Win32 pede (lá é BGRA, de baixo para cima); a conversão mora em
 /// `plataforma::windows`, junto do resto do que é peculiaridade do Windows, e
 /// não aqui.
+#[cfg(target_os = "linux")]
 pub struct Bitmap {
     pub largura: u32,
     pub altura: u32,
@@ -92,6 +106,7 @@ pub struct Bitmap {
 /// Ícones da bandeja, nas duas resoluções que os hospedeiros costumam pedir.
 ///
 /// Só é decodificado quando o estado muda, então não vale a pena guardar.
+#[cfg(target_os = "linux")]
 pub fn bandeja(estado: Estado) -> Vec<Bitmap> {
     estado
         .png()
@@ -141,7 +156,7 @@ fn decodificar(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::state::{ModelState, View};
