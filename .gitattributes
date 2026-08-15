@@ -1,0 +1,36 @@
+# Fim de linha: LF no repositório, sempre.
+#
+# Este arquivo nasceu no dia em que o projeto passou a ser compilado no Windows.
+# O git da máquina estava com `core.autocrlf=true`, que é o padrão do instalador
+# do Git para Windows: ele converte LF para CRLF ao tirar do repositório e de
+# volta para LF ao gravar. Funciona bem — até alguém criar um arquivo *novo* no
+# Windows, que entra com CRLF e chega assim ao Linux.
+#
+# O estrago não é estético. Um `.sh` com CRLF não roda: o shell lê o `\r` como
+# parte do nome do interpretador e responde `bad interpreter: /bin/bash^M`, que
+# não menciona fim de linha nenhum e manda quem lê procurar o erro no bash. Os
+# scripts deste projeto (`instalar.sh`, `empacotar.sh`, `kde-plasma/testar.sh`,
+# `gnome-extension/scripts/testar.sh`) são todos executados diretamente.
+#
+# `text=auto eol=lf` normaliza tudo o que é texto para LF no repositório,
+# independentemente da configuração de quem clonou.
+* text=auto eol=lf
+
+# Os scripts do PowerShell são a exceção que confirma a regra: eles só rodam no
+# Windows, e o PowerShell aceita os dois. Ficam em CRLF para que abrir um deles
+# no Bloco de Notas — que é o que a pessoa faz quando algo dá errado na
+# instalação — não mostre o arquivo inteiro numa linha só.
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binários: nada de conversão, nunca. Um PNG "normalizado" é um PNG corrompido,
+# e os deste projeto entram no executável por `include_bytes!` — o binário
+# compilaria com um ícone quebrado sem que nada reclamasse.
+*.png binary
+*.ttf binary
+*.bin binary
+*.deb binary
+*.ico binary
+*.pfx binary

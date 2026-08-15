@@ -1,1 +1,21 @@
 /target
+
+# O build no Windows não cabe em /target: o backend Vulkan monta caminhos de 210
+# caracteres a partir dele, e o limite de 260 do Windows não deixa. O
+# `build.ps1` usa %USERPROFILE%\.ditador-build, que é fora da árvore — esta
+# linha cobre quem apontar o CARGO_TARGET_DIR para dentro dela mesmo assim.
+/.ditador-build/
+
+# .NET e Visual Studio, para quando o frontend WinUI existir. Estão aqui antes
+# dele porque a hora de escrever isto é antes do primeiro build, não depois de
+# alguém commitar 300 MB de obj/ sem querer.
+bin/
+obj/
+AppPackages/
+BundleArtifacts/
+.vs/
+*.user
+
+# Certificado de assinatura. Nunca, em hipótese alguma, no repositório.
+*.pfx
+*.snk
