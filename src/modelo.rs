@@ -261,12 +261,27 @@ fn conferir(parcial: &Path, total: Option<u64>) -> anyhow::Result<()> {
         );
     }
 
-    // Todo modelo do whisper.cpp começa com a assinatura "ggml" (0x67676d6c).
-    // Pega o caso em que um proxy ou portal cativo entregou uma página HTML com
-    // o status 200 que o `--fail` do curl não recusa.
+    // Todo modelo do whisper.cpp começa com a assinatura GGML, o inteiro
+    // 0x67676d6c. Pega o caso em que um proxy ou portal cativo entregou uma
+    // página HTML com o status 200 que o `--fail` do curl não recusa.
+    //
+    // **A leitura é como inteiro little-endian, e não como os quatro caracteres
+    // "ggml".** O whisper.cpp grava o número na ordem nativa da máquina, que em
+    // x86 e ARM é little-endian: no disco os bytes saem invertidos, `6c 6d 67
+    // 67`, que lidos como texto dão "lmgg".
+    //
+    // Esta conferência já esteve escrita como `assinatura != b"ggml"` e **nunca
+    // podia passar** — nem no Linux. Ninguém percebeu porque ela só roda no fim
+    // de um download, e quem programou já tinha o modelo no disco: o
+    // `--baixar-modelo` responde "já está aqui" antes de chegar até aqui. O erro
+    // apareceu na primeira máquina que baixou o modelo do zero, que por acaso
+    // foi a do Windows — e a mensagem acusava a rede de ter devolvido uma página
+    // depois de 573 MB baixados corretamente.
+    const ASSINATURA_GGML: u32 = 0x6767_6d6c;
+
     let mut assinatura = [0u8; 4];
     std::fs::File::open(parcial)?.read_exact(&mut assinatura)?;
-    if &assinatura != b"ggml" {
+    if u32::from_le_bytes(assinatura) != ASSINATURA_GGML {
         anyhow::bail!(
             "o arquivo baixado não é um modelo do Whisper — \
              a rede pode ter devolvido uma página no lugar dele"
@@ -274,6 +289,12 @@ fn conferir(parcial: &Path, total: Option<u64>) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Para onde mandar a saída que não interessa.
+#[cfg(target_os = "windows")]
+const DESCARTE: &str = "NUL";
+#[cfg(not(target_os = "windows"))]
+const DESCARTE: &str = "/dev/null";
 
 /// Tamanho anunciado pelo servidor, para a barra ter escala. Sem isto o
 /// download ainda funciona — a barra é que fica indeterminada.
@@ -283,7 +304,11 @@ fn tamanho(prog: &str, endereco: &str) -> Option<u64> {
             .args([
                 "-sIL",
                 "-o",
-                "/dev/null",
+                // O buraco negro do sistema. No Windows não existe `/dev/null`:
+                // o curl trataria isso como um caminho relativo e tentaria criar
+                // uma pasta `dev` no diretório de trabalho — que pode ser o
+                // `C:\Windows\System32` de onde o Explorer lançou o programa.
+                DESCARTE,
                 "-w",
                 "%{size_download}\n%{header_json}",
             ])
@@ -336,6 +361,59 @@ pub fn tamanho_legivel(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Os bytes que um modelo do Whisper tem mesmo no começo do arquivo.
+    ///
+    /// Escritos aqui na ordem em que aparecem no disco — conferidos numa
+    /// requisição `Range: 0-15` ao próprio servidor da Hugging Face, e não
+    /// deduzidos da constante. É a diferença entre este teste e o bug que ele
+    /// existe para impedir: a versão anterior de `conferir` comparava com
+    /// `b"ggml"`, que é o mesmo número na ordem contrária, e recusava **todo**
+    /// download bem-sucedido.
+    const COMECO_DE_UM_MODELO: [u8; 8] = [0x6c, 0x6d, 0x67, 0x67, 0x9a, 0xca, 0x00, 0x00];
+
+    fn arquivo_de_teste(nome: &str, conteudo: &[u8]) -> std::path::PathBuf {
+        let caminho =
+            std::env::temp_dir().join(format!("ditador-modelo-{}-{nome}", std::process::id()));
+        std::fs::write(&caminho, conteudo).expect("gravando o arquivo do teste");
+        caminho
+    }
+
+    #[test]
+    fn aceita_um_modelo_de_verdade_e_recusa_uma_pagina_html() {
+        let bom = arquivo_de_teste("bom.bin", &COMECO_DE_UM_MODELO);
+        assert!(
+            conferir(&bom, Some(COMECO_DE_UM_MODELO.len() as u64)).is_ok(),
+            "recusou um arquivo que começa exatamente como todo modelo do Whisper"
+        );
+
+        // O caso que a conferência existe para pegar: um portal cativo ou proxy
+        // devolvendo uma página com status 200, que o `--fail` do curl não recusa.
+        let pagina = arquivo_de_teste("pagina.html", b"<!DOCTYPE html><html>");
+        assert!(conferir(&pagina, None).is_err());
+
+        // E o download que veio pela metade, que tem a assinatura certa mas não
+        // o tamanho anunciado.
+        assert!(
+            conferir(&bom, Some(999_999)).is_err(),
+            "aceitou um download incompleto"
+        );
+
+        for caminho in [bom, pagina] {
+            let _ = std::fs::remove_file(caminho);
+        }
+    }
+
+    #[test]
+    fn o_descarte_e_o_do_sistema() {
+        // `/dev/null` não existe no Windows: o curl o trataria como caminho
+        // relativo e tentaria criar uma pasta `dev` no diretório de trabalho —
+        // que, lançado pelo Explorer, pode ser o System32.
+        #[cfg(target_os = "windows")]
+        assert_eq!(DESCARTE, "NUL");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(DESCARTE, "/dev/null");
+    }
 
     #[test]
     fn pega_o_content_length_do_destino_final() {
