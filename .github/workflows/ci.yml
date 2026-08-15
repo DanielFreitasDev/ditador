@@ -1,0 +1,110 @@
+# A régua do CLAUDE.md, rodada nos dois sistemas a cada push.
+#
+# Este projeto nunca teve CI, e viveu bem sem ela enquanto era de um sistema só:
+# quem mexia compilava na mesma máquina em que rodava. A portabilidade para
+# Windows acabou com isso — o porte inteiro foi feito numa máquina Windows, e o
+# lado Linux ficou meses sem ver um compilador. É esse buraco que este arquivo
+# fecha, e é por isso que a matriz tem dois sistemas em vez de um.
+#
+# O que **não** roda aqui: nada que precise de GPU, de microfone, de sessão
+# gráfica ou de barramento de sessão. A medição de backends
+# (`stt::medicao::mede_o_backend`) continua sendo `#[ignore]` e local; os testes
+# da extensão do GNOME e do widget do Plasma precisam de um Shell e de um
+# plasmashell de verdade, e continuam sendo `./gnome-extension/scripts/testar.sh`
+# e `./kde-plasma/testar.sh` na máquina de quem mexe.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Um push novo cancela o anterior do mesmo ramo: o que interessa é o estado da
+# ponta, e compilar o whisper.cpp duas vezes em paralelo só atrasa as duas.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A régua trata aviso do compilador como erro. O `[lints.clippy]` do
+  # Cargo.toml já faz isso para o clippy; isto estende ao rustc, para que um
+  # `dead_code` novo não passe despercebido como passou por um tempo.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  nucleo:
+    name: Rust · ${{ matrix.sistema }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # Sem `fail-fast`: quando quebra, o que interessa é saber se quebrou nos
+      # dois ou só num — é essa diferença que diz se o problema é de plataforma.
+      fail-fast: false
+      matrix:
+        include:
+          - sistema: Linux
+            runner: ubuntu-latest
+          - sistema: Windows
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ferramentas do Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # O whisper.cpp é C++ construído pelo build script e leva a maior parte
+          # do tempo; a chave separa os dois sistemas porque os artefatos não se
+          # aproveitam entre eles.
+          key: ${{ matrix.sistema }}
+
+      - name: Dependências de sistema (Linux)
+        if: matrix.sistema == 'Linux'
+        run: |
+          sudo apt-get update
+          # `libasound2-dev` para o cpal, `libdbus-1-dev` para o zbus e o ksni,
+          # e o resto para a janela do egui. Nada de Vulkan: o CI compila com a
+          # feature `cpu`, que é a única que não precisa de GPU nem de SDK.
+          sudo apt-get install -y --no-install-recommends \
+            cmake libasound2-dev libdbus-1-dev pkg-config \
+            libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev
+
+      - name: Formatação
+        run: cargo fmt --check
+
+      # A feature `cpu` de propósito: as três são mutuamente exclusivas (há
+      # `compile_error!` no topo do main.rs garantindo isso), e é a única que
+      # compila num agente sem GPU e sem o Vulkan SDK. O que ela deixa de cobrir
+      # é a ligação com o backend de GPU, que muda de máquina para máquina e é
+      # verificada localmente.
+      - name: Testes
+        run: cargo test --no-default-features --features cpu
+
+      - name: Clippy
+        run: cargo clippy --no-default-features --features cpu --all-targets
+
+      - name: Compilação de release
+        run: cargo build --release --no-default-features --features cpu
+
+  frontend:
+    name: Frontend WinUI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # O projeto trata aviso como erro (`TreatWarningsAsErrors`), então não há o
+      # que acrescentar aqui: se compilou, está limpo.
+      - name: Compilar
+        run: dotnet build windows-integration/Ditador.Windows.sln -c Release --nologo
