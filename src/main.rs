@@ -321,7 +321,11 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
             .with_inner_size(state::View::Recording.size())
             .with_min_inner_size([320.0, 110.0])
             .with_decorations(false)
-            .with_transparent(true)
+            // Transparência só onde ela existe de verdade. No Windows o glutin
+            // não entrega alfa por pixel numa janela OpenGL: pedi-la não a torna
+            // transparente, só faz a folga da sombra virar uma moldura opaca —
+            // veja `tema::FOLGA_SOMBRA`, que é zero lá pelo mesmo motivo.
+            .with_transparent(cfg!(not(target_os = "windows")))
             .with_resizable(false)
             .with_always_on_top()
             // Começa escondido e sem roubar o foco de quem está digitando.

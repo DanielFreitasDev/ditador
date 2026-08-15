@@ -5,6 +5,14 @@
 //! preenchido com a cor de fundo do tema, uma borda de um pixel e uma sombra por
 //! baixo. O resto da janela é transparente, e é só por isso que ela precisa de
 //! canal alfa.
+//!
+//! **No Windows não é assim, e não é limitação nossa.** O glutin não entrega alfa
+//! por pixel numa janela OpenGL lá, então a folga em volta do retângulo não some:
+//! ela vira uma moldura opaca de 22 px com o canto e a borda que o Windows 11
+//! desenha por fora — "uma caixa atrás da janela". Lá a janela **é** o cartão
+//! (`tema::FOLGA_SOMBRA` é zero), e a sombra e os cantos arredondados são os do
+//! sistema, que já os aplica a toda janela de nível superior. O resultado parece
+//! mais nativo do que a nossa sombra pareceria.
 
 use crate::audio::Levels;
 use crate::config::{IDIOMAS, Tema};
@@ -399,12 +407,22 @@ impl eframe::App for App {
 
 impl App {
     /// A superfície da janela: sombra, preenchimento e borda.
+    ///
+    /// No Windows a sombra, o canto arredondado e a borda são do sistema — a
+    /// janela ali não é transparente, e desenhá-los por dentro produziria a
+    /// moldura opaca que o `tema::FOLGA_SOMBRA` explica. Aqui sobra o
+    /// preenchimento, que é o que a janela precisa ter atrás do conteúdo.
     fn painel(&self, ui: &egui::Ui, opacidade: f32) {
         let p = paleta();
         let rect = ui.max_rect().shrink(tema::FOLGA_SOMBRA);
-        let raio = CornerRadius::same(tema::RAIO_JANELA);
         let painter = ui.ctx().layer_painter(LayerId::background());
 
+        if cfg!(target_os = "windows") {
+            painter.rect_filled(rect, CornerRadius::ZERO, p.fundo.gamma_multiply(opacidade));
+            return;
+        }
+
+        let raio = CornerRadius::same(tema::RAIO_JANELA);
         let mut sombra = tema::sombra_janela();
         sombra.color = sombra.color.gamma_multiply(opacidade);
         painter.add(sombra.as_shape(rect, raio));

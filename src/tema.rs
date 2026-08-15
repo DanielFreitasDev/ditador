@@ -21,6 +21,20 @@ pub const RAIO_CARTAO: u8 = 12;
 pub const RAIO_CONTROLE: u8 = 10;
 /// Folga reservada em volta da janela para a sombra. A janela em si é
 /// transparente; o que se vê é o retângulo desenhado dentro desta margem.
+///
+/// **Zero no Windows, e não por economia.** Lá a janela não é transparente: o
+/// glutin não entrega canal alfa por pixel numa janela OpenGL, então a folga não
+/// some — ela aparece como uma moldura opaca de 22 px em volta do cartão, com o
+/// canto arredondado e a borda que o Windows 11 desenha por fora. O efeito é
+/// exatamente o de "uma caixa atrás da janela", que foi como quem viu primeiro o
+/// descreveu.
+///
+/// Sem a folga, a janela **é** o cartão. A sombra e o canto arredondado passam a
+/// ser do sistema, que já os desenha em toda janela de nível superior — e é o que
+/// faz o Ditador parecer nativo lá em vez de trazer a sombra do GNOME junto.
+#[cfg(target_os = "windows")]
+pub const FOLGA_SOMBRA: f32 = 0.0;
+#[cfg(not(target_os = "windows"))]
 pub const FOLGA_SOMBRA: f32 = 22.0;
 
 /// As cores de um tema. Poucas de propósito: fundo, duas superfícies, uma

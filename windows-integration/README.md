@@ -277,18 +277,31 @@ verdade, use `--status`.
 Pronto e verificado nesta máquina:
 
 - [x] o núcleo em Rust compila no MSVC, com os três backends
-- [x] `cargo fmt`, `cargo test` (78) e `cargo clippy` limpos
+- [x] `cargo fmt`, `cargo test` (78) e `cargo clippy` limpos nos três
 - [x] áudio pelo cpal/WASAPI — lista e escolhe dispositivos
 - [x] Whisper transcrevendo, com o modelo baixado pelo próprio programa
 - [x] caminhos de configuração e de modelo corretos para Windows
-- [x] named pipe com DACL restrita e instância única
-- [x] Raw Input escrito, com tabela de teclas e tratamento do Pause
+- [x] named pipe com DACL restrita e instância única; `--status` e `--encerrar`
+      atravessando o pipe
+- [x] **o atalho global em hardware real**: segurar `Pause` com outra janela em
+      foco abre o microfone, soltar transcreve, e o texto chega à área de
+      transferência
 - [x] início automático pela chave `Run`
+
+Duas coisas que só o teste em hardware revelou:
+
+* **A tecla `Pause` faz auto-repetição.** Segurá-la produz um par de mensagens
+  (`VKey=0x13` com E1, depois `VKey=0xFF`) a cada repique — treze delas em três
+  segundos. A máquina de teclas absorve isso porque só reage à transição; se
+  algum dia ela passar a contar apertos, o microfone vai abrir e fechar treze
+  vezes por ditado.
+* **A primeira transcrição da máquina leva ~22 s**, contra 0,4 s nas seguintes.
+  É o driver compilando os pipelines de shader do Vulkan, e o cache é por
+  executável — depois disso nem o reinício do programa paga de novo. Vale um
+  aviso na tela algum dia; não vale uma mudança de arquitetura.
 
 Falta:
 
-- [ ] **testar o Raw Input em hardware real** — está escrito e tem teste de
-      unidade da tradução, mas ninguém segurou a tecla Pause ainda
 - [ ] o fluxo de eventos no pipe (o comando `assinar`), para o frontend receber
       mudanças de estado sem perguntar
 - [ ] o frontend `Ditador.Windows` em WinUI 3: ícone, popup, OSD, notificações

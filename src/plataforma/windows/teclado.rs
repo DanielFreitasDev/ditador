@@ -28,13 +28,22 @@
 //! *comer* as teclas em vez de observá-las. A leitura é passiva, como a do
 //! evdev: quem está digitando não percebe que existimos.
 //!
-//! ## A janela invisível
+//! ## A janela invisível, que não pode ser *message-only*
 //!
-//! Raw Input precisa de um `HWND` para receber `WM_INPUT`. Criamos uma janela
-//! *message-only* (filha de `HWND_MESSAGE`): ela não aparece na tela, nem na
-//! barra de tarefas, nem no Alt+Tab, e existe só como caixa postal. Ela mora numa
-//! thread própria com laço de mensagens, porque a interface é do eframe e não
-//! podemos pendurar nada no laço dele.
+//! Raw Input precisa de um `HWND` para receber `WM_INPUT`. A escolha óbvia seria
+//! uma janela *message-only* — filha de `HWND_MESSAGE`, que existe só como caixa
+//! postal. **Ela não funciona aqui**, e foi a primeira versão deste arquivo: o
+//! registro passa, o `RegisterRawInputDevices` devolve sucesso, a janela nasce com
+//! um handle válido, e nenhum `WM_INPUT` chega jamais. Nada reclama.
+//!
+//! O que se usa é uma janela comum de zero por zero pixels, nunca mostrada, com
+//! `WS_EX_TOOLWINDOW` para ficar fora do Alt+Tab e da barra de tarefas — que era
+//! tudo o que se queria da message-only. Ela mora numa thread própria com laço de
+//! mensagens, porque a interface é do eframe e não podemos pendurar nada no laço
+//! dele.
+//!
+//! Se um dia o atalho parar de funcionar sem explicação, o `log::trace!` de
+//! `tratar_entrada` responde em uma rodada se as teclas estão chegando.
 
 use crate::hotkey::{Acao, HotkeyEvent, HotkeyListener, Origem};
 use std::ffi::OsStr;
@@ -51,9 +60,9 @@ use windows_sys::Win32::UI::Input::{
     RIDEV_INPUTSINK, RegisterRawInputDevices,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW,
-    HWND_MESSAGE, MSG, RegisterClassExW, SetWindowLongPtrW, TranslateMessage, WM_INPUT,
-    WNDCLASSEXW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW, MSG,
+    RegisterClassExW, SetWindowLongPtrW, TranslateMessage, WM_INPUT, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+    WS_POPUP,
 };
 
 /// `GWLP_USERDATA`, onde guardamos o ponteiro para o ouvinte.
@@ -150,7 +159,10 @@ fn laco_de_mensagens(listener: &Arc<HotkeyListener>) -> Result<(), String> {
     registrar_teclado(hwnd)?;
 
     REGISTRADO.store(true, std::sync::atomic::Ordering::Relaxed);
-    log::info!("observando o teclado por Raw Input (janela message-only {hwnd:?})");
+    log::info!(
+        "observando o teclado por Raw Input (janela {hwnd:?}, thread {:?})",
+        unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }
+    );
     listener.avisar(HotkeyEvent::Available);
 
     // `GetMessageW` devolve 0 no `WM_QUIT` e -1 em erro. O laço só termina no
@@ -194,20 +206,35 @@ fn criar_janela_postal(listener: &Arc<HotkeyListener>) -> Result<HWND, String> {
     // vai reclamar de verdade.
     unsafe { RegisterClassExW(&wc) };
 
+    // Uma janela comum, de zero por zero pixels e nunca mostrada — e **não**
+    // uma janela *message-only* (filha de `HWND_MESSAGE`).
+    //
+    // A message-only é a escolha óbvia para quem só quer uma caixa postal, e foi
+    // a primeira tentativa aqui. Ela não funciona: o registro do Raw Input passa,
+    // o `RegisterRawInputDevices` devolve sucesso, a janela é criada com um
+    // handle válido — e o `WM_INPUT` simplesmente nunca chega. Nada no caminho
+    // reclama, o que torna a falha especialmente cara de diagnosticar: o log diz
+    // "observando o teclado por Raw Input" e o teclado não é observado.
+    //
+    // O motivo é que uma janela message-only não participa da entrega de entrada
+    // do sistema; ela recebe mensagens endereçadas a ela, e o `WM_INPUT` de um
+    // `RIDEV_INPUTSINK` não é endereçado assim. A janela precisa ser uma
+    // top-level de verdade.
+    //
+    // Sem `WS_VISIBLE` ela nunca aparece, e o `WS_EX_TOOLWINDOW` a mantém fora do
+    // Alt+Tab e da barra de tarefas — que é tudo o que se queria da
+    // message-only, obtido de outro jeito.
     let hwnd = unsafe {
         CreateWindowExW(
-            0,
+            WS_EX_TOOLWINDOW,
             classe.as_ptr(),
             utf16("Ditador").as_ptr(),
+            WS_POPUP,
             0,
             0,
             0,
             0,
-            0,
-            // Filha de HWND_MESSAGE: existe só para receber mensagens. Não é
-            // desenhada, não entra no Alt+Tab e não aparece na barra de tarefas
-            // — nem precisa de estilo nenhum para isso.
-            HWND_MESSAGE,
+            std::ptr::null_mut(),
             std::ptr::null_mut(),
             GetModuleHandleW(std::ptr::null()),
             std::ptr::null(),
@@ -325,6 +352,26 @@ unsafe fn tratar_entrada(listener: &HotkeyListener, handle: HRAWINPUT) {
         }
 
         let teclado = &bruto.data.keyboard;
+
+        // O rastro das teclas cruas, para quando o atalho "não faz nada".
+        //
+        // É a única maneira de separar as três causas possíveis, que de fora
+        // parecem idênticas: a mensagem não chega, a mensagem chega e a tradução
+        // a descarta, ou a tradução acerta e o problema está adiante. Nenhuma
+        // linha aqui significa a primeira — e a causa mais provável dela está
+        // escrita em `criar_janela_postal`.
+        //
+        // Fica em `trace`, que o filtro padrão não liga (veja `FILTRO_PADRAO` em
+        // `main.rs`) e que nem `RUST_LOG=ditador=debug` alcança — é preciso pedir
+        // `ditador=trace` de propósito. Isto aqui é o teclado inteiro de quem
+        // está usando o computador, e não é coisa para ficar ligada.
+        log::trace!(
+            "raw: vkey={:#04x} scan={:#04x} flags={:#06b}",
+            teclado.VKey,
+            teclado.MakeCode,
+            teclado.Flags
+        );
+
         let Some((codigo, acao)) = traduzir(teclado.VKey, teclado.MakeCode, teclado.Flags) else {
             return;
         };
