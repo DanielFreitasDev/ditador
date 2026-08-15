@@ -236,3 +236,12 @@ echo
 echo "Para instalar (aqui ou em outra máquina Ubuntu):"
 echo "  sudo apt install ./$SAIDA"
 echo
+# O apt compara número de versão, não conteúdo: reempacotar sem subir a versão
+# — que é o caso normal de quem está desenvolvendo — faz ele responder "já é a
+# versão mais nova" e não instalar nada. O sintoma é pior que a mensagem, porque
+# o programa continua rodando o binário velho e parecendo que a mudança não
+# funcionou.
+echo "Se já houver um $VERSAO instalado, o apt vai dizer que não há o que fazer."
+echo "Para trocar o binário assim mesmo:"
+echo "  sudo apt install --reinstall ./$SAIDA"
+echo
