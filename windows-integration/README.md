@@ -575,7 +575,10 @@ O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
 - [x] **notificação do sistema**: escondendo o modelo, o backend entra em erro e
       o aviso aparece na Central de Ações com o ícone e o texto do Ditador —
       `AppNotificationManager` funcionando em aplicativo desempacotado
-- [x] instalação, atualização por cima e desinstalação limpas
+- [x] instalação, atualização por cima (com o programa rodando) e desinstalação:
+      o `desinstalar.ps1` encerra os dois processos, tira a chave `Run`, remove o
+      atalho, apaga a pasta e a identidade de notificações — e **deixa** a
+      configuração e os 574 MB do modelo onde estão, conferido depois de rodar
 - [x] MSIX gerado e assinado com certificado de teste
 - [x] memória e CPU em repouso medidas
 - [x] troca de tema do sistema: com a difusão de `WM_SETTINGCHANGE`, o ícone
