@@ -27,7 +27,7 @@ QString servico()
 
 /* O caminho do objeto é a única coisa que o XML não carrega: introspecção
  * descreve o que há num caminho, não onde ele fica. É o valor de `CAMINHO`, em
- * `src/dbus.rs`. */
+ * `src/plataforma/linux/dbus.rs`. */
 const QString CAMINHO = QStringLiteral("/io/github/danielfreitasdev/Ditador");
 
 const QString PROPRIEDADES = QStringLiteral("org.freedesktop.DBus.Properties");

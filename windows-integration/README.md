@@ -3,16 +3,30 @@
 Documentação técnica do suporte a Windows. Para o uso normal, veja o `README.md`
 da raiz.
 
-> **Estado em 15/08/2026.** Completo e em uso nesta máquina: o núcleo em Rust
-> compila e transcreve, o atalho global funciona em hardware real, e o frontend
-> `Ditador.Windows` (WinUI 3) põe o ícone na área de notificação, desenha o aviso
-> de gravação na tela e abre o painel de status. Instala-se com um comando e sem
-> pedir senha.
+> **Estado em 15/08/2026.** Completo e em uso numa máquina Windows: o núcleo em
+> Rust compila e transcreve, o atalho global funciona em hardware real, e o
+> frontend `Ditador.Windows` (WinUI 3) põe o ícone na área de notificação,
+> desenha o aviso de gravação na tela e abre o painel de status. Instala-se com
+> um comando e sem pedir senha.
 >
-> **O lado Linux compila e passa nos testes** — pela CI, que roda a régua inteira
-> no `ubuntu-latest` a cada push e passou. O que ainda não aconteceu é alguém
+> **A última rodada de consertos do lado Windows — os commits de 15/08/2026 —
+> foi escrita numa máquina Linux, e nada dela chegou a rodar num Windows.** São
+> o log em arquivo do backend, a soltura de tecla no desligamento do teclado,
+> dois defeitos de posse de handle no named pipe, seis consertos no frontend
+> WinUI e os três scripts do PowerShell. Tudo veio de leitura contra a
+> documentação da Microsoft. Os módulos de `src/plataforma/windows/` estão sob
+> `#[cfg(target_os = "windows")]` e portanto nem compilados foram; o frontend em
+> C# e os `.ps1`, muito menos. Onde este arquivo diz "verificado", a data da
+> verificação é **anterior** a eles, e as listas do fim dizem quais itens isso
+> alcança.
+>
+> **O lado Linux compila e passa nos testes** — a régua do `CLAUDE.md` foi
+> rodada nesta máquina Linux, no estado atual da árvore: `cargo fmt --check`
+> limpo, `cargo test --no-default-features --features cpu` com **77 passando, 0
+> falhando e 1 ignorado**, e `cargo clippy` sem um aviso. A CI ainda não viu
+> esses commits: eles não foram empurrados. O que também não aconteceu é alguém
 > **usar** o Ditador num Linux depois desta portabilidade, com GNOME e Plasma de
-> verdade; isso a CI não faz, e está no fim deste arquivo.
+> verdade; isso nem a CI faz, e está no fim deste arquivo.
 
 ## As duas metades
 
@@ -33,13 +47,16 @@ da raiz.
 O backend não depende do frontend para nada: sem ele o atalho, a transcrição e a
 área de transferência continuam funcionando — perde-se o ícone e o aviso. O
 contrário também vale: sem o backend, o frontend mostra "indisponível" e oferece
-iniciá-lo.
+iniciá-lo. Sozinho ele o sobe **uma vez**, e só enquanto o backend nunca tiver
+respondido nesta execução: um backend que já esteve no ar e sumiu foi encerrado
+de propósito, e ressuscitá-lo seria desfazer o que a pessoa acabou de mandar
+fazer.
 
 ## O que muda entre Linux e Windows
 
 O núcleo é o mesmo código: máquina de estados do ditado, Whisper, configuração,
 interface do egui, regras de transcrição. O que muda mora todo em
-`src/plataforma/`, com um contrato de sete módulos que o compilador cobra.
+`src/plataforma/`, com um contrato de nove módulos que o compilador cobra.
 
 | | Linux | Windows |
 |---|---|---|
@@ -57,7 +74,9 @@ interface do egui, regras de transcrição. O que muda mora todo em
 | Área de transferência | `wl-copy`, com `arboard` de reserva | `arboard` |
 | Configuração | `~/.config/ditador/` | `%APPDATA%\ditador\` |
 | Modelos | `~/.local/share/ditador/models/` | `%LOCALAPPDATA%\ditador\models\` |
+| Log do backend | journal do systemd | `%LOCALAPPDATA%\ditador\logs\ditador.log` |
 | Log do frontend | — | `%LOCALAPPDATA%\ditador\logs\` |
+| Recusa do microfone | erro do sistema, sem palpite | mais o caminho das Configurações |
 
 Duas escolhas merecem explicação, e as duas estão comentadas por extenso no
 código:
@@ -65,8 +84,18 @@ código:
 **O código de tecla é o do evdev nos dois sistemas.** O `config.json` de quem já
 usa o Ditador guarda o atalho como `["KEY_PAUSE"]`, e é isso que a extensão do
 GNOME e o widget do Plasma leem. No Windows a tradução `VK_PAUSE → 119` acontece
-na borda, dentro do Raw Input. Uma configuração escrita no Linux vale no Windows
-e vice-versa.
+na borda, dentro do Raw Input.
+
+Daí sai a frase que o `README.md` da raiz diz sobre o `config.json` valer nos
+dois sentidos — e ela merece uma qualificação. O que é portável é o **formato** e
+o **atalho**: a numeração canônica é a do evdev nos dois sistemas, então
+`["KEY_PAUSE"]` significa a mesma tecla dos dois lados, e todo campo que não
+nomeia o sistema de arquivos nem o hardware atravessa sem tradução. Dois não
+atravessam: **`model_path` é um caminho absoluto** — `~/.local/share/…` de um
+lado, `%LOCALAPPDATA%\ditador\models\…` do outro — e **`input_device` é um nome
+de dispositivo**, que o WASAPI e o ALSA escrevem de maneiras diferentes. Levar o
+arquivo de uma máquina para a outra funciona; esses dois campos é que precisam
+ser reapontados na tela de configurações.
 
 **Os modelos vão para `LocalAppData`, a configuração para `Roaming`.** O modelo
 tem 574 MB: no Roaming ele atravessaria a rede a cada login num perfil de
@@ -80,20 +109,62 @@ usuário entre máquinas é o comportamento desejável. Há teste para os dois.
 ```
 
 Compila os dois lados, confere as dependências, instala em
-`%LOCALAPPDATA%\Programs\Ditador`, cria o atalho no menu Iniciar, registra o
-início com a sessão e sobe o programa. **Sem administrador** — nada em
-`Program Files`, nada em `HKLM`, nada de serviço.
+`%LOCALAPPDATA%\Programs\Ditador`, cria o atalho no menu Iniciar e sobe o
+programa. **Sem administrador** — nada em `Program Files`, nada em `HKLM`, nada
+de serviço.
 
 ```powershell
-.\windows-integration\scripts\instalar.ps1 -Backend cpu          # sem GPU
-.\windows-integration\scripts\instalar.ps1 -SemCompilar          # usa o já compilado
-.\windows-integration\scripts\instalar.ps1 -SemIniciarComOWindows
-.\windows-integration\scripts\desinstalar.ps1                    # e -ApagarDados
+.\windows-integration\scripts\instalar.ps1 -Backend cpu           # sem GPU
+.\windows-integration\scripts\instalar.ps1 -SemCompilar           # usa o já compilado
+.\windows-integration\scripts\instalar.ps1 -IniciarComOWindows    # sobe no login
+.\windows-integration\scripts\instalar.ps1 -SemIniciarComOWindows # e desfaz isso
+.\windows-integration\scripts\desinstalar.ps1                     # e -ApagarDados
 ```
 
 Atualizar é rodar o `instalar.ps1` de novo: ele encerra o que está rodando (pelo
 canal de controle, para o microfone fechar e a configuração ser gravada), troca
 os arquivos e sobe outra vez.
+
+### Iniciar com a sessão é escolha, não padrão
+
+**O `instalar.ps1` não registra a inicialização automática por conta própria.**
+Decidir sozinho que um programa recém-instalado passa a abrir em todo login é o
+que faz as pessoas irem caçar coisas no Gerenciador de Tarefas. Quem pede é
+`-IniciarComOWindows`; `-SemIniciarComOWindows` **remove** o registro, e sem
+nenhum dos dois o script tem duas conversas diferentes com a máquina:
+
+* **não havia nada registrado** — continua não havendo, e o script diz onde está
+  o interruptor;
+* **já havia** (uma instalação anterior com `-IniciarComOWindows`, ou o
+  interruptor da tela de configurações) — o caminho é **atualizado** para o novo
+  destino e a escolha é **preservada**. Desfazer no update a decisão de quem
+  instalou antes seria a pior das duas opções.
+
+A chave é `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, valor `Ditador`,
+e ela tem **dois** autores: o `instalar.ps1`, com `-IniciarComOWindows`, e o
+interruptor "iniciar com a sessão" da tela de configurações do próprio Ditador
+(`src/plataforma/windows/autostart.rs`). Mesma chave, mesmo nome de valor — o
+último a escrever é o que vale.
+
+Por isso os dois apontam para o mesmo lugar: o `Ditador.Windows.exe`. É o
+frontend que entra na chave, e não o backend, porque ele sobe o backend quando
+percebe que ele não está no ar — assim há um item de inicialização em vez de dois
+disputando quem chega primeiro, e o login traz os dois. O contrário não vale: o
+backend sozinho dita, mas não desenha ícone nem aviso, que no Windows são do
+frontend.
+
+O interruptor escrevia o **executável em execução**, que é o `ditador.exe`, e
+ligá-lo por dentro trocava em silêncio o que sobe no login — a pessoa ligava
+"iniciar com o Windows" e perdia a interface. Hoje o `autostart.rs` procura o
+`Ditador.Windows.exe` ao lado do binário e prefere-o; não o achando (quem
+compilou só o Rust, ou roda de dentro do `target\release`), sobe o backend mesmo,
+que é melhor do que não subir nada. Há teste para as duas metades, e ele roda no
+alvo Windows — nesta máquina Linux o módulo inteiro nem é compilado.
+
+De qualquer maneira, desligar depois não precisa de script nenhum: o item aparece
+no Gerenciador de Tarefas → Aplicativos de Inicialização e em Configurações →
+Aplicativos → Inicializar, com o interruptor que o Windows dá a qualquer
+programa.
 
 ### As duas dependências, e por que elas não vêm dentro
 
@@ -130,10 +201,19 @@ dentro do projeto do aplicativo, o `dotnet test` **pendurava** no agente da CI �
 o executor carregava o assembly do WinUI e esperava um runtime gráfico que um
 servidor de build não tem.
 
-Há CI desde esta versão (`.github/workflows/ci.yml`): a régua do `CLAUDE.md` roda
-no `ubuntu-latest` e no `windows-latest` a cada push, mais o build e os testes do
-frontend. Ela existe por um motivo específico — o porte para Windows foi feito
-numa máquina sem Linux, e o lado de lá ficou meses sem ver um compilador.
+Há CI desde esta versão (`.github/workflows/ci.yml`): a régua do `CLAUDE.md`
+(`fmt`, `test`, `clippy` e build de release, com `--features cpu`) roda no
+`ubuntu-latest` e no `windows-latest`, mais um trabalho só de compilar o backend
+**Vulkan** no Linux — que é o que o `instalar.sh` e o `.deb` entregam, e que os
+dois primeiros nunca tocavam —, o lint da extensão do GNOME e o build e os testes
+do frontend WinUI. Dispara em push de **qualquer** ramo e em pull request: um
+portão que só roda depois do merge descobre a quebra tarde demais para ser
+portão. Ela existe por um motivo específico — o porte para Windows foi feito numa
+máquina sem Linux, e o lado de lá ficou meses sem ver um compilador.
+
+O que a CI **não** cobriu ainda são os commits de 15/08/2026, que não foram
+empurrados. O que se sabe deles é o que foi rodado à mão nesta máquina Linux, e
+está no alto deste arquivo.
 
 Requisitos:
 
@@ -363,8 +443,30 @@ que um gancho lento é **removido em silêncio** pelo sistema — falha que apar
 como "o atalho parou de funcionar depois de um tempo". Fica como reserva, e não
 foi preciso.
 
-Usamos `RIDEV_INPUTSINK` e **nada além**. Em particular, nada de
-`RIDEV_NOLEGACY`: o Ditador observa o teclado, não o consome.
+Usamos `RIDEV_INPUTSINK` e `RIDEV_DEVNOTIFY`, e **nada além**. O primeiro é
+receber tecla sem ter o foco, que é a razão de existir deste registro; o segundo
+é a próxima seção. Em particular, nada de `RIDEV_NOLEGACY`: o Ditador observa o
+teclado, não o consome.
+
+### Arrancar o teclado no meio de uma frase
+
+O `pressed` de `src/hotkey.rs` conta origens por dispositivo — é o que impede o
+teclado sintético da colagem automática de soltar a tecla que a pessoa ainda
+segura. O preço dessa contagem é que uma origem só sai de lá quando alguém manda
+soltar, e **um teclado USB arrancado no meio de um ditado não manda nada**: a
+origem fica lá para sempre, e o microfone não fecha nunca mais.
+
+Durante um tempo o comentário deste código afirmava que o Windows manda sozinho
+os "soltou" que faltam quando um teclado some. **Isso nunca foi verificado**, e o
+preço de a afirmação estar errada é exatamente o parágrafo acima. Agora o
+registro pede `RIDEV_DEVNOTIFY`, e o `WM_INPUT_DEVICE_CHANGE` com `GIDC_REMOVAL`
+solta o que aquele teclado estava segurando — o `lParam` traz o mesmo `HANDLE`
+que vem no cabeçalho de cada `WM_INPUT`, e é portanto a mesma `Origem`. É o que o
+lado Linux já fazia quando o `read` do `/dev/input/eventN` falha.
+
+Continua sem verificação numa máquina: ninguém arrancou um teclado com a tecla
+apertada para ver. O que mudou é que a defesa existe, em vez de a documentação
+prometer que o sistema a faria por nós.
 
 ### O registro é do processo, e a interface roubava o nosso
 
@@ -493,6 +595,20 @@ quando o tema do sistema muda (`WM_SETTINGCHANGE` com `ImmersiveColorSet`). Os
 tamanhos, de 16 a 256 px, e o tamanho pedido ao `LoadImage` vem de
 `GetSystemMetricsForDpi`.
 
+**E o `HICON` também tem um dono só.** O `LoadImage` devolve um `SafeHandle`, e
+quem destrói o ícone aqui é o `Redesenhar` — o invólucro precisa abrir mão dele,
+com `SetHandleAsInvalid`, e não só o comentário dizendo que abriu. Com dois donos,
+o finalizador do coletor destruiria, horas depois, o ícone que o Shell ainda está
+desenhando, e o `DestroyIcon` seguinte cairia sobre um handle já liberado —
+possivelmente reciclado para outro objeto GDI.
+
+**Ativar o ícone pelo teclado é um clique como outro qualquer.** A versão 4 do
+protocolo foi escolhida justamente porque o gesto pode vir do teclado ou da
+acessibilidade, e é `NIN_SELECT`/`NIN_KEYSELECT` que chegam nesse caso — Tab até
+a área de notificação e Enter. As duas são macros do `shellapi.h`, não existem
+nos metadados do Win32 e são por isso as únicas constantes escritas à mão neste
+projeto, com o nome que o cabeçalho lhes dá.
+
 Cada estado tem **forma** própria, e não só cor: ponto cheio para gravando, anel
 para trabalhando, triângulo para erro. Em 16 pixels e em tela monocromática eles
 continuam distinguíveis, e a dica de ferramenta diz o estado por extenso — que é
@@ -538,7 +654,17 @@ com `AccentButtonStyle`, `HyperlinkButton`) e nenhuma cor escrita à mão — o 
 faz ele seguir o tema claro, o escuro e o de alto contraste sem uma linha nossa.
 Ele se posiciona com `Shell_NotifyIconGetRect` + `CalculatePopupWindowPosition`,
 que são as funções que sabem encaixar um retângulo ao lado de outro respeitando
-monitor, barra de tarefas e DPI.
+monitor, barra de tarefas e DPI. A `NOTIFYICONIDENTIFIER` leva `hWnd` **ou**
+`guidItem`, nunca os dois — a documentação é explícita, e o código levava os dois.
+Quando a API recusa, o retângulo vem nulo e o painel cai no canto inferior
+direito, que é indistinguível do certo numa barra de tarefas embaixo. Corrigido
+por leitura; a barra fora da posição padrão é o teste que separa um do outro.
+
+**E o painel fecha no segundo clique.** Clicar no ícone tira o foco do painel, e
+o `Activated` o esconde e zera o `_visivel` **antes** de o clique chegar à janela
+de mensagens — quando ele chegava, já não havia nada aberto para alternar, e o
+painel piscava e continuava lá. O desempate é o relógio: um pedido de abertura
+colado no desaparecimento é o outro lado daquele mesmo clique.
 
 **Limitação conhecida: o menu do botão direito sai em tema claro mesmo com o
 Windows em tema escuro.** Menus clássicos do Win32 só seguem o tema escuro por
@@ -592,6 +718,29 @@ situação de teclado; o teste `o_windows_aceita_as_teclas_que_montamos`
 e a colagem ponta a ponta foi conferida à mão, com o texto chegando ao campo de
 uma janela em primeiro plano.
 
+### A recusa do microfone vira uma frase com conserto
+
+O Windows tem um interruptor de privacidade por aplicativo. Com ele desligado, o
+que o WASAPI devolve é `E_ACCESSDENIED`, que sobe pelo cpal até a interface como
+um texto em inglês com um `0x80070005` no meio. Mostrar isso a quem só quer ditar
+é o mesmo que não mostrar nada: o problema tem conserto, o conserto tem três
+cliques, e nada disso está no HRESULT.
+
+O `plataforma::microfone` **acrescenta** a esse erro — nunca o substitui — o
+caminho que resolve: Configurações → Privacidade e segurança → Microfone
+(`ms-settings:privacy-microphone`), ligar "Acesso ao microfone" e deixar que
+aplicativos da área de trabalho o usem. O técnico continua vendo o código, e quem
+não é técnico ganha o caminho; é o mesmo princípio do aviso do grupo `input` no
+Linux, que também é frase acrescentada e não frase trocada.
+
+O reconhecimento é pelo `0x80070005`, que é o único pedaço da mensagem que não
+muda de idioma, com as redações em inglês e em português como reserva — há testes
+para os três casos e para o erro que **não** é de permissão, que passa sem
+palpite. O URI não é aberto sozinho: o Ditador não sequestra a tela de ninguém, só
+diz onde é. No Linux não há o que acrescentar, e a mensagem sai como sempre saiu.
+
+Nada disto foi visto numa máquina Windows com o interruptor desligado.
+
 ### Empacotado ou não: por que o padrão não é MSIX
 
 O MSIX traz coisas boas de verdade — instalação e desinstalação atômicas,
@@ -610,21 +759,37 @@ recomendado, inclusive para `winget` e Microsoft Store.
 ```powershell
 .\windows-integration\scripts\empacotar-msix.ps1 -Assinar
 # → %USERPROFILE%\.ditador-build\msix\Ditador_0.5.0.0_x64.msix
+#   %USERPROFILE%\.ditador-build\msix\ditador-teste.pfx   (com a chave privada)
+#   %USERPROFILE%\.ditador-build\msix\ditador-teste.cer   (só a parte pública)
 ```
+
+São **dois** arquivos de certificado, e a diferença importa: o `.pfx` tem a chave
+privada e é o que assina, e por isso não sai daí; o `.cer` é só a parte pública, e
+é o que a máquina de testes importa para passar a confiar no pacote. Faltando
+qualquer um dos dois, o script refaz os dois — são certificado de teste, não têm
+por que sobreviver a nada.
 
 Para instalar numa máquina de testes, uma vez, **como administrador**:
 
 ```powershell
-Import-Certificate -FilePath <certificado.cer> -CertStoreLocation Cert:\LocalMachine\TrustedPeople
-Add-AppxPackage 'C:\…\Ditador_0.5.0.0_x64.msix'
+Import-Certificate -FilePath "$env:USERPROFILE\.ditador-build\msix\ditador-teste.cer" `
+  -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+Add-AppxPackage "$env:USERPROFILE\.ditador-build\msix\Ditador_0.5.0.0_x64.msix"
 ```
 
-Nenhum certificado é versionado: o `.gitignore` barra `*.pfx` e `*.snk`.
+Isto está escrito assim porque antes não estava: o roteiro impresso no fim do
+script mandava importar um `<certificado.cer>` que **nenhum passo produzia** — a
+instalação documentada do MSIX não era executável como estava, e ninguém tinha
+percebido porque ninguém a tinha executado.
+
+Nenhum certificado é versionado. Os dois nascem em `%USERPROFILE%\.ditador-build`,
+que é fora do repositório, e o `.gitignore` ainda barra `*.pfx` e `*.snk` para o
+caso de alguém trazer um para dentro.
 
 ## Diagnóstico
 
 ```powershell
-ditador.exe --diagnostico     # confere modelo, microfone, área de transferência, integração
+ditador.exe --diagnostico     # confere modelo, microfone, área de transferência, integração e o log
 ditador.exe --status          # pergunta à instância em execução
 ditador.exe --microfones      # lista os dispositivos de entrada
 ditador.exe --versao          # versão e backend compilado
@@ -635,15 +800,37 @@ atalho está funcionando — quem observa o teclado é a instância em execuçã
 linha aparece como informativa (`--`), não como falha. Para a resposta de
 verdade, use `--status`.
 
+Ele também imprime **onde fica o log do backend**, e só onde ele existe: no
+Windows, o arquivo; no Linux a linha não aparece, porque dizer "use o
+`journalctl`" a quem já está no journal não ajuda ninguém.
+
 Onde ficam os rastros:
 
 | O quê | Onde |
 |---|---|
 | Log do frontend | `%LOCALAPPDATA%\ditador\logs\Ditador.Windows.log` (e `.old`) |
-| Log do backend | no console de quem o iniciou; para ver, rode-o de um terminal com `$env:RUST_LOG='ditador=debug'` |
+| Log do backend | `%LOCALAPPDATA%\ditador\logs\ditador.log` (e `.log.1`), e também na saída de erro |
 | Configuração | `%APPDATA%\ditador\config.json` |
 | Modelos | `%LOCALAPPDATA%\ditador\models\` |
 | Falhas do sistema | Visualizador de Eventos → Aplicativo; Monitor de Confiabilidade |
+
+**O backend passou a ter log em arquivo, e por um motivo concreto.** Até
+15/08/2026 esta tabela dizia que ele estava "no console de quem o iniciou", o que
+era verdade só para quem o roda à mão. Depois de instalado, quem sobe o
+`ditador.exe` é o `Ditador.Windows`, com `CreateNoWindow` — não há console, então
+a saída de erro não ia a lugar nenhum, e não havia log justamente no caminho em
+que ele seria preciso. Agora o `plataforma::registro` diz para onde a saída vai:
+no Windows, o arquivo; no Linux, `None`, porque quem recolhe já é o journal do
+systemd e uma segunda cópia disso seria uma segunda tabela do mesmo dado.
+
+A rotação é um arquivo só, trocado por `ditador.log.1` quando passa de 1 MiB — no
+nível `info`, meses de uso. A conta é feita uma vez, na abertura: não há laço de
+manutenção nem thread vigiando. E a escrita continua saindo **também** na saída de
+erro, para quem depura de um terminal ver as linhas na hora em vez de descobrir o
+caminho do arquivo primeiro; quando não há console, essa metade falha e o erro é
+descartado de propósito. Nada de Event Log: escrever nele exige registrar uma
+fonte, o que pede administrador. O log do Ditador é do usuário, fica com o
+usuário, e sai junto no `desinstalar.ps1 -ApagarDados`.
 
 O Ditador **não** envia nada para lugar nenhum: sem telemetria, sem análise de
 uso, sem envio automático de falhas. O log é um arquivo de texto na máquina, e é
@@ -663,12 +850,30 @@ residente é a coluna do working set.
 
 ## Testes
 
-O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
-3060, um monitor a 1920×1080 em 100%):
+O que foi verificado numa máquina Windows (Windows 11 Pro 25H2, build
+26200.8875, RTX 3060, um monitor a 1920×1080 em 100%):
 
-- [x] `cargo fmt`, `cargo test` (89) e `cargo clippy` limpos
+> ⚠️ **A data destas verificações é anterior aos commits de 15/08/2026.** Eles
+> mexeram no backend (log em arquivo, `RIDEV_DEVNOTIFY`, o cão de guarda e o
+> `Drop` do named pipe, a ajuda do microfone), no frontend WinUI (posse do ícone,
+> `NIN_SELECT`/`NIN_KEYSELECT`, o painel fechando no segundo clique, o backend
+> encerrado de propósito) e nos três scripts do PowerShell — e **nada disso foi
+> compilado nem executado**. A lista abaixo continua descrevendo o que aconteceu
+> de verdade, num estado da árvore que não é o de agora; a lista seguinte diz o
+> que os consertos deixaram por conferir.
+
+- [x] `cargo fmt`, `cargo test` e `cargo clippy` limpos, com **89 testes** —
+      número da execução daquele dia. Na árvore de hoje são **95** no alvo
+      Windows e **78** no alvo Linux, contados no código: 67 valem para os dois
+      sistemas, 28 só existem no alvo Windows (`src/plataforma/windows/` inteiro,
+      mais três `#[cfg(target_os = "windows")]` avulsos em `config.rs` e
+      `programas.rs`) e 11 só no de Linux — 106 ao todo. Só os 78 foram
+      executados — nesta máquina Linux, `--features cpu`, 77 passando e 1
+      ignorado. Os 95 do Windows são contagem, não resultado
 - [x] `dotnet build` Debug e Release, **zero avisos** (o projeto trata aviso como
-      erro), e `dotnet test` com 22 testes da leitura do protocolo
+      erro), e `dotnet test` com 22 testes da leitura do protocolo. Os 22
+      continuam sendo 22 — os testes do frontend não foram tocados desde então —,
+      mas o código que eles exercitam mudou depois desta execução
 - [x] o atalho global **com um teclado de verdade**, com o programa completo no
       ar (backend + frontend): segurar `Pause` com outra janela em foco abre o
       microfone, soltar transcreve, e o texto chega à área de transferência. Não
@@ -695,12 +900,24 @@ O que foi verificado nesta máquina (Windows 11 Pro 25H2, build 26200.8875, RTX
 - [x] ACL do named pipe conferida na máquina (uma ACE, só o usuário)
 - [x] **notificação do sistema**: escondendo o modelo, o backend entra em erro e
       o aviso aparece na Central de Ações com o ícone e o texto do Ditador —
-      `AppNotificationManager` funcionando em aplicativo desempacotado
+      `AppNotificationManager` funcionando em aplicativo desempacotado. Depois
+      desta execução a notificação ganhou `MuteAudio` (o Ditador avisa, não
+      interrompe) e o `Notificador` passou a ser descartado, para o programa
+      devolver o registro que pediu ao sair; nem um nem outro foi visto rodando
 - [x] instalação, atualização por cima (com o programa rodando) e desinstalação:
       o `desinstalar.ps1` encerra os dois processos, tira a chave `Run`, remove o
       atalho, apaga a pasta e a identidade de notificações — e **deixa** a
-      configuração e os 574 MB do modelo onde estão, conferido depois de rodar
-- [x] MSIX gerado e assinado com certificado de teste
+      configuração e os 574 MB do modelo onde estão, conferido depois de rodar.
+      O que este teste **não** percorreu foi o ramo "não havia nada instalado", e
+      era exatamente ali que morava um erro: uma linha em modo comando com um `+`
+      no meio derrubava o script, com o `$ErrorActionPreference = 'Stop'` do topo,
+      **antes** de remover a identidade de notificações. Quem desinstalasse duas
+      vezes, ou numa máquina onde a pasta já tivesse sido apagada à mão, ficava
+      com o Ditador listado em Configurações → Notificações sem ter mais o
+      Ditador. Está corrigido, e o ramo continua sem ser percorrido numa máquina
+- [x] MSIX gerado e assinado com certificado de teste — antes de o script passar
+      a exportar o `.cer`. O pacote produzido é o mesmo; o que mudou é o roteiro
+      de instalação, que agora existe de verdade
 - [x] memória e CPU em repouso medidas
 - [x] **a colagem automática chegando a uma janela de verdade**: com um marcador
       na área de transferência e um formulário com campo de texto em primeiro
@@ -746,18 +963,55 @@ O que **não** foi verificado, e por quê:
   O impacto, se ele não atravessar, é pequeno: uma faixa de 360 por 78 pontos no
   rodapé, por alguns segundos, e um clique perdido.
 
+E os consertos de 15/08/2026, que só uma máquina Windows confirma. Todos vieram de
+leitura contra a documentação da Microsoft, e é assim que estão aqui:
+
+- **O ícone sobrevivendo a um `GC.Collect()`**: o `LoadImage` devolve um
+  `SafeHandle`, e o código pegava o handle cru sob um comentário dizendo que o
+  invólucro abria mão dele — a intenção estava certa e a linha que a executa
+  faltava. Sem `SetHandleAsInvalid`, o `SafeHandle` continuava dono, e quando o
+  coletor o alcançasse — horas depois, com o ícone na bandeja — o finalizador
+  destruiria o ícone que o Shell ainda estava desenhando. O teste é forçar a
+  coleta com o ícone no ar e olhar a barra depois; é o tipo de defeito que não
+  aparece num teste de minutos e vira "o ícone virou um quadrado branco" horas
+  depois.
+- **`Shell_NotifyIconGetRect` com a barra de tarefas fora da posição padrão**: a
+  documentação pede `hWnd` **ou** `guidItem`, e o código passava os dois. Se a API
+  recusar, o retângulo vem nulo e o painel cai no canto inferior direito — que é
+  indistinguível do certo numa barra embaixo, que é a máquina onde isto foi
+  testado. Só uma barra em cima, de lado ou num segundo monitor separa o certo do
+  disfarçado.
+- **A ativação do ícone pelo teclado**: `NIN_SELECT` e `NIN_KEYSELECT` não estavam
+  no `switch`, então Tab até a área de notificação e Enter não abria nada — numa
+  versão 4 do protocolo que foi escolhida justamente porque o clique pode vir do
+  teclado ou da acessibilidade. Estão lá agora; falta apertar Enter.
+- **A tecla presa ao arrancar um teclado USB**: o `RIDEV_DEVNOTIFY` e o
+  `GIDC_REMOVAL` estão no lugar, e ninguém arrancou um teclado com a tecla
+  apertada para ver o microfone fechar.
+- **O painel fechando no segundo clique**: o desempate é o relógio — um pedido de
+  abertura colado no desaparecimento é o outro lado do mesmo clique —, e um
+  desempate por tempo é exatamente o que se confere clicando, não lendo.
+- **O backend encerrado de propósito não voltar sozinho**: `_backendJaEsteveNoAr`
+  separa "ainda não subiu" de "foi mandado embora", e só o primeiro autoriza o
+  frontend a subi-lo. Fechar pelo menu e esperar é o teste.
+
 ## O que falta
 
 - [ ] **Usar o Ditador numa máquina Linux de verdade.** O que já **não** falta
-      mais: a CI compila e testa o lado Linux a cada push, e passou — `cargo fmt`,
-      os 84 testes, o clippy e o build de release, tudo no `ubuntu-latest`. Entre
-      esses testes está o `o_contrato_canonico_bate_com_os_tres_lados`, que só
-      existe no build Linux e é quem garante que o XML canônico, o que o zbus
-      publica e o cliente da extensão do GNOME continuam dizendo a mesma coisa.
-      Ou seja: a portabilidade não quebrou a compilação nem o contrato, e isso
-      deixou de ser opinião.
+      mais: a régua do Linux roda e passa — `cargo fmt`, os **78 testes** (77
+      passando e 1 ignorado, o da medição do backend, que carrega o modelo de
+      verdade), o clippy e o build de release. Isso foi rodado nesta máquina
+      Linux, na árvore de hoje; a CI faz o mesmo no `ubuntu-latest` a cada push,
+      e passou até o último commit empurrado. Entre esses testes está o
+      `o_contrato_canonico_bate_com_os_tres_lados`
+      (`src/plataforma/linux/dbus.rs`), que só existe no build Linux e é quem
+      garante que o XML canônico, o que o zbus publica e o cliente da extensão do
+      GNOME continuam dizendo a mesma coisa. Ou seja: a portabilidade não quebrou
+      a compilação nem o contrato, e isso deixou de ser opinião.
 
-      O que ainda falta é o que uma máquina de CI não tem: sessão gráfica,
+      A CI também passou a rodar o `npm run lint` e a conferência dos schemas da
+      extensão do GNOME — a metade que cabe num agente sem tela. O que ainda
+      falta é a outra metade, que uma máquina de CI não tem: sessão gráfica,
       barramento de sessão, GNOME Shell e plasmashell. Numa máquina Ubuntu real,
       rodar `./gnome-extension/scripts/testar.sh`, `./kde-plasma/testar.sh` e o
       programa em si — segurar o Pause, falar, soltar, e ver o ícone na barra
@@ -767,6 +1021,18 @@ O que **não** foi verificado, e por quê:
       foram tocados por esta portabilidade — verificado por
       `git diff --name-only`.
 
+- [ ] **Rodar a régua do Windows sobre os commits de 15/08/2026.** Nada deles foi
+      compilado: nem o `build.ps1 -Testar` do lado Rust, nem o
+      `dotnet build`, nem o `dotnet test`. É o primeiro item de qualquer sessão
+      numa máquina Windows, antes de olhar comportamento.
+- [ ] **Testar o named pipe sob identidade de pacote (MSIX).** Nunca foi feito.
+      Estava no plano original desta portabilidade justamente para ser feito
+      cedo — um pacote MSIX roda com identidade e com o sistema de arquivos e o
+      registro virtualizados, e nada disso foi exercitado contra
+      `\\.\pipe\Ditador-<SID>`, contra a DACL escrita à mão nem contra o
+      `FILE_FLAG_FIRST_PIPE_INSTANCE`, que é a instância única inteira. Enquanto
+      não for testado, o `.msix` continua sendo um protótipo que gera e assina,
+      não um caminho de instalação.
 - [ ] os testes que a máquina não permitiu: DPI misto, multimonitor, suspender e
       retomar, VM limpa, Narrator
 - [ ] certificado de assinatura de verdade — e então trocar o caminho padrão de

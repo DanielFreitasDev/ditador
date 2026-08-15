@@ -27,7 +27,7 @@ todos em Rust, exatamente onde estavam.
       GNOME Shell 50.x · GJS               Plasma 6.6 · Qt 6 · QML
 ```
 
-## Onde isto foi feito e testado
+## Onde isto foi feito
 
 | | |
 |---|---|
@@ -37,6 +37,12 @@ todos em Rust, exatamente onde estavam.
 | Qt | 6.10.2 |
 | KDE Frameworks | 6.24.0 |
 | Sessão | Wayland |
+
+Essas são as versões dos pacotes contra os quais isto compila e roda aqui, e não
+uma lista do que foi visto funcionando num painel — **a máquina de
+desenvolvimento entra numa sessão GNOME**, com o Plasma 6.6.6 instalado ao lado.
+O que foi de fato executado, e o que continua faltando alguém conferir numa
+sessão do Plasma, está em [O que foi verificado, e onde](#o-que-foi-verificado-e-onde).
 
 Nada aqui tem código de compatibilidade com Plasma 5, KF5 ou Qt 5, e nem com
 X11 como alvo. Confira a sua máquina antes de abrir um problema:
@@ -115,18 +121,34 @@ de o que é "gravando", que este lado nem tenta reproduzir.
 ## O contrato D-Bus
 
 `dbus/contrato.xml`, na raiz do repositório, é a cópia canônica. Não é ele que
-cria a interface — quem a publica é o `src/dbus.rs`, e o zbus a monta do código
-Rust —, mas é dele que os clientes saem.
+cria a interface — quem a publica é o `src/plataforma/linux/dbus.rs`, e o zbus a
+monta do código Rust —, mas é dele que os clientes saem.
 
 O proxy C++ é **gerado** dele em tempo de compilação (`qt_add_dbus_interface`),
 e nenhum nome de método é escrito à mão aqui. Um método renomeado no contrato
 vira erro de compilação em vez de um clique que não faz nada.
 
-Três lados falam esta língua, e um teste em `src/dbus.rs`
+Três lados falam esta língua, e um teste em `src/plataforma/linux/dbus.rs`
 (`o_contrato_canonico_bate_com_os_tres_lados`) confere que continuam iguais —
 comparando o XML canônico, a introspecção que o zbus produz do próprio código, e
 o XML embutido no JavaScript da extensão do GNOME. Mexer num sem mexer nos
 outros falha o `cargo test`.
+
+E isso deixou de depender de alguém lembrar de rodá-lo na própria máquina: há CI
+desde a portabilidade para o Windows (`.github/workflows/ci.yml`), e a régua do
+Rust — `cargo fmt --check`, `cargo test`, `cargo clippy`, compilação de release —
+roda a cada push nos dois sistemas. O teste do contrato está lá dentro, no
+trabalho do Linux (é onde o módulo existe: `plataforma/linux` é compilado por
+`#[cfg(target_os = "linux")]`). Ou seja: o XML de que este proxy C++ é gerado
+passou a ser verificado sem intervenção, e um contrato quebrado deixa de chegar
+até aqui.
+
+O portão do Plasma continua local. O `./kde-plasma/testar.sh` precisa de Qt, do
+ECM, do `kpackagetool6` e de um `plasmashell` para o `plasmawindowed`, e o
+`--contrato` e o `--backend` precisam de um Ditador vivo num barramento de
+sessão — nada disso existe num agente sem tela. É a mesma divisão que a extensão
+do GNOME tem: o que dá para rodar sem sessão gráfica está na CI, o resto é da
+máquina de quem mexe.
 
 A API não mudou por causa do Qt. Nenhum método, propriedade, sinal, caminho ou
 nome de barramento foi renomeado; nada foi removido. A extensão do GNOME
@@ -192,13 +214,17 @@ widget segura a presença → Ditador recolhe o ícone da bandeja
 ```
 
 Lido assim, parece haver uma fresta em que os dois estão na barra. Não há, e o
-que a fecha é a ordem em `main.rs`: **`dbus::start` vem antes de `tray::start`**.
-Quando a bandeja vai se registrar, o `dbus::start` já perguntou ao barramento
-quem detém o nome da integração — e a essa altura o widget já o detém. O
-`StatusNotifierItem` não chega a ser registrado; não é registrado e recolhido, é
-nunca registrado.
+que a fecha é a ordem em `main.rs`: **`plataforma::integracoes::start` vem antes
+de `tray::start`**. No Linux, `integracoes` é uma fachada de duas linhas sobre o
+`dbus.rs` (`pub use super::dbus::{integracoes_no_ar, start}`, em
+`src/plataforma/linux/integracoes.rs`) — o nome mudou com a portabilidade para o
+Windows, a armadilha é a mesma. Quando a bandeja vai se registrar, aquele
+`start` já perguntou ao barramento quem detém o nome da integração — e a essa
+altura o widget já o detém. O `StatusNotifierItem` não chega a ser registrado;
+não é registrado e recolhido, é nunca registrado.
 
-Medido num arranque real:
+Medido num arranque real — numa rodada anterior, e não refeito desde (veja
+[O que foi verificado, e onde](#o-que-foi-verificado-e-onde)):
 
 ```
 10:16:38.436  systemd inicia o Ditador
@@ -207,7 +233,7 @@ Medido num arranque real:
 ```
 
 O `plasmashell` carrega o pacote, cria o item QML e registra o nome dentro da
-janela de tempo em que o `dbus::start` ainda está montando as próprias
+janela de tempo em que aquele `start` ainda está montando as próprias
 assinaturas. Não há linha de "serviço do ícone da barra superior no ar" no
 journal desse arranque — é a prova de que o ícone não existiu nem por um quadro.
 
@@ -303,8 +329,8 @@ de os ícones do Ditador não estarem instalados.
 **Categoria `ApplicationStatus`.** O Ditador é um aplicativo do usuário rodando
 em segundo plano, não um serviço do sistema — `SystemServices` é o que o cofre e
 o daemon de backup usam. É também o que o StatusNotifierItem do Ditador sempre
-declarou (`Category::ApplicationStatus`, em `src/tray.rs`), e as duas superfícies
-concordarem é o ponto.
+declarou (`Category::ApplicationStatus`, em `src/plataforma/linux/tray.rs`), e as
+duas superfícies concordarem é o ponto.
 
 **Começar e parar, nunca alternar.** O contrato tem `Alternar` — é o que a tecla
 de atalho e o `ditador --alternar` usam —, e ele fica de fora deste lado por
@@ -354,6 +380,136 @@ pasta de widgets:
 
 ```bash
 systemctl --user restart plasma-plasmashell
+```
+
+### Do zero até funcionando, em 16 passos
+
+O que está acima supõe uma máquina que já tem o Ditador. Este é o roteiro de
+ponta a ponta, para uma instalação limpa de Kubuntu 26.04 — cada passo é um
+comando ou uma conferência, e nenhum deles é novo: são os mesmos que aparecem em
+*Instalar*, em *Diagnóstico* e no `instalar.sh` da raiz, postos em ordem. Do 12
+em diante é preciso uma sessão do Plasma de verdade; veja
+[O que foi verificado, e onde](#o-que-foi-verificado-e-onde) antes de tratar
+qualquer um deles como confirmado.
+
+**1. As dependências do Ditador.** É C++ (whisper.cpp), áudio e Vulkan:
+
+```bash
+sudo apt install -y build-essential cmake libasound2-dev libvulkan-dev glslc wl-clipboard
+```
+
+**2. As dependências da integração.** Qt, ECM e as ferramentas do KDE — o
+`instalar.sh` da pasta confere uma a uma e recusa a instalação sem elas, com o
+nome exato do pacote que falta:
+
+```bash
+sudo apt install cmake build-essential qmake6 qt6-base-dev qt6-declarative-dev \
+                 extra-cmake-modules kpackagetool6 qml6-module-org-kde-ki18n
+```
+
+**3. Compilar e instalar o Ditador.** Da raiz do repositório. Sem argumento é
+Vulkan; numa máquina sem GPU, `./instalar.sh cpu`:
+
+```bash
+./instalar.sh
+```
+
+**4. O grupo `input`.** O atalho global lê `/dev/input/event*`; sem isto ele não
+funciona e não reclama. O `instalar.sh` avisa se for o caso, e a mudança de grupo
+só vale numa sessão nova — **saia e entre de novo agora**, que é a única vez em
+que isto é preciso:
+
+```bash
+sudo usermod -aG input "$USER"
+```
+
+**5. Baixar o modelo.** São ~574 MB, uma vez só; depois disso nada aqui usa rede:
+
+```bash
+ditador --baixar-modelo
+```
+
+**6. Habilitar e iniciar o serviço.** É este processo que o widget vai encontrar
+pela frente, e é a presença dele no barramento que faz o `plasmashell` carregar o
+widget — por isso ele vem antes da integração, e não depois:
+
+```bash
+systemctl --user enable --now ditador
+```
+
+**7. Confirmar o D-Bus.** Se isto imprimir o XML da interface, o lado do Rust
+está inteiro e o resto do roteiro tem com quem falar:
+
+```bash
+gdbus introspect --session --dest io.github.danielfreitasdev.Ditador \
+  --object-path /io/github/danielfreitasdev/Ditador --xml
+```
+
+**8. Compilar e instalar a integração.** As duas metades de uma vez: ele compila
+o plugin C++, pede a senha **uma única vez** para pô-lo no diretório de módulos
+QML do Qt, e instala o widget na pasta do usuário pelo `kpackagetool6`:
+
+```bash
+./kde-plasma/instalar.sh
+```
+
+**9. O plugin QML está no lugar?** Tem de listar o `libditadorplasma.so` e o
+`qmldir`:
+
+```bash
+ls "$(qmake6 -query QT_INSTALL_QML)/io/github/danielfreitasdev/ditador"
+```
+
+**10. O plasmoid está instalado?** Com a versão que saiu do `Cargo.toml`, e não
+`0.0.0`:
+
+```bash
+kpackagetool6 --type Plasma/Applet --list | grep ditador
+kpackagetool6 --type Plasma/Applet --show io.github.danielfreitasdev.ditador
+```
+
+**11. Reiniciar o `plasmashell`.** Numa primeira instalação é o que faz ele achar
+o widget; o painel some por um segundo e volta, e o Ditador não é afetado, é
+outro processo:
+
+```bash
+systemctl --user restart plasma-plasmashell
+```
+
+**12. Habilitar o widget.** Botão direito na bandeja do sistema → **Configurar a
+Bandeja do Sistema** → **Entradas**, e ponha "Ditador" em **Mostrado**. Se ele
+não estiver na lista, o `plasmashell` ainda não releu a pasta — volte ao 11.
+
+**13. O ícone, e um só.** O widget aparece na bandeja e o ícone antigo do Ditador
+some sozinho: são o mesmo recado. As duas perguntas se conferem por comando —
+
+```bash
+ditador --diagnostico          # a linha da integração diz "widget do Plasma"
+qdbus6 | grep PlasmaIntegration
+```
+
+**14. O popup.** Um clique no ícone abre o retrato: o estado por extenso (com o
+atalho, em "Pronto · segure …"), o medidor de nível, o botão de "Ditar agora", e
+Modelo e Idioma, mais "Configurações do Ditador…". O botão direito traz as ações
+do menu, "Encerrar o Ditador" entre elas. Campo em branco aqui é contrato
+quebrado, e a `conferirOContrato` do `ditadorbackend.cpp` diz qual, uma vez por
+processo, no `journalctl`.
+
+**15. Gravar e transcrever.** "Ditar agora" no popup (ou o atalho global, ou
+`ditador --alternar`): o ícone vira o ponto de gravação, o cronômetro começa a
+correr e o medidor de nível se mexe enquanto se fala. Parando, o estado passa por
+`transcrevendo` e o texto sai na janela do Ditador — e na área de transferência,
+que é o padrão (`auto_copy`).
+
+**16. O fallback, e os registros.** Remova o widget do painel, ou rode
+`./kde-plasma/desinstalar.sh`: o ícone da bandeja do próprio Ditador tem de
+voltar sozinho, sem que ninguém tenha se despedido — é a presença do nome no
+barramento que manda, e ela cai com a conexão. E os dois registros, que numa
+instalação sadia não têm erro nenhum nosso:
+
+```bash
+journalctl --user -f -t plasmashell
+journalctl --user -u ditador -f
 ```
 
 ## Atualizar
@@ -522,6 +678,63 @@ tique de temporizador.
 Essas ferramentas (`qdbus6`, `gdbus`, `kpackagetool6`) são de diagnóstico. Nada
 em execução depende delas.
 
+## O que foi verificado, e onde
+
+Vale separar o que foi executado do que foi projetado para funcionar, porque a
+máquina em que isto nasceu **entra numa sessão GNOME**. O Plasma 6.6.6, o Qt
+6.10.2 e o KF6 6.24.0 estão instalados nela e é contra eles que tudo isto compila
+e roda — mas um `plasmashell` desenhando o painel de verdade não é uma coisa que
+tenha havido aqui.
+
+**Executado, e passou:**
+
+- `xmllint --noout dbus/contrato.xml` — o XML canônico é válido, com o DOCTYPE
+  numa linha só e sem `--` em comentário;
+- `qmllint` sobre os QML do widget: limpo, fora os quatro avisos de
+  `Plasmoid.contextualActions` que o Plasma 6.6 também produz;
+- `cmake` e a compilação do plugin, sem um aviso sequer, com `-Wall -Wextra
+  -Wpedantic` ligados no `CMakeLists.txt`;
+- `./kde-plasma/testar.sh --contrato`, contra o Ditador em execução: o binário
+  vivo tem todos os métodos, propriedades e sinais do contrato;
+- os testes do plugin (`--backend`) contra o barramento de sessão de verdade —
+  os quatro passam, incluindo o `test_03_gravar_e_parar`, que abre o microfone e
+  espera o `Nivel`, e o `test_04_a_presenca_esta_no_barramento`. Este último faz
+  o Ditador recolher o ícone da bandeja de fato, com as duas linhas
+  correspondentes no `journalctl --user -u ditador`;
+- `plasmawindowed` carregando o widget: o QML sobe, o plugin é importado e não há
+  erro nenhum na saída;
+- o pacote do widget validado pelo `kpackagetool6`, instalado numa raiz
+  temporária para não mexer na do usuário.
+
+Do lado do Rust, o que sustenta este proxy passou a ter CI: o
+`o_contrato_canonico_bate_com_os_tres_lados` roda a cada push, como está na
+seção do contrato.
+
+**Não verificado — e é honesto dizer quais:**
+
+- **painel de verdade, horizontal e vertical.** O `plasmawindowed` é uma janela,
+  não um painel: ele não exerce a representação compacta no formato que o painel
+  impõe, nem a mudança de orientação;
+- **HiDPI.** Nenhuma tela com fator de escala foi usada;
+- **Breeze claro e escuro na tela.** O `isMask: true` recolorir a silhueta é o
+  comportamento documentado do `Kirigami.Icon`, e não uma captura conferida aqui
+  nos dois temas;
+- **adicionar e remover o widget de um painel** pela interface, que é o caminho
+  do passo 12 do roteiro;
+- **`plasmashell` reiniciando** com o widget instalado — inclusive o que a seção
+  *Atualizar* diz sobre o QML velho ficar na memória, que veio de uma observação
+  registrada antes e não foi refeito nesta rodada;
+- **`PropertiesChanged` ao vivo.** O que os testes exercitam é o `GetAll` do
+  arranque; o caminho incremental, que é o que mantém o popup em dia depois
+  disso, não foi observado chegando;
+- **os números da seção *O ícone pisca no arranque?*** não foram medidos de novo:
+  aquele trecho de `journal` é de uma medição anterior, e ele depende justamente
+  de um `plasmashell` carregando o widget por `X-Plasma-DBusActivationService`;
+- **os passos 12 a 16** do roteiro de instalação, pelo mesmo motivo.
+
+Nada disso é sabidamente quebrado — é o que ainda não teve quem olhasse numa
+sessão do Plasma. Quem tiver uma, esse é o roteiro.
+
 ## Limitações conhecidas
 
 - **Sem OSD nativo.** Explicado acima. O aviso de gravação é a janela do
@@ -534,8 +747,8 @@ em execução depende delas.
   um catálogo depois não exige mexer no QML.
 - **O ícone único depende de uma corrida ganha** no arranque, descrita acima. Foi
   medida e é folgada (o widget assume ~40 ms depois do Ditador subir, com o
-  `dbus::start` ainda montando as assinaturas dele), mas numa máquina bem mais
-  lenta o pior caso é o ícone da bandeja aparecer e sumir.
+  `integracoes::start` ainda montando as assinaturas dele), mas numa máquina bem
+  mais lenta o pior caso é o ícone da bandeja aparecer e sumir.
 - **Alt+Tab, Overview, tela cheia, tela de bloqueio e multimonitor** não são
   assunto desta integração: não há efeito de KWin, nada desenha por cima da
   cena, e o widget vive dentro do painel. A tela de bloqueio não vê nada nosso —

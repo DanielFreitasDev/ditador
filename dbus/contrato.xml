@@ -8,20 +8,21 @@
 <!--
   O contrato D-Bus do Ditador, num arquivo só.
 
-  Não é ele que cria a interface: quem a publica é o `src/dbus.rs`, e o zbus a
-  monta a partir do código Rust. Este arquivo é a cópia canônica do que já
-  existe — a forma escrita do acordo, para os clientes poderem ser gerados a
-  partir dele em vez de reescreverem os nomes à mão.
+  Não é ele que cria a interface: quem a publica é o
+  `src/plataforma/linux/dbus.rs`, e o zbus a monta a partir do código Rust. Este
+  arquivo é a cópia canônica do que já existe — a forma escrita do acordo, para
+  os clientes poderem ser gerados a partir dele em vez de reescreverem os nomes
+  à mão.
 
   Hoje há três lados falando esta língua:
 
-    src/dbus.rs                          — quem publica (zbus, em Rust)
-    gnome-extension/src/backend.js       — quem consome no GNOME (GJS)
-    kde-plasma/plugin/                   — quem consome no Plasma (qt_add_dbus_interface)
+    src/plataforma/linux/dbus.rs     — quem publica (zbus, em Rust)
+    gnome-extension/src/backend.js   — quem consome no GNOME (GJS)
+    kde-plasma/plugin/               — quem consome no Plasma (qt_add_dbus_interface)
 
   O lado do Plasma é gerado *deste arquivo* em tempo de compilação; os outros
   dois têm a interface escrita neles. Para que as três não se separem em
-  silêncio, há um teste em `src/dbus.rs`
+  silêncio, há um teste em `src/plataforma/linux/dbus.rs`
   (`o_contrato_canonico_bate_com_os_tres_lados`) que lê este XML e o compara com
   o que o Rust publica e com o XML embutido na extensão do GNOME. Mexer aqui sem
   mexer lá — ou o contrário — falha o `cargo test`.

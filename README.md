@@ -238,9 +238,21 @@ nenhuma outra conta da máquina consegue mandar o Ditador de alguém começar a
 gravar. E a conversa é por evento: o backend avisa quando o estado muda, e não
 há nada perguntando de tempos em tempos.
 
+Lá o backend escreve log em arquivo, em
+`%LOCALAPPDATA%\ditador\logs\ditador.log`, com o anterior guardado ao lado como
+`.log.1`: o Windows não tem journal recolhendo a saída de erro de um programa
+que sobe pela chave `Run`, e sem isso um Ditador que começasse a falhar em
+segundo plano seria mudo. O `ditador --diagnostico` diz o caminho numa linha
+própria, *Log do backend* — que no Linux não aparece, porque ali quem guarda é o
+`journalctl --user -u ditador` e mandar alguém abrir um arquivo que não existe
+não ajudaria ninguém.
+
 O atalho é o mesmo `Pause/Break`, com a mesma semântica de segurar para falar, e
-o `config.json` é compatível nos dois sentidos: uma configuração escrita no
-Ubuntu vale no Windows e vice-versa.
+o formato do `config.json` é o mesmo nos dois sistemas — inclusive o atalho, que
+é gravado com a numeração de teclas do evdev e traduzido na borda do lado
+Windows. O que não atravessa são os dois campos que descrevem *aquela* máquina:
+`model_path` é caminho absoluto e `input_device` é nome de dispositivo. Levando o
+arquivo de um sistema para o outro, é neles que se mexe.
 
 Compilar o whisper.cpp no Windows tem cinco armadilhas, e cada uma falha com uma
 mensagem que aponta para o lugar errado — de `libclang` ausente a um estouro de
@@ -399,6 +411,20 @@ independentes, não entram no `.deb` e têm portão próprio:
 cd gnome-extension && npm run lint && ./scripts/testar.sh
 ./kde-plasma/testar.sh
 ```
+
+Parte disso também roda sozinha. O `.github/workflows/ci.yml` responde a cada
+push e a cada pull request, em qualquer ramo, com `fmt`, testes, clippy e
+compilação de release no **ubuntu-latest e no windows-latest** — com a feature
+`cpu`, que é a única que compila num agente sem GPU. Ao lado, um trabalho só
+para a compilação com **Vulkan**, que é o backend que o `instalar.sh` usa e que
+o `.deb` leva: compilar não precisa de placa nenhuma, e sem isso um erro desse
+caminho apareceria pela primeira vez na hora de lançar uma versão. Mais o lint e
+os schemas da extensão do GNOME, e a compilação com os testes do frontend WinUI.
+
+O que **não** cabe num agente sem tela continua sendo local, e é por isso que o
+portão acima existe: a medição de backends (`#[ignore]`), o ciclo de vida da
+extensão num GNOME Shell aninhado e o widget do Plasma precisam de GPU, de
+microfone, de sessão gráfica ou de barramento de sessão.
 
 Outros comandos úteis:
 

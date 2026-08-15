@@ -77,11 +77,24 @@ lado do JavaScript** e nada é consultado de tempos em tempos — o único
 temporizador da extensão é o do cronômetro, um tique por segundo, criado quando
 a gravação começa e removido quando ela termina.
 
+O aviso na tela tem uma sutileza que vale saber: ele sai esmaecendo em 100 ms, e
+só chama `hide()` depois disso. Nessa fresta `visible` ainda é verdadeiro, e um
+estado novo chegando ali — ditar de novo logo depois de a transcrição terminar,
+que é o uso normal de quem fala frase a frase — não pode ser tratado como "já
+está na tela, nada a animar", ou a saída em curso esconderia o aviso que acabou
+de nascer. Quem distingue "está na tela" de "está na tela mas já é passado" é a
+marca `_saindo` (`src/osd.js`): estando de saída, o `_mostrar()` reanima a
+opacidade até 255, o Clutter descarta a transição anterior sobre a mesma
+propriedade e a promessa do `esconder()` rejeita, caindo no `catch` que existe
+para isso.
+
 ### A interface D-Bus
 
 Nome e interface `io.github.danielfreitasdev.Ditador`, objeto em
 `/io/github/danielfreitasdev/Ditador`. O porquê do nome está no bloco que abre
-[`src/dbus.rs`](../src/dbus.rs).
+[`src/plataforma/linux/dbus.rs`](../src/plataforma/linux/dbus.rs) — o D-Bus é
+código de plataforma desde que o Ditador passou a ter duas, e mora com o resto
+do que só existe no Linux.
 
 | Método | O que faz |
 |---|---|
@@ -129,10 +142,16 @@ Enquanto está habilitada, a extensão detém um segundo nome:
 io.github.danielfreitasdev.Ditador.GnomeExtension
 ```
 
-O Rust observa esse nome (`vigiar_a_extensao`, em `src/dbus.rs`). Enquanto ele
-existir, o aplicativo **desregistra** o StatusNotifierItem e deixa de desenhar a
-própria sobreposição de "gravando"/"transcrevendo" — quem diz essas duas coisas
-passa a ser o Shell. Quando o nome some, os dois voltam.
+O Rust observa esse nome (`vigiar_as_integracoes`, em
+`src/plataforma/linux/dbus.rs`). Enquanto ele existir, o aplicativo
+**desregistra** o StatusNotifierItem e deixa de desenhar a própria sobreposição
+de "gravando"/"transcrevendo" — quem diz essas duas coisas passa a ser o Shell.
+Quando o nome some, os dois voltam.
+
+São duas vigílias e não uma — o `vigiar_as_integracoes` abre uma por integração,
+cada qual chamando a mesma `vigiar` —, porque o widget do Plasma segura um nome
+próprio e uma regra de correspondência do barramento filtra por *um* valor de
+argumento: não existe "me avise sobre este nome ou aquele".
 
 Isso não depende de a extensão se despedir no `disable()`. Quem detém um nome no
 D-Bus é a *conexão*, e o barramento a solta sozinho quando ela cai:
@@ -201,16 +220,47 @@ npm run lint
 gjs -m scripts/teste-do-backend.js   # conversa com o Ditador em execução
 ```
 
-`./scripts/testar.sh` sobe outro GNOME Shell — sem tela, com monitor virtual e
-barramento próprio — instala nele o ZIP e habilita/desabilita a extensão três
-vezes, contando os atores a cada volta. É o que prova que nada duplica e nada
-sobra. A sessão de quem está desenvolvendo não é tocada.
+`./scripts/testar.sh` faz três coisas, nesta ordem. Confere os schemas do
+GSettings (`glib-compile-schemas --strict --dry-run`) — o
+`gnome-extensions pack` também os compilaria, mas falharia no meio de outra
+tarefa e com outra mensagem, e um erro de schema deve dizer que é erro de
+schema. Empacota. E sobe outro GNOME Shell — sem tela, com monitor virtual e
+barramento próprio — para instalar nele o ZIP e habilitar/desabilitar a extensão
+três vezes, contando os atores a cada volta. É o que prova que nada duplica e
+nada sobra. A sessão de quem está desenvolvendo não é tocada.
 
 O barramento privado é obrigatório (dois Shell não dividem o nome
 `org.gnome.Shell`), e o efeito colateral é que lá dentro o Ditador não existe: a
 extensão sobe dizendo *Indisponível*. Quem cobre a outra metade é o
 `teste-do-backend.js`, que roda no `gjs` comum, no barramento de verdade, e faz
-um ditado de dois segundos de ponta a ponta.
+um ditado de dois segundos de ponta a ponta. Ele sai com código 1 se alguma
+verificação falhar, por `import System from 'system'` — a forma moderna do
+antigo `imports.system`, que saiu do `eslint.config.js` e por isso não volta sem
+falhar o lint.
+
+**A parte do Shell aninhado trava de vez em quando, e não é a extensão.** O
+`Scripting.runPerfScript`, que é quem chama o nosso roteiro, depende de o
+`gnome-shell-perf-helper` pegar o nome `org.gnome.Shell.PerfHelper` no
+barramento privado; quando ele não pega, nada acontece — nenhuma linha, nenhum
+erro — e o comando fica pendurado. É intermitente: na mesma máquina e no mesmo
+commit já se viu travar três vezes seguidas e passar na quarta. Daí o
+`testar.sh` ter teto de tempo (120 s, ajustável em `DITADOR_LIMITE_DO_TESTE`) e
+tentar três vezes, repetindo **só** quando o que houve foi travamento — teste
+que falhou, falhou. Esgotadas as tentativas, ele explica isso e manda conferir:
+
+```bash
+busctl --user list | grep PerfHelper       # com o Shell aninhado no ar
+ls -l /usr/libexec/gnome-shell-perf-helper
+```
+
+Quando isso acontece, o `npm run lint`, o `--dry-run` dos schemas e o
+`teste-do-backend.js` continuam valendo e cobrem o resto.
+
+Dessas quatro verificações, duas rodam na CI do repositório
+(`.github/workflows/ci.yml`, trabalho *Extensão do GNOME*): o lint e os schemas,
+que são as que não pedem sessão gráfica. O ciclo de vida e o teste de backend
+continuam sendo da máquina de quem mexe — um precisa de um Shell de verdade, o
+outro do Ditador em execução.
 
 ## Diagnóstico
 
