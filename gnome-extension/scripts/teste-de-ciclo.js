@@ -29,21 +29,34 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 const UUID = 'ditador@danielfreitasdev.github.io';
 const NOME_DA_EXTENSAO = 'io.github.danielfreitasdev.Ditador.GnomeExtension';
 
-/* O Shell chama `init()` assim que carrega o script de automação, e só chama
- * `run()` depois que o auxiliar de desempenho aparecer no barramento — coisa
- * que não acontece num barramento privado como o deste teste. Como aqui não se
- * mede desempenho nenhum, o trabalho todo vai no `init()`, e somos nós que
- * encerramos o Shell no fim. */
+/* O trabalho vai no `run()`, que é o que o Shell espera de um script de
+ * automação.
+ *
+ * Isto já esteve no `init()`, com o raciocínio de que o `run()` só é chamado
+ * depois de o auxiliar de desempenho aparecer no barramento — o que não
+ * aconteceria num barramento privado como o deste teste. A premissa é falsa: o
+ * `runPerfScript` do Shell *cria* esse auxiliar (`_spawnPerfHelper`) no mesmo
+ * barramento antes de esperar por ele, e ele aparece. O resultado era o pior dos
+ * dois mundos — o `init()` começava o teste, o auxiliar subia, o Shell chamava
+ * um `run()` que não existia, e o `_runPerfScript` respondia com
+ * `Meta.exit(ERROR)`, matando o Shell no meio da primeira volta. O teste nunca
+ * chegou a rodar.
+ *
+ * Duas coisas mudam por estar aqui. O Shell **espera** este `run()` terminar
+ * antes de encerrar — daí não haver mais `global.context.terminate()` no fim; e
+ * uma exceção daqui vira código de saída diferente de zero, que é o que faz o
+ * `testar.sh` falhar quando uma verificação falha. Antes ele terminava o Shell
+ * sem status nenhum e anunciava sucesso mesmo com o teste no vermelho.
+ *
+ * O `METRICS` vazio continua: o Shell o lê depois do `run()`, e não medimos
+ * desempenho nenhum aqui. */
 export const METRICS = {};
 
-export function init() {
-    executar().catch(e => {
-        printerr(`o teste explodiu: ${e}`);
-        falhas++;
-    }).finally(() => {
-        printerr(falhas === 0 ? 'TESTE OK' : `TESTE COM ${falhas} FALHA(S)`);
-        global.context.terminate();
-    });
+export async function run() {
+    await executar();
+    printerr(falhas === 0 ? 'TESTE OK' : `TESTE COM ${falhas} FALHA(S)`);
+    if (falhas > 0)
+        throw new Error(`${falhas} verificação(ões) do ciclo de vida falharam`);
 }
 
 let falhas = 0;
