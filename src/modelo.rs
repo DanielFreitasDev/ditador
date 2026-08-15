@@ -36,6 +36,14 @@ pub struct Progresso {
     pub total: u64,
     /// `None` enquanto anda; depois, o resultado.
     pub fim: Option<Result<PathBuf, String>>,
+    /// Alguém pediu para parar. A ronda de `executar` lê isto, mata o curl e
+    /// apaga o arquivo pela metade.
+    ///
+    /// São centenas de megabytes numa conexão doméstica: sem uma saída, quem
+    /// clicou por engano — ou escolheu o modelo errado — ficava preso ao
+    /// download por cinco a dez minutos, porque começar outro é recusado
+    /// enquanto este ainda anda.
+    pub cancelado: bool,
 }
 
 impl Progresso {
@@ -201,6 +209,17 @@ fn executar(
                 break;
             }
             None => {
+                if andamento
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .cancelado
+                {
+                    let _ = filho.kill();
+                    let _ = filho.wait();
+                    let _ = std::fs::remove_file(&parcial);
+                    log::info!("download do modelo cancelado");
+                    anyhow::bail!("Download cancelado.");
+                }
                 if let Ok(meta) = std::fs::metadata(&parcial) {
                     let mut p = andamento.lock().unwrap_or_else(|e| e.into_inner());
                     if p.baixados != meta.len() {

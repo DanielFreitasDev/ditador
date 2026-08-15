@@ -457,6 +457,18 @@ impl Controller {
 
             UiAction::DownloadModel => self.download_model(),
 
+            UiAction::CancelDownload => {
+                let state = lock(&self.shared);
+                if let Some(andamento) = &state.download {
+                    andamento
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .cancelado = true;
+                }
+                drop(state);
+                self.sinal.mudou();
+            }
+
             UiAction::Quit => {
                 let mut state = lock(&self.shared);
                 state.quitting = true;

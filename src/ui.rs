@@ -780,11 +780,16 @@ impl App {
             if !baixando && widgets::botao(ui, "Configurações").clicked() {
                 self.act(UiAction::OpenSettings);
             }
-            // Durante o download só o "Fechar" faz sentido, mas ele precisa
-            // existir: antes a tela saía sem fileira nenhuma e ficava por cima
-            // de tudo, sempre-no-topo e sem decoração, pelos cinco a dez
-            // minutos do download — bem embaixo de uma frase prometendo "Pode
-            // fechar esta janela".
+            // Durante o download a fileira é "Cancelar" mais "Fechar", e as
+            // duas precisam existir: antes a tela saía sem fileira nenhuma e
+            // ficava por cima de tudo, sempre-no-topo e sem decoração, pelos
+            // cinco a dez minutos do download — bem embaixo de uma frase
+            // prometendo "Pode fechar esta janela". Fechar esconde a janela e
+            // deixa o download andando, que é o que a frase promete; cancelar é
+            // a outra saída, a de quem clicou por engano.
+            if baixando && widgets::botao(ui, "Cancelar o download").clicked() {
+                self.act(UiAction::CancelDownload);
+            }
             if widgets::botao(ui, "Fechar").clicked() {
                 self.act(UiAction::Hide);
             }

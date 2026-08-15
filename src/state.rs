@@ -56,6 +56,8 @@ pub enum UiAction {
     ReloadModel,
     /// Baixa o modelo sugerido (só faz sentido quando ele está faltando).
     DownloadModel,
+    /// Para o download em curso e apaga o arquivo pela metade.
+    CancelDownload,
     Quit,
 }
 
