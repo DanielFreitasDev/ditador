@@ -51,11 +51,20 @@ const INTERFACE = `
     <property name="Modelo" type="s" access="read"/>
     <property name="Idioma" type="s" access="read"/>
     <property name="Atalho" type="s" access="read"/>
+    <signal name="Nivel">
+      <arg name="valor" type="d"/>
+    </signal>
   </interface>
 </node>`;
 
 export const Backend = GObject.registerClass({
-    Signals: {'mudou': {}},
+    Signals: {
+        'mudou': {},
+        /* O pico do microfone agora, de 0 a 1. Chega umas quinze vezes por
+         * segundo, e só enquanto se grava. É sinal e não propriedade porque não
+         * é estado: nada disso precisa ser lembrado depois que passou. */
+        'nivel': {param_types: [GObject.TYPE_DOUBLE]},
+    },
 }, class Backend extends GObject.Object {
     constructor() {
         super();
@@ -83,6 +92,11 @@ export const Backend = GObject.registerClass({
             // as propriedades quando o dono do nome volta, então não há nada a
             // refazer aqui além de avisar quem desenha.
             'notify::g-name-owner', () => this.emit('mudou'),
+            // Os sinais da interface chegam todos por aqui, com o nome dentro.
+            'g-signal', (proxy_, remetente_, nome, parametros) => {
+                if (nome === 'Nivel')
+                    this.emit('nivel', parametros.deepUnpack()[0]);
+            },
             this);
 
         this._proxy.init_async(GLib.PRIORITY_DEFAULT, this._cancelavel).catch(e => {

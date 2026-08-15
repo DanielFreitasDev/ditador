@@ -32,6 +32,7 @@
 //! O mesmo texto serve de nome da interface: com um objeto só e uma interface
 //! só, um segundo nome seria só mais uma coisa para digitar errado.
 
+use crate::audio::Levels;
 use crate::config::Config;
 use crate::controller::IpcCommand;
 use crate::state::{EstadoPublico, SharedState, Sinal, lock};
@@ -203,11 +204,30 @@ impl Servico {
     fn atalho(&self) -> &str {
         &self.retrato.atalho
     }
+
+    /// O pico do microfone agora, de 0 a 1.
+    ///
+    /// É um sinal, e não uma propriedade, porque não é um estado: é um fio de
+    /// água passando. Uma propriedade guardaria o último valor para sempre —
+    /// inclusive depois que o microfone fechou — e faria o barramento anunciar
+    /// `PropertiesChanged` quinze vezes por segundo, que é o oposto do que
+    /// `PropertiesChanged` existe para dizer.
+    ///
+    /// Sai cru, sem correção nenhuma. A raiz quadrada que dá presença visual aos
+    /// sons baixos é escolha de quem desenha, e cada superfície faz a sua — a
+    /// janela do egui já fazia antes de existir barramento aqui.
+    ///
+    /// Só é emitido enquanto se grava, e nunca fora disso.
+    #[zbus(signal)]
+    async fn nivel(
+        emissor: &zbus::object_server::SignalEmitter<'_>,
+        valor: f64,
+    ) -> zbus::Result<()>;
 }
 
 /// Publica a interface e a mantém em dia. Como a bandeja, não devolve erro:
 /// ficar sem D-Bus custa a integração com o GNOME, não o ditado.
-pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>) {
+pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>, niveis: Levels) {
     let mudancas = sinal.observar();
     let retrato = Retrato::tirar(&shared, None);
 
@@ -234,6 +254,7 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>) {
     };
 
     vigiar_a_extensao(&conexao, shared.clone(), sinal.clone());
+    emitir_niveis(&conexao, shared.clone(), sinal, niveis);
 
     std::thread::Builder::new()
         .name("dbus".into())
@@ -316,6 +337,67 @@ fn publicar(
         mudou,
         std::borrow::Cow::Borrowed(&[]),
     ))
+}
+
+/// De quanto em quanto tempo o nível do microfone vai para o barramento.
+///
+/// Quinze por segundo: o bastante para as barras parecerem acompanhar a voz, e
+/// pouco o suficiente para não ser um assunto. A janela do egui desenha a
+/// sessenta porque ela já está desenhando de qualquer jeito; aqui cada quadro é
+/// uma mensagem atravessando o barramento e entrando no laço do GNOME Shell,
+/// que é o processo que desenha a área de trabalho inteira.
+const INTERVALO_DO_NIVEL: std::time::Duration = std::time::Duration::from_millis(66);
+
+/// Publica o nível do microfone enquanto ele estiver aberto.
+///
+/// Fora da gravação esta thread fica parada num `recv`, sem custo nenhum — não
+/// há laço acordando para perguntar se já é hora. Quem a acorda é o mesmo sinal
+/// de "o estado mudou" que move a bandeja e a interface.
+fn emitir_niveis(
+    conexao: &zbus::blocking::Connection,
+    shared: SharedState,
+    sinal: &Sinal,
+    niveis: Levels,
+) {
+    let mudancas = sinal.observar();
+    let emissor = match zbus::object_server::SignalEmitter::new(conexao.inner(), CAMINHO) {
+        Ok(emissor) => emissor,
+        Err(e) => {
+            log::warn!("sem o nível do microfone no barramento ({e})");
+            return;
+        }
+    };
+
+    std::thread::Builder::new()
+        .name("dbus-nivel".into())
+        .spawn(move || {
+            loop {
+                if !lock(&shared).gravando() {
+                    // Dorme até alguém mexer no estado. Se o programa está
+                    // encerrando, o canal fecha e a thread sai com ele.
+                    if mudancas.recv().is_err() {
+                        return;
+                    }
+                    continue;
+                }
+
+                let valor = niveis
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .back()
+                    .copied()
+                    .unwrap_or(0.0);
+
+                if zbus::block_on(Servico::nivel(&emissor, f64::from(valor.clamp(0.0, 1.0))))
+                    .is_err()
+                {
+                    // A conexão caiu; não há a quem contar mais nada.
+                    return;
+                }
+                std::thread::sleep(INTERVALO_DO_NIVEL);
+            }
+        })
+        .expect("spawn dbus-nivel thread");
 }
 
 /// Fica de olho no nome da extensão do GNOME e anota no estado compartilhado se

@@ -100,6 +100,17 @@ Nome e interface `io.github.danielfreitasdev.Ditador`, objeto em
 | `Idioma` | `s` | idioma configurado, por extenso |
 | `Atalho` | `s` | o atalho global, como se escreve numa frase |
 
+| Sinal | |
+|---|---|
+| `Nivel(d)` | o pico do microfone, de 0 a 1, umas 15 vezes por segundo — **só enquanto se grava** |
+
+`Nivel` é sinal e não propriedade porque não é estado: é um fio de água passando,
+e nada disso precisa ser lembrado depois. Uma propriedade guardaria o último
+valor para sempre, inclusive com o microfone já fechado, e faria o barramento
+anunciar `PropertiesChanged` quinze vezes por segundo — o oposto do que ele
+existe para dizer. O valor sai cru; a raiz quadrada que dá presença aos sons
+baixos é escolha de quem desenha, e cada superfície faz a sua.
+
 Não existe um estado `indisponivel` no barramento: esse é a *ausência* do nome
 nele, e quem o percebe é a extensão (`INDISPONIVEL`, em `src/backend.js`). Pelo
 mesmo motivo não há um `iniciando` separado de `carregando` — neste programa o
@@ -161,7 +172,7 @@ src/backend.js    D-Bus: proxy, o nome que segura, o sinal "mudou"
 src/estado.js     o vocabulário dos estados (texto e símbolo), num lugar só
 src/indicator.js  SystemIndicator: o ícone da barra e o dono do controle
 src/quickSettings.js  o QuickMenuToggle e o menu dele
-src/osd.js        o aviso na tela e o cronômetro
+src/osd.js        o aviso na tela, o cronômetro e o medidor de voz
 schemas/          as duas preferências da integração
 scripts/          testes; não entram no pacote
 ```

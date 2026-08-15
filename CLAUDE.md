@@ -189,6 +189,11 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
   O `Instant` é monotônico e vira hora de parede por subtração, então recalculá-lo daria um número um pouco
   diferente a cada vez — e o cronômetro do OSD, que é desenhado a partir dele, voltaria para zero no meio
   da frase.
+- **O sinal `Nivel` só é emitido durante a gravação**, a 15 Hz (`INTERVALO_DO_NIVEL`, em `src/dbus.rs`).
+  Fora dela a thread fica parada num `recv` do `Sinal` — não há laço acordando para perguntar se já é hora.
+  É a única coisa periódica do projeto inteiro, e é por isso que ela é fechada dos dois lados: nada de
+  propriedade (que guardaria o último valor para sempre e faria `PropertiesChanged` quinze vezes por
+  segundo) e nada de emitir com o microfone fechado.
 - **`dbus::start` vem antes de `tray::start` em `main.rs`.** É o D-Bus que descobre se a extensão já está no
   ar; descobrindo primeiro, a bandeja nasce sabendo e o ícone não pisca na barra no login.
 

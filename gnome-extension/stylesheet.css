@@ -12,3 +12,10 @@
     min-width: 3.2em;
     text-align: right;
 }
+
+/* O medidor de voz. Só tamanho: a cor sai do `get_foreground_color` do tema,
+   como a da barra de nível do OSD de volume. */
+.ditador-medidor {
+    width: 112px;
+    height: 26px;
+}

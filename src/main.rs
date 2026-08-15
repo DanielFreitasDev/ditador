@@ -297,7 +297,7 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
     // O D-Bus vem antes da bandeja porque é ele quem descobre se a extensão do
     // GNOME já está no ar. Descobrindo primeiro, a bandeja nasce sabendo, e o
     // ícone não chega a piscar na barra no login de quem usa as duas coisas.
-    dbus::start(shared.clone(), &sinal, ipc_tx.clone());
+    dbus::start(shared.clone(), &sinal, ipc_tx.clone(), levels.clone());
     tray::start(shared.clone(), &sinal, ipc_tx.clone());
 
     if let Some(comando) = ao_iniciar {

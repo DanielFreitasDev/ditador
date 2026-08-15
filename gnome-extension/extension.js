@@ -26,7 +26,10 @@ export default class DitadorExtension extends Extension {
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicador);
 
         this._aviso = new Aviso();
-        this._backend.connectObject('mudou', () => this._mostrarOAviso(), this._aviso);
+        this._backend.connectObject(
+            'mudou', () => this._mostrarOAviso(),
+            'nivel', (backend_, valor) => this._aviso.nivel(valor),
+            this._aviso);
         this._ajustes.connectObject(
             'changed::mostrar-osd', () => this._mostrarOAviso(), this._aviso);
         this._mostrarOAviso();

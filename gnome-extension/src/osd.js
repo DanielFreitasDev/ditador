@@ -30,6 +30,70 @@ const ESMAECIMENTO = 100;
  * volume porque aqui há uma frase para ler, e não um número. */
 const ESPERA_DO_ERRO = 4000;
 
+/* Quantas barras o medidor de voz tem, e o vão entre elas em pixels. */
+const BARRAS = 22;
+const VAO = 2;
+
+/* A altura mínima de uma barra, para o medidor continuar sendo uma linha de
+ * pontinhos no silêncio em vez de sumir da tela. */
+const REPOUSO = 2;
+
+/**
+ * O medidor de voz: as barras que sobem e descem com o que o microfone ouve.
+ *
+ * Desenhado com o Cairo, num actor só, e não com uma fileira de widgets — vinte
+ * e duas alturas mudando quinze vezes por segundo seriam quinze recálculos de
+ * layout por segundo dentro do processo que desenha a área de trabalho. Uma
+ * repintura de um retângulo de cem pixels não é nada perto disso.
+ *
+ * A cor vem do tema (`get_foreground_color`), como a do `BarLevel` do Shell:
+ * assim o medidor acompanha claro, escuro e alto contraste sem uma linha a
+ * respeito de nenhum deles.
+ */
+const Medidor = GObject.registerClass(
+class Medidor extends St.DrawingArea {
+    constructor(params) {
+        super(params);
+        this._historico = new Array(BARRAS).fill(0);
+    }
+
+    /** Empurra uma leitura nova na ponta direita e joga a mais velha fora.
+     *
+     * @param {number} valor - o pico do microfone, de 0 a 1
+     */
+    empurrar(valor) {
+        this._historico.shift();
+        this._historico.push(valor);
+        this.queue_repaint();
+    }
+
+    limpar() {
+        this._historico.fill(0);
+        this.queue_repaint();
+    }
+
+    vfunc_repaint() {
+        const cr = this.get_context();
+        const [largura, altura] = this.get_surface_size();
+        const meio = altura / 2;
+        const larguraBarra = Math.max(1, (largura - VAO * (BARRAS - 1)) / BARRAS);
+
+        cr.setSourceColor(this.get_theme_node().get_foreground_color());
+
+        for (let i = 0; i < BARRAS; i++) {
+            // Raiz quadrada: dá presença aos sons baixos, que é o que faz o
+            // medidor parecer acompanhar a fala em vez de só os picos. É a
+            // mesma correção que a janela do próprio Ditador aplica.
+            const valor = Math.sqrt(Math.min(1, Math.max(0, this._historico[i])));
+            const h = Math.max(REPOUSO, valor * altura);
+            cr.rectangle(i * (larguraBarra + VAO), meio - h / 2, larguraBarra, h);
+        }
+        cr.fill();
+
+        cr.$dispose();
+    }
+});
+
 export const Aviso = GObject.registerClass(
 class Aviso extends Clutter.Actor {
     constructor() {
@@ -56,6 +120,13 @@ class Aviso extends Clutter.Actor {
         this._rotulo = new St.Label({y_align: Clutter.ActorAlign.CENTER});
         this._caixa.add_child(this._rotulo);
 
+        // Onde o OSD do Shell põe a barra de nível do volume, este põe a voz.
+        this._medidor = new Medidor({
+            style_class: 'ditador-medidor',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._caixa.add_child(this._medidor);
+
         this._cronometro = new St.Label({
             style_class: 'ditador-cronometro',
             y_align: Clutter.ActorAlign.CENTER,
@@ -78,6 +149,10 @@ class Aviso extends Clutter.Actor {
     sincronizar(backend) {
         switch (backend.estado) {
         case 'gravando':
+            // Gravação nova é medidor limpo: as barras da frase anterior não
+            // têm nada a dizer sobre esta.
+            if (this._gravandoDesde !== backend.gravandoDesde)
+                this._medidor.limpar();
             this._gravandoDesde = backend.gravandoDesde;
             this._mostrar('gravando', verbete('gravando').rotulo);
             this._contarOTempo();
@@ -115,9 +190,11 @@ class Aviso extends Clutter.Actor {
 
         this._simbolo.gicon = icone(estado);
         this._rotulo.text = texto;
-        // Sem gravação não há o que cronometrar, e um `00:00` parado ao lado de
-        // "Transcrevendo…" só faria pensar que alguma coisa travou.
+        // Sem gravação não há o que cronometrar nem o que medir, e um `00:00`
+        // parado ao lado de "Transcrevendo…", ou barras congeladas, só fariam
+        // pensar que alguma coisa travou.
         this._cronometro.visible = estado === 'gravando';
+        this._medidor.visible = estado === 'gravando';
 
         if (this.visible)
             return;
@@ -156,6 +233,18 @@ class Aviso extends Clutter.Actor {
 
         this.hide();
         this._devolverORedirecionamento();
+    }
+
+    /**
+     * Uma leitura nova do microfone. Ignorada quando o aviso não está na tela —
+     * o Ditador só emite durante a gravação, mas quem desenha não precisa
+     * confiar nisso para estar certo.
+     *
+     * @param {number} valor - o pico do microfone, de 0 a 1
+     */
+    nivel(valor) {
+        if (this._medidor.visible)
+            this._medidor.empurrar(valor);
     }
 
     // ------------------------------------------------------------ cronômetro
