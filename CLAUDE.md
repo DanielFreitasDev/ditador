@@ -463,8 +463,10 @@ termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 - **O `./gnome-extension/scripts/testar.sh` trava de vez em quando, e não é a extensão.** O Shell aninhado
   depende do `gnome-shell-perf-helper` pegar `org.gnome.Shell.PerfHelper` no barramento privado para que o
   `runPerfScript` chame o roteiro; quando ele não aparece, nada acontece — nenhuma linha, nenhum erro, e o
-  comando fica pendurado. É intermitente e é ambiente: o script já tem teto de tempo
-  (`DITADOR_LIMITE_DO_TESTE`, 120 s) e tenta até três vezes, e só o travamento merece nova tentativa —
+  comando fica pendurado. É intermitente e é ambiente. Uma das causas está tratada: o ajudante **não**
+  morre com a sessão aninhada derrubada por tempo, e um que sobra atrapalha a volta seguinte — o script
+  mata o que sobrou antes de cada tentativa e ao sair. Não resolve sozinho, então continuam o teto de
+  tempo (`DITADOR_LIMITE_DO_TESTE`, 120 s) e as três tentativas, e só o travamento merece nova tentativa —
   teste que falhou, falhou. E não vá procurar o defeito no JS da extensão por causa dele: o
   `npm run lint`, o `gjs -m scripts/teste-do-backend.js` e o `--dry-run` dos schemas continuam valendo e
   cobrem o resto.

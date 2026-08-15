@@ -42,12 +42,24 @@ gnome-extensions pack --force --extra-source=src --out-dir="$AQUI" .
 # Melhor um portão que falha dizendo o que houve do que um que nunca volta.
 LIMITE=${DITADOR_LIMITE_DO_TESTE:-120}
 
-# E o travamento é intermitente: numa mesma máquina, a mesma volta ora sobe em
-# quarenta segundos e passa, ora fica esperando um serviço da sessão aninhada que
-# nunca vem (o `org.freedesktop.secrets` chega a estourar os dois minutos de
-# `service_start_timeout` dele). Uma segunda tentativa custa pouco e é a
-# diferença entre um portão útil e um portão que ninguém roda.
+# Uma das causas do travamento é um processo que sobra.
+#
+# Quem chama o nosso roteiro é o `Scripting.runPerfScript` do Shell, e ele só o
+# chama depois que o `gnome-shell-perf-helper` aparece no barramento. O Shell
+# aninhado sobe esse ajudante toda vez — e o ajudante **não** morre junto com a
+# sessão aninhada quando ela é derrubada por tempo. Ficando um vivo de uma volta
+# anterior, a seguinte tem uma razão a mais para não começar.
+#
+# Matar o que sobrou antes de cada tentativa é barato e seguro: este ajudante só
+# existe para rodar roteiros de automação do Shell, nunca numa sessão de uso.
+# Não é a cura completa — mesmo limpo, o arranque da sessão aninhada ainda falha
+# de vez em quando —, e é por isso que as três tentativas continuam aqui.
+limpar_o_ajudante() {
+    pkill -u "$(id -u)" -f 'libexec/gnome-shell-perf-helper' 2>/dev/null || true
+}
+
 rodar() {
+    limpar_o_ajudante
     timeout --signal=TERM --kill-after=10 "$LIMITE" \
         dbus-run-session -- gnome-shell-test-tool \
         --headless \
@@ -55,6 +67,10 @@ rodar() {
         --extension "$PACOTE" \
         "$AQUI/scripts/teste-de-ciclo.js"
 }
+
+# E a limpeza também na saída, para não deixar a próxima volta — ou a próxima
+# pessoa — com o mesmo problema herdado.
+trap limpar_o_ajudante EXIT
 
 echo "==> Subindo um GNOME Shell só para o teste (limite de ${LIMITE}s)"
 set +e

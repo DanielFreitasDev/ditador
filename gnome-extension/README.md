@@ -243,10 +243,16 @@ falhar o lint.
 `gnome-shell-perf-helper` pegar o nome `org.gnome.Shell.PerfHelper` no
 barramento privado; quando ele não pega, nada acontece — nenhuma linha, nenhum
 erro — e o comando fica pendurado. É intermitente: na mesma máquina e no mesmo
-commit já se viu travar três vezes seguidas e passar na quarta. Daí o
-`testar.sh` ter teto de tempo (120 s, ajustável em `DITADOR_LIMITE_DO_TESTE`) e
-tentar três vezes, repetindo **só** quando o que houve foi travamento — teste
-que falhou, falhou. Esgotadas as tentativas, ele explica isso e manda conferir:
+commit já se viu travar três vezes seguidas e passar na quarta.
+
+Uma das causas foi encontrada e o `testar.sh` já a trata: **o ajudante sobrevive
+à sessão aninhada**. Derrubada a sessão por tempo, ele continua vivo, e a volta
+seguinte herda o problema. O script mata o que sobrou antes de cada tentativa e
+ao sair. Isso melhorou a taxa e não a levou a 100% — o arranque da sessão
+aninhada ainda falha às vezes com tudo limpo —, então o resto da defesa continua:
+teto de tempo (120 s, ajustável em `DITADOR_LIMITE_DO_TESTE`) e três tentativas,
+repetindo **só** quando o que houve foi travamento — teste que falhou, falhou.
+Esgotadas as tentativas, ele explica isso e manda conferir:
 
 ```bash
 busctl --user list | grep PerfHelper       # com o Shell aninhado no ar
