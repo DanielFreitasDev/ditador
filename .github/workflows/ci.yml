@@ -8,16 +8,19 @@
 #
 # O que **não** roda aqui: nada que precise de GPU, de microfone, de sessão
 # gráfica ou de barramento de sessão. A medição de backends
-# (`stt::medicao::mede_o_backend`) continua sendo `#[ignore]` e local; os testes
-# da extensão do GNOME e do widget do Plasma precisam de um Shell e de um
-# plasmashell de verdade, e continuam sendo `./gnome-extension/scripts/testar.sh`
-# e `./kde-plasma/testar.sh` na máquina de quem mexe.
+# (`stt::medicao::mede_o_backend`) continua sendo `#[ignore]` e local; o ciclo de
+# vida da extensão do GNOME precisa de um Shell aninhado e o widget do Plasma
+# precisa de um plasmashell, e os dois continuam sendo
+# `./gnome-extension/scripts/testar.sh` e `./kde-plasma/testar.sh` na máquina de
+# quem mexe. O que **dá** para rodar sem tela — o lint da extensão, os schemas do
+# GSettings, a compilação com o backend Vulkan — roda.
 
 name: CI
 
 on:
+  # Qualquer ramo, e não só o `main`: um portão que só roda depois do merge
+  # descobre a quebra tarde demais para servir de portão.
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -69,11 +72,12 @@ jobs:
         if: matrix.sistema == 'Linux'
         run: |
           sudo apt-get update
-          # `libasound2-dev` para o cpal, `libdbus-1-dev` para o zbus e o ksni,
-          # e o resto para a janela do egui. Nada de Vulkan: o CI compila com a
-          # feature `cpu`, que é a única que não precisa de GPU nem de SDK.
+          # `libasound2-dev` para o cpal e o resto para a janela do egui. Não há
+          # `libdbus-1-dev` na lista: o zbus 5 é Rust puro e fala o protocolo
+          # direto no socket, e o ksni vai por ele — o pacote esteve aqui por um
+          # tempo, justificado por uma dependência que não existe.
           sudo apt-get install -y --no-install-recommends \
-            cmake libasound2-dev libdbus-1-dev pkg-config \
+            cmake libasound2-dev pkg-config \
             libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev
 
       - name: Formatação
@@ -92,6 +96,65 @@ jobs:
 
       - name: Compilação de release
         run: cargo build --release --no-default-features --features cpu
+
+  # O backend padrão — o que o `instalar.sh` compila e o que vai no `.deb` — é o
+  # Vulkan, e ele não é exercido pelo trabalho acima, que roda tudo com a feature
+  # `cpu`. Compilar não precisa de GPU nenhuma: precisa dos cabeçalhos do Vulkan
+  # e do `glslc`, que o whisper.cpp usa para os shaders. Sem isto, um erro que só
+  # existisse no caminho do Vulkan apareceria pela primeira vez na máquina de
+  # quem fosse lançar a versão.
+  vulkan:
+    name: Rust · Linux · Vulkan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ferramentas do Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: Linux-vulkan
+
+      - name: Dependências de sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libasound2-dev pkg-config libvulkan-dev glslang-tools \
+            libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev
+
+      # Só a compilação: os testes já rodaram no outro trabalho, e nenhum deles
+      # depende do backend escolhido — o `stt.rs` só lê a feature para dizer o
+      # nome dele.
+      - name: Compilação de release
+        run: cargo build --release
+
+  # O portão da extensão do GNOME tem duas metades. Esta é a que roda em qualquer
+  # agente: lint, schemas e empacotamento. A outra — o ciclo de vida num GNOME
+  # Shell aninhado — precisa de um Shell de verdade e continua sendo
+  # `./gnome-extension/scripts/testar.sh` na máquina de quem mexe.
+  extensao:
+    name: Extensão do GNOME
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Lint
+        working-directory: gnome-extension
+        run: |
+          npm install
+          npm run lint
+
+      - name: Schemas do GSettings
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglib2.0-bin
+          glib-compile-schemas --strict --dry-run gnome-extension/schemas
 
   frontend:
     name: Frontend WinUI
