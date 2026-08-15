@@ -3,7 +3,8 @@
 #     .\windows-integration\scripts\instalar.ps1
 #     .\windows-integration\scripts\instalar.ps1 -Backend cpu
 #     .\windows-integration\scripts\instalar.ps1 -SemCompilar     # usa o que já foi compilado
-#     .\windows-integration\scripts\instalar.ps1 -SemIniciarComOWindows
+#     .\windows-integration\scripts\instalar.ps1 -IniciarComOWindows   # sobe no login
+#     .\windows-integration\scripts\instalar.ps1 -SemIniciarComOWindows # e desfaz isso
 #
 # ## Sem administrador, e é de propósito
 #
@@ -32,7 +33,15 @@ param(
     # Usa os binários já compilados em vez de compilar de novo.
     [switch] $SemCompilar,
 
-    # Não registra o Ditador para subir com a sessão.
+    # Registra o Ditador para subir com a sessão. Não é o padrão de propósito:
+    # decidir sozinho que um programa recém-instalado passa a abrir em todo login
+    # é justamente o que faz as pessoas irem caçar coisas no Gerenciador de
+    # Tarefas. Quem quer, pede — aqui ou pelo interruptor das configurações do
+    # próprio Ditador, que escreve na mesma chave.
+    [switch] $IniciarComOWindows,
+
+    # Remove o registro de inicialização, se houver um de uma instalação
+    # anterior. Continua existindo porque o padrão já foi o contrário.
     [switch] $SemIniciarComOWindows,
 
     # Não tenta instalar o .NET nem o Windows App Runtime que faltarem.
@@ -199,17 +208,30 @@ Feito 'atalho no menu Iniciar'
 # programa. É por isso que a chave `Run` continua sendo o caminho certo para um
 # aplicativo desempacotado — o `StartupTask` do MSIX faz o mesmo, e só existe
 # para quem está empacotado.
+# O padrão é **não** registrar: iniciar com a sessão é escolha de quem usa, não
+# efeito colateral de instalar.
 $chave = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-if ($SemIniciarComOWindows) {
-    Remove-ItemProperty -Path $chave -Name 'Ditador' -ErrorAction SilentlyContinue
-    Feito 'não vai iniciar com a sessão (a seu pedido)'
-} else {
+if ($IniciarComOWindows) {
     # Só o frontend entra aqui. Ele sobe o backend quando percebe que ele não
     # está no ar, e assim há **um** item de inicialização em vez de dois
     # disputando quem chega primeiro.
     Set-ItemProperty -Path $chave -Name 'Ditador' `
         -Value ('"{0}"' -f (Join-Path $Destino 'Ditador.Windows.exe'))
-    Feito 'vai iniciar com a sessão'
+    Feito 'vai iniciar com a sessão (a seu pedido)'
+} elseif ($SemIniciarComOWindows) {
+    Remove-ItemProperty -Path $chave -Name 'Ditador' -ErrorAction SilentlyContinue
+    Feito 'registro de inicialização removido'
+} else {
+    $registrado = $null -ne (Get-ItemProperty -Path $chave -Name 'Ditador' -ErrorAction SilentlyContinue)
+    if ($registrado) {
+        # Uma instalação anterior já havia registrado. Atualizar o caminho é o
+        # certo; desfazer a escolha de quem instalou antes, não.
+        Set-ItemProperty -Path $chave -Name 'Ditador' `
+            -Value ('"{0}"' -f (Join-Path $Destino 'Ditador.Windows.exe'))
+        Feito 'continua iniciando com a sessão (como já estava)'
+    } else {
+        Feito 'não inicia com a sessão — use -IniciarComOWindows, ou o interruptor nas configurações'
+    }
 }
 
 # -------------------------------------------------------------------- subir

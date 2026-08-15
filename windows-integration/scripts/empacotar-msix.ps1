@@ -132,12 +132,20 @@ if ($LASTEXITCODE) { throw "makeappx falhou (código $LASTEXITCODE)" }
 Feito $pacote
 
 # -------------------------------------------------------------------- assinar
+#
+# Os caminhos ficam fora do `if` de propósito: o `Set-StrictMode` do topo derruba
+# o script ao ler uma variável que nunca foi definida, e o roteiro impresso no
+# fim cita o `.cer` mesmo quando ninguém pediu para assinar.
+$pfx = Join-Path $Saida 'ditador-teste.pfx'
+$cer = Join-Path $Saida 'ditador-teste.cer'
+
 if ($Assinar) {
     Etapa 'Assinando com certificado de teste'
-    $pfx = Join-Path $Saida 'ditador-teste.pfx'
     $senha = 'ditador'
 
-    if (-not (Test-Path $pfx)) {
+    # Faltando qualquer um dos dois, os dois são refeitos: são certificado de
+    # desenvolvimento, e um par pela metade é pior do que um par novo.
+    if (-not (Test-Path $pfx) -or -not (Test-Path $cer)) {
         # O nome precisa bater **exatamente** com o Publisher do manifesto, ou o
         # signtool recusa com uma mensagem que fala de certificado e não de nome.
         $certificado = New-SelfSignedCertificate `
@@ -150,6 +158,13 @@ if ($Assinar) {
         $protegida = ConvertTo-SecureString -String $senha -Force -AsPlainText
         Export-PfxCertificate -Cert $certificado -FilePath $pfx -Password $protegida | Out-Null
         Feito "certificado de teste em $pfx (senha: $senha)"
+
+        # E a parte pública ao lado dele. É este arquivo que a máquina de testes
+        # importa para confiar no pacote — o `.pfx` tem a chave privada e não
+        # deve sair daqui. O roteiro impresso no fim mandava importar um `.cer`
+        # que nenhum passo produzia.
+        Export-Certificate -Cert $certificado -FilePath $cer -Type CERT | Out-Null
+        Feito "certificado público em $cer"
     }
 
     $signtool = Find-FerramentaDoSdk -Nome 'signtool.exe'
@@ -165,7 +180,7 @@ Write-Host @"
   Para instalar numa máquina de testes, o certificado precisa ser confiável.
   Isso pede uma janela **como administrador**, uma vez:
 
-      Import-Certificate -FilePath <certificado.cer> ``
+      Import-Certificate -FilePath '$cer' ``
           -CertStoreLocation Cert:\LocalMachine\TrustedPeople
 
   E então:  Add-AppxPackage '$pacote'

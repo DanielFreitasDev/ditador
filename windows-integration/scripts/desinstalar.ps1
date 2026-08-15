@@ -68,7 +68,7 @@ if (Test-Path $Destino) {
     Remove-Item $Destino -Recurse -Force
     Feito $Destino
 } else {
-    Feito 'nada instalado em ' + $Destino
+    Feito "nada instalado em $Destino"
 }
 
 # ------------------------------------------------------------------- os dados
