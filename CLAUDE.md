@@ -72,9 +72,11 @@ Depois: `cargo audit` (se instalado), commit `Versão X.Y.Z` (ou `Versão X.Y.Z:
 **`git tag vX.Y.Z`**, `./empacotar.sh && ./empacotar.sh cpu`, e GitHub Release com os `.deb` como assets
 (`gh release create`).
 
-⚠️ O `git tag` é o passo que já foi pulado em quatro das cinco versões: o repositório chegou à 0.4.2 com
-`v0.2.0` como única tag, e o único release publicado ainda mostrava a interface de vidro que o README já
-dizia ter removido. Confira com `git tag -l` **antes** de fechar.
+⚠️ O `git tag` é o passo mais fácil de esquecer, e já foi pulado em quatro versões seguidas: o repositório
+chegou à 0.4.2 tendo `v0.2.0` como única tag, e o único release publicado ainda mostrava a interface de
+vidro que o README já dizia ter removido. Confira com `git tag -l` **antes** de fechar. As versões puladas
+não foram tagueadas depois de propósito — uma tag inventada meses depois aponta para um commit que nunca
+foi empacotado nem publicado, e mentir sobre isso é pior do que a lacuna.
 
 ## Commits
 
