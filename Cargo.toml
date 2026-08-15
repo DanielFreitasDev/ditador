@@ -81,10 +81,11 @@ whisper-rs-sys = { version = "0.15", default-features = false }
 # `cargo build` no Windows nem chegava a compilar o nosso código — parava antes,
 # tentando construir três dependências que não têm o que fazer lá.
 #
-# Quem as usa está todo em `src/plataforma/linux/`, com uma exceção de propósito:
-# `src/keys.rs` pede o `evdev` emprestado só para a tabela de nomes de tecla, que
-# é grande demais para copiar e é o formato gravado em toda configuração que já
-# existe. O Windows tem a tabela dele no lado de lá.
+# Quem as usa está todo em `src/plataforma/linux/`. A tabela de nomes de tecla do
+# evdev — que é grande demais para copiar e é o formato gravado em toda
+# configuração que já existe — fica em `src/plataforma/linux/teclas.rs`, e o
+# `src/keys.rs` só pergunta à plataforma. O Windows tem a tabela dele no lado de
+# lá, traduzida para os mesmos números.
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"
 # `blocking` é só a fachada síncrona; o ksni ainda exige um executor por
@@ -114,9 +115,10 @@ zbus = "5"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     # O `Win32_Graphics_Gdi` entra por causa do `HBRUSH` do `WNDCLASSEXW`, e não
-    # porque desenhemos alguma coisa: a janela do Raw Input é *message-only* e
-    # nunca é pintada. É o tipo de dependência que parece errada na lista e é
-    # certa no código.
+    # porque desenhemos alguma coisa: a janela do Raw Input tem zero por zero
+    # pixels e nunca é mostrada — ela precisa ser de nível superior, e não
+    # *message-only*, pelo motivo que o `plataforma/windows/teclado.rs` explica.
+    # É o tipo de dependência que parece errada na lista e é certa no código.
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Security_Authorization",

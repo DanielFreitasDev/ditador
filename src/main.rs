@@ -245,7 +245,13 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         let sinal_do_ipc = sinal.clone();
         let niveis_do_ipc = levels.clone();
         ipc::serve(listener, move |linha| match linha {
-            "assinar" => {
+            // Só no Windows. Assinar liga `Integracoes::frontend`, que recolhe o
+            // ícone da bandeja e passa o aviso de gravação para quem assinou —
+            // e no Linux quem faz esse papel é o D-Bus, com um nome no barramento
+            // que o `dbus.rs` vigia. Aberto aqui também, bastaria mandar a
+            // palavra pelo socket à mão para o Ditador ficar sem ícone e sem
+            // aviso numa área de trabalho que não tem nada para substituí-los.
+            "assinar" if cfg!(target_os = "windows") => {
                 ipc::Resposta::Fluxo(assinatura::abrir(&shared, &sinal_do_ipc, &niveis_do_ipc))
             }
             outro => ipc::Resposta::Linha(match outro {

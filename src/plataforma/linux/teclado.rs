@@ -13,7 +13,7 @@
 use crate::hotkey::{Acao, HotkeyEvent, HotkeyListener, Origem};
 use evdev::{Device, EventSummary, KeyCode};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -184,7 +184,3 @@ fn e_teclado(device: &Device) -> bool {
 fn trava<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
-
-/// Só para o `rondar` não precisar de um `use` que o resto do arquivo não usa.
-#[allow(dead_code)]
-fn _tipo_de_caminho(_: &Path) {}

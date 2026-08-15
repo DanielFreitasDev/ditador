@@ -94,6 +94,11 @@ pub const SOBRE_A_COLAGEM: &str = "O Ctrl+V vai pelo ydotool, que precisa do ser
 
 /// Aviso de que a cópia está indo por um caminho pior, se estiver.
 pub fn aviso_da_copia() -> Option<&'static str> {
-    (!crate::programas::existe("wl-copy"))
-        .then_some("wl-copy não encontrado; usando a área de transferência do X11.")
+    // A receita de instalação vai junto de propósito: quem lê esta linha no
+    // `--diagnostico` está justamente atrás do que fazer a respeito, e a frase
+    // sem ela já foi só uma constatação por um tempo.
+    (!crate::programas::existe("wl-copy")).then_some(
+        "wl-copy não encontrado; usando a área de transferência do X11. \
+         Para instalar: sudo apt install wl-clipboard",
+    )
 }
