@@ -296,6 +296,189 @@ fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Medição de um backend de verdade, com o modelo de verdade.
+///
+/// Fica em `#[ignore]` porque carrega centenas de megabytes, exige a GPU e leva
+/// dezenas de segundos: nada disso pertence ao `cargo test` que se roda a cada
+/// alteração. Mas pertence ao repositório — a escolha de qual backend é o padrão
+/// de cada sistema é uma decisão que se toma com número, e um número que ninguém
+/// consegue reproduzir é um número em que ninguém precisa acreditar.
+///
+/// ```text
+/// DITADOR_AUDIO_DE_TESTE=frase.wav \
+///   cargo test --release --no-default-features --features cuda \
+///   -- --ignored --nocapture mede_o_backend
+/// ```
+///
+/// O WAV precisa ser PCM de 16 bits, mono. Para gerar um reproduzível no
+/// Windows, sem microfone e sem depender de alguém falar a mesma frase duas
+/// vezes, dá para usar a síntese de voz do próprio sistema
+/// (`System.Speech.Synthesis`, voz `Microsoft Maria Desktop`, 16 kHz).
+#[cfg(test)]
+mod medicao {
+    use super::*;
+    use crate::config::Config;
+
+    /// Lê um WAV PCM de 16 bits mono para as amostras que o Whisper espera.
+    ///
+    /// Vinte linhas em vez de uma dependência: é código só de teste, o formato é
+    /// fixo e conhecido, e acrescentar uma crate ao `Cargo.toml` de um projeto
+    /// que orgulhosamente tem poucas — para ler um cabeçalho de 44 bytes — seria
+    /// desproporcional.
+    fn ler_wav(caminho: &std::path::Path) -> (Vec<f32>, u32) {
+        let bytes = std::fs::read(caminho).expect("lendo o WAV de teste");
+        assert_eq!(&bytes[0..4], b"RIFF", "não é um arquivo RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE", "não é um WAV");
+
+        // Percorre os blocos até achar o `fmt ` e o `data`. O cabeçalho de 44
+        // bytes é o caso comum, mas a síntese de voz do Windows intercala um
+        // bloco `fact` — e presumir 44 lê o áudio deslocado, o que aparece como
+        // uma transcrição de puro ruído e manda a gente culpar o modelo.
+        let (mut canais, mut taxa, mut dados) = (0u16, 0u32, None);
+        let mut i = 12;
+        while i + 8 <= bytes.len() {
+            let id = &bytes[i..i + 4];
+            let tamanho = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+            let corpo = i + 8;
+            match id {
+                b"fmt " => {
+                    canais = u16::from_le_bytes(bytes[corpo + 2..corpo + 4].try_into().unwrap());
+                    taxa = u32::from_le_bytes(bytes[corpo + 4..corpo + 8].try_into().unwrap());
+                    let bits =
+                        u16::from_le_bytes(bytes[corpo + 14..corpo + 16].try_into().unwrap());
+                    assert_eq!(bits, 16, "o WAV precisa ser PCM de 16 bits");
+                }
+                b"data" => dados = Some(&bytes[corpo..(corpo + tamanho).min(bytes.len())]),
+                _ => {}
+            }
+            // Os blocos são alinhados em dois bytes.
+            i = corpo + tamanho + (tamanho & 1);
+        }
+
+        assert_eq!(canais, 1, "o WAV precisa ser mono");
+        let dados = dados.expect("o WAV não tem bloco de dados");
+        let amostras = dados
+            .chunks_exact(2)
+            .map(|par| i16::from_le_bytes([par[0], par[1]]) as f32 / i16::MAX as f32)
+            .collect();
+        (amostras, taxa)
+    }
+
+    #[test]
+    #[ignore = "carrega o modelo de verdade; rode com --ignored e DITADOR_AUDIO_DE_TESTE"]
+    fn mede_o_backend() {
+        let Some(caminho) = std::env::var_os("DITADOR_AUDIO_DE_TESTE") else {
+            panic!("defina DITADOR_AUDIO_DE_TESTE com o caminho de um WAV mono de 16 bits");
+        };
+        let (amostras, taxa) = ler_wav(std::path::Path::new(&caminho));
+        let duracao = amostras.len() as f64 / taxa as f64;
+
+        let config = Config::load();
+        assert!(
+            config.model_path.exists(),
+            "o modelo não está em {}; rode: ditador --baixar-modelo",
+            config.model_path.display()
+        );
+
+        let (eventos_tx, eventos) = crossbeam_channel::unbounded();
+        let comandos = spawn(eventos_tx);
+
+        let relogio = std::time::Instant::now();
+        comandos
+            .send(SttCmd::Load {
+                model_path: config.model_path.clone(),
+                use_gpu: config.use_gpu,
+            })
+            .expect("mandando carregar");
+
+        let mut carga = None;
+        loop {
+            match eventos.recv().expect("esperando o modelo carregar") {
+                SttEvent::Loading => {}
+                SttEvent::Ready => {
+                    carga = Some(relogio.elapsed());
+                    break;
+                }
+                SttEvent::LoadFailed(e) => panic!("o modelo não carregou: {e}"),
+                outro => panic!("evento inesperado durante a carga: {outro:?}"),
+            }
+        }
+        let carga = carga.expect("carga medida");
+
+        // Três passadas com o mesmo áudio, e as três são relatadas.
+        //
+        // Não é zelo estatístico — é que a primeira passada mede outra coisa. O
+        // backend Vulkan compila os *pipelines* de shader na primeira vez que
+        // cada um é usado, e esse custo cai inteiro dentro da primeira
+        // transcrição: medindo só ela, o Vulkan aparece **mais lento que a CPU**
+        // numa RTX 3060, que é uma conclusão errada tirada de um número certo.
+        //
+        // As duas informações interessam, e são diferentes. A primeira passada é
+        // o que a pessoa sente ao ditar logo depois de ligar o computador; as
+        // seguintes são o regime, que é o resto do dia. Um backend que ganha no
+        // regime e perde feio na largada pode ser a escolha errada para um
+        // programa cujo uso típico é uma frase de dez segundos, de vez em
+        // quando.
+        let opcoes = TranscribeOptions {
+            language: Some(config.language.clone()),
+            translate: config.translate,
+            threads: config.threads,
+            initial_prompt: config.initial_prompt.clone(),
+            normalize: config.normalize_audio,
+        };
+
+        println!("\n╭─ backend {BACKEND}");
+        println!("│  GPU pedida ......... {}", config.use_gpu);
+        println!("│  áudio .............. {duracao:.1} s");
+        println!("│  carga do modelo .... {:.2} s", carga.as_secs_f64());
+
+        let mut texto_final = String::new();
+        for passada in 1..=3u64 {
+            comandos
+                .send(SttCmd::Transcribe {
+                    ditado: passada,
+                    samples: amostras.clone(),
+                    sample_rate: taxa,
+                    options: opcoes.clone(),
+                })
+                .expect("mandando transcrever");
+
+            match eventos.recv().expect("esperando a transcrição") {
+                SttEvent::Done {
+                    text, elapsed_ms, ..
+                } => {
+                    let segundos = elapsed_ms as f64 / 1000.0;
+                    println!(
+                        "│  passada {passada} ........... {segundos:6.2} s   ({:.1}× o tempo real){}",
+                        duracao / segundos,
+                        // Só a GPU tem o que compilar na largada, e só na
+                        // primeiríssima execução da máquina: depois disso o
+                        // driver guarda os pipelines em cache e nem a passada 1
+                        // paga o preço. Rotular a passada 1 da CPU assim era
+                        // dizer algo falso num relatório que existe para ser
+                        // colado noutro lugar.
+                        if passada == 1 && GPU_CAPABLE {
+                            "  ← a 1ª vez na máquina compila os shaders"
+                        } else {
+                            ""
+                        }
+                    );
+                    texto_final = text;
+                }
+                SttEvent::Failed { message, .. } => panic!("a transcrição falhou: {message}"),
+                outro => panic!("evento inesperado: {outro:?}"),
+            }
+        }
+        println!("╰─ \"{}\"\n", texto_final.trim());
+
+        assert!(
+            !texto_final.trim().is_empty(),
+            "o backend {BACKEND} devolveu texto vazio — a medida de tempo não vale \
+             nada se ele não transcreveu nada"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
