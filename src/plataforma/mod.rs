@@ -76,6 +76,6 @@ pub use windows::*;
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 compile_error!(
     "o Ditador tem suporte a Linux e Windows. Para acrescentar um sistema, \
-     crie src/plataforma/<nome>/ com os sete módulos descritos no mod.rs \
+     crie src/plataforma/<nome>/ com os nove módulos descritos no mod.rs \
      e registre-o aqui."
 );

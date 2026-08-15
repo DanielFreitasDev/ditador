@@ -610,12 +610,12 @@ mod tests {
         assert_eq!(
             membros(canonico),
             publicado,
-            "dbus/contrato.xml e src/dbus.rs discordam"
+            "dbus/contrato.xml e src/plataforma/linux/dbus.rs discordam"
         );
         assert_eq!(
             membros(embutido),
             publicado,
-            "gnome-extension/src/backend.js e src/dbus.rs discordam"
+            "gnome-extension/src/backend.js e src/plataforma/linux/dbus.rs discordam"
         );
     }
 
