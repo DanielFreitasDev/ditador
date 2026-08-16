@@ -1,4 +1,4 @@
-# A régua do CLAUDE.md, rodada nos dois sistemas a cada push.
+# A régua do CLAUDE.md, rodada nos quatro lados do projeto a cada push.
 #
 # Este projeto nunca teve CI, e viveu bem sem ela enquanto era de um sistema só:
 # quem mexia compilava na mesma máquina em que rodava. A portabilidade para
@@ -6,29 +6,57 @@
 # lado Linux ficou meses sem ver um compilador. É esse buraco que este arquivo
 # fecha, e é por isso que a matriz tem dois sistemas em vez de um.
 #
-# O que **não** roda aqui: nada que precise de GPU, de microfone, de sessão
-# gráfica ou de barramento de sessão. A medição de backends
-# (`stt::medicao::mede_o_backend`) continua sendo `#[ignore]` e local; o ciclo de
-# vida da extensão do GNOME precisa de um Shell aninhado e o widget do Plasma
-# precisa de um plasmashell, e os dois continuam sendo
-# `./gnome-extension/scripts/testar.sh` e `./kde-plasma/testar.sh` na máquina de
-# quem mexe. O que **dá** para rodar sem tela — o lint da extensão, os schemas do
-# GSettings, a compilação com o backend Vulkan — roda.
+# ## Os quatro estágios, nesta ordem
+#
+#   1. Rust      o programa: formatação, testes, clippy, release, auditoria
+#   2. Windows   o frontend WinUI que faz a interface lá
+#   3. GNOME     a extensão do Shell: lint, schemas e o ZIP
+#   4. KDE       o plugin C++ e o QML do widget
+#
+# Eles são **encadeados de propósito** (`needs:`), e não paralelos. Rodando em
+# paralelo, um erro de digitação no Rust reprova os quatro ao mesmo tempo e a
+# página de resultados vira uma parede vermelha em que não se sabe por onde
+# começar. Encadeados, o primeiro que quebra é o que interessa, e os de baixo
+# nem gastam agente. O preço é relógio de parede, e ele é pago pelo cache: o
+# whisper.cpp, que é o que demora, só recompila quando muda de verdade.
+#
+# Este workflow também é chamado pelo `release.yml` (`workflow_call`): é ele o
+# portão que impede uma versão quebrada de ser publicada. Não há duas listas de
+# conferências — há esta.
+#
+# ## O que **não** roda aqui
+#
+# Nada que precise de GPU, de microfone, de sessão gráfica ou de barramento de
+# sessão. A medição de backends (`stt::medicao::mede_o_backend`) continua sendo
+# `#[ignore]` e local; o ciclo de vida da extensão do GNOME precisa de um Shell
+# aninhado (`./gnome-extension/scripts/testar.sh`) e o widget do Plasma precisa
+# de um plasmashell e de um Ditador vivo no barramento (`./kde-plasma/testar.sh`
+# sem `--ci`). Verde aqui não substitui nenhum dos dois.
 
 name: CI
 
 on:
-  # Qualquer ramo, e não só o `main`: um portão que só roda depois do merge
-  # descobre a quebra tarde demais para servir de portão.
+  # `branches` e não o `push` seco: sem isto, a tag que o `release.yml` cria
+  # dispararia esta régua uma segunda vez sobre o mesmo código.
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 # Um push novo cancela o anterior do mesmo ramo: o que interessa é o estado da
 # ponta, e compilar o whisper.cpp duas vezes em paralelo só atrasa as duas.
+#
+# `github.workflow` é o nome do workflow **que chamou**: num push comum é "CI", e
+# na chamada de dentro do `release.yml` é "Publicar versão". São grupos
+# diferentes, e é isso que impede um push qualquer de cancelar a validação de
+# uma versão que está sendo publicada.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -38,8 +66,9 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  nucleo:
-    name: Rust · ${{ matrix.sistema }}
+  # ─────────────────────────────────────────────────── 1. o programa, em Rust
+  rust:
+    name: 1 · Rust · ${{ matrix.sistema }}
     runs-on: ${{ matrix.runner }}
     strategy:
       # Sem `fail-fast`: quando quebra, o que interessa é saber se quebrou nos
@@ -76,8 +105,9 @@ jobs:
           # `libdbus-1-dev` na lista: o zbus 5 é Rust puro e fala o protocolo
           # direto no socket, e o ksni vai por ele — o pacote esteve aqui por um
           # tempo, justificado por uma dependência que não existe.
+          # O `libxml2-utils` traz o xmllint, que confere o contrato D-Bus.
           sudo apt-get install -y --no-install-recommends \
-            cmake libasound2-dev pkg-config \
+            cmake libasound2-dev pkg-config libxml2-utils \
             libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev
 
       - name: Formatação
@@ -97,6 +127,23 @@ jobs:
       - name: Compilação de release
         run: cargo build --release --no-default-features --features cpu
 
+      # As duas conferências abaixo são de arquivo, não de código, e por isso
+      # rodam num sistema só — repeti-las no outro não descobriria nada novo.
+
+      # O `qdbusxml2cpp` recusa um DOCTYPE quebrado em duas linhas e o XML
+      # proíbe `--` dentro de comentário. Os dois derrubam a compilação do
+      # plugin do Plasma, que é o estágio 4 — e é bem melhor saber disso aqui.
+      - name: O contrato D-Bus é XML válido
+        if: matrix.sistema == 'Linux'
+        run: xmllint --noout dbus/contrato.xml
+
+      # O Cargo.toml é a fonte da verdade da versão, e há outros arquivos que
+      # guardam uma cópia dela. Esta linha é o que impede que eles se separem
+      # em silêncio até o dia do lançamento.
+      - name: A versão bate em todos os arquivos
+        if: matrix.sistema == 'Linux'
+        run: .github/scripts/versao.sh conferir
+
   # O backend padrão — o que o `instalar.sh` compila e o que vai no `.deb` — é o
   # Vulkan, e ele não é exercido pelo trabalho acima, que roda tudo com a feature
   # `cpu`. Compilar não precisa de GPU nenhuma: precisa dos cabeçalhos do Vulkan
@@ -104,7 +151,8 @@ jobs:
   # existisse no caminho do Vulkan apareceria pela primeira vez na máquina de
   # quem fosse lançar a versão.
   vulkan:
-    name: Rust · Linux · Vulkan
+    name: 1 · Rust · Linux · Vulkan
+    needs: rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -135,34 +183,32 @@ jobs:
       - name: Compilação de release
         run: cargo build --release
 
-  # O portão da extensão do GNOME tem duas metades. Esta é a que roda em qualquer
-  # agente: lint, schemas e empacotamento. A outra — o ciclo de vida num GNOME
-  # Shell aninhado — precisa de um Shell de verdade e continua sendo
-  # `./gnome-extension/scripts/testar.sh` na máquina de quem mexe.
-  extensao:
-    name: Extensão do GNOME
+  # O `cargo audit` do CLAUDE.md, na régua em vez de na memória de quem lança.
+  #
+  # O que interessa é a linha `vulnerabilities: 0` continuar zero. Avisos de
+  # crate sem manutenção **não** reprovam — o `cargo audit` sai com zero neles
+  # de propósito, e é o comportamento certo: hoje há um (`ttf-parser`,
+  # RUSTSEC-2026-0192) cinco níveis abaixo do eframe, que não é acionável aqui e
+  # some sozinho quando o eframe atualizar. Silenciá-lo com `--ignore` é que
+  # esconderia o dia em que ele virar problema de verdade.
+  auditoria:
+    name: 1 · Rust · Auditoria
+    needs: rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Lint
-        working-directory: gnome-extension
-        run: |
-          npm install
-          npm run lint
-
-      - name: Schemas do GSettings
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libglib2.0-bin
-          glib-compile-schemas --strict --dry-run gnome-extension/schemas
-
-  frontend:
-    name: Frontend WinUI
+  # ────────────────────────────────────────────────────────────── 2. o Windows
+  #
+  # O lado Rust do Windows já passou no estágio 1, na outra perna da matriz. O
+  # que falta é o frontend WinUI, que é quem faz a interface lá: ícone na área
+  # de notificação, aviso na tela, painel de status e notificações.
+  windows:
+    name: 2 · Windows · Frontend WinUI
+    needs: [vulkan, auditoria]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -184,3 +230,100 @@ jobs:
       # nos roteiros manuais do README.
       - name: Testes
         run: dotnet test windows-integration/Ditador.Windows.sln -c Release --nologo
+
+      # O instalador é gerado pelo Inno Setup a partir de um script nosso. Um
+      # erro de sintaxe ali só apareceria na hora de publicar a versão, que é o
+      # pior momento possível — o `/DSemArquivos` compila o script sem exigir os
+      # binários, que aqui não existem.
+      - name: O script do instalador compila
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc /Qp /DSemArquivos /DMyAppVersion=0.0.0 /DBackend=cpu `
+              windows-integration\instalador\ditador.iss
+          if ($LASTEXITCODE) { throw "o Inno Setup recusou o script (código $LASTEXITCODE)" }
+
+  # ─────────────────────────────────────────────────────────────── 3. o GNOME
+  #
+  # O portão da extensão tem duas metades. Esta é a que roda em qualquer agente:
+  # lint, schemas e o empacotamento. A outra — o ciclo de vida num GNOME Shell
+  # aninhado — precisa de um Shell de verdade, trava de vez em quando por conta
+  # do `gnome-shell-perf-helper`, e continua sendo
+  # `./gnome-extension/scripts/testar.sh` na máquina de quem mexe.
+  gnome:
+    name: 3 · GNOME · Extensão do Shell
+    needs: windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Lint
+        working-directory: gnome-extension
+        run: |
+          npm install
+          npm run lint
+
+      - name: Ferramentas do GNOME
+        run: |
+          sudo apt-get update
+          # O `gnome-extensions` mora no pacote `gnome-shell`; o
+          # `--no-install-recommends` deixa de fora a sessão inteira, que não
+          # serve para nada aqui. O `glib-compile-schemas` vem do libglib2.0-bin.
+          sudo apt-get install -y --no-install-recommends gnome-shell libglib2.0-bin
+
+      - name: Schemas do GSettings
+        run: glib-compile-schemas --strict --dry-run gnome-extension/schemas
+
+      # O `pack` é o build da extensão: ele valida o metadata.json (uuid, nome,
+      # shell-version), monta o ZIP e recusa o que o Shell recusaria. O
+      # `--extra-source=src` é obrigatório porque só a raiz entra sozinha, e o
+      # `scripts/` fica de fora de propósito — é ferramenta de quem desenvolve.
+      #
+      # O ZIP produzido aqui é jogado fora: quem publica o da release é o
+      # `release.yml`, empacotando de novo a partir da tag. É que a versão está
+      # escrita dentro do `metadata.json` da extensão, e a tag só existe depois
+      # deste portão — o ZIP daqui sairia carregando a versão anterior.
+      - name: Empacotar
+        working-directory: gnome-extension
+        run: gnome-extensions pack --force --extra-source=src --out-dir=. .
+
+  # ────────────────────────────────────────────────────────────────── 4. o KDE
+  #
+  # Num contêiner do Ubuntu 26.04, e não no `ubuntu-latest` seco: o
+  # `CMakeLists.txt` do plugin exige Qt 6.6 e ECM 6.0, e o agente padrão do
+  # GitHub ainda é o 24.04, que traz Qt 6.4. O 26.04 é também o alvo declarado
+  # do widget (Qt 6.10, KF6 6.24, Plasma 6.6) — a régua roda no sistema para o
+  # qual o código foi escrito, e não num parecido.
+  kde:
+    name: 4 · KDE Plasma · Widget e plugin
+    needs: gnome
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      # Dentro de um contêiner cru não há nem git nem certificados, e o
+      # actions/checkout precisa dos dois.
+      - name: Dependências
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates python3 \
+            cmake g++ extra-cmake-modules \
+            qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools \
+            qml6-module-qttest qml6-module-org-kde-ki18n \
+            plasma-desktoptheme
+
+      - uses: actions/checkout@v4
+
+      # `plasma-desktoptheme` é quem traz os módulos QML `org.kde.plasma.*` que
+      # o widget importa — sem eles o qmllint não resolveria import nenhum e
+      # passaria a reclamar de tudo, o que é o mesmo que não conferir nada.
+      #
+      # O `--ci` compila o plugin (o que também prova que o proxy D-Bus gerado
+      # do `dbus/contrato.xml` ainda compila), roda o qmllint com o filtro dos
+      # quatro avisos conhecidos e valida o metadata.json.
+      - name: Compilar e conferir
+        run: ./kde-plasma/testar.sh --ci
