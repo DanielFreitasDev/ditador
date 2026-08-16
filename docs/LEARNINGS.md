@@ -201,3 +201,72 @@ para qualquer gerador de pacote.
 
 **Arquivos** — `windows-integration/instalador/ditador.iss`, `.github/workflows/ci.yml`.
 **Ambiente** — CI, `windows-latest`.
+
+---
+
+# Interface e capturas do README
+
+## Capturas — `recording.png` não sai, e as outras duas saem no mesmo segundo
+
+**Contexto** — `./gerar-imagens.sh` refaz as imagens do README rodando o passeio
+de demonstração (`DITADOR_DEMO=1` + `DITADOR_CAPTURA=<dir>`), que passa sozinho
+pelas telas de gravação, resultado e configurações e fotografa cada uma.
+
+**Sintoma** — o script para com `!! o passeio não gravou recording.png no tema
+claro`, e no log as capturas de `result` e `settings` aparecem com o mesmo
+carimbo de segundo, cerca de dez segundos depois do arranque — quando as fases
+do passeio duram 4 s, 5 s e 6 s.
+
+**Causa** — a espera que deixava a tela assentar antes da foto contava **quadros**
+(`frames_restantes = 12`), o que só equivale aos ~200 ms pretendidos se a janela
+receber os 60 quadros por segundo que se supõe. Ela não recebe: recém-criada e
+com sincronia vertical, sob XWayland esta janela roda a cerca de **2 quadros por
+segundo**. Os doze quadros viraram cinco segundos — mais do que os quatro da
+primeira fase, que por isso nunca chegava a ser fotografada, e o suficiente para
+atrasar as outras duas até se encontrarem. Não é lentidão da interface: com
+`DITADOR_QUADROS=1`, que desliga a sincronia, a mesma tela faz ~1800 quadros por
+segundo. A primeira hipótese — arranque lento comendo a primeira fase — estava
+errada, mas apontou um defeito de verdade ao lado (veja "Prevenção").
+
+**Solução** — a espera passou a ser de relógio (`ASSENTAR`, 1200 ms, acima do
+teto de `animation_ms`), que é do que ela precisava desde o começo: as animações
+que ela existe para deixar terminar são cronometradas, não contadas em quadros.
+
+**Prevenção** — nada que espere animação deve contar quadros. E o passeio agora
+marca o instante inicial no **primeiro quadro**, não na construção do `App`: os
+segundos que o eframe, o glow e o driver Vulkan levam para pôr uma janela na
+tela saíam do orçamento da primeira fase.
+
+**Arquivos** — `src/ui.rs` (`Captura`, `ASSENTAR`, `Demo`, `demonstrar`),
+`gerar-imagens.sh`.
+**Ambiente** — Linux, Wayland com a janela via XWayland (o padrão do Ditador).
+**Comandos** — `DITADOR_DEMO=1 DITADOR_QUADROS=1 DITADOR_CAPTURA=/tmp/x
+target/release/ditador` mostra a taxa real de quadros por tela.
+
+## Capturas — o aviso de modelo ausente saiu impresso por cima dos botões no README
+
+**Contexto** — a `assets/capturas/resultado.png` publicada no README mostrava,
+em vermelho e por cima dos botões "Copiar" e "Copiar e colar", a frase "O modelo
+de transcrição ainda não está aqui (…/ggml-large-v3-turbo-q5_0.bin)".
+
+**Causa** — duas, somadas. O passeio de demonstração força `ModelState::Ready`
+mas não limpava `state.message`, e a thread do Whisper, que roda em paralelo e
+não sabe de passeio nenhum, escreve ali quando o arquivo do modelo falta — a
+captura foi tirada no minuto em que o download ainda não tinha terminado. E na
+tela de resultado essa mensagem era desenhada sem limite de largura, à direita
+dos botões, então uma frase comprida passava por cima deles.
+
+**Solução** — o passeio limpa `message`, zera `aviso_atalho` e ignora
+`state.integracoes` (com a extensão do GNOME instalada, `tela_visivel` esconde a
+tela de gravação e o script falhava sem dizer por quê). E a mensagem da tela de
+resultado é um `egui::Label::truncate()` com o texto inteiro no `hover`: o que
+sobra ali depende dos botões à esquerda, que mudam com o zoom e com a presença
+do "Copiar e colar", então não cabe número fixo.
+
+**Prevenção** — modo de diagnóstico que promete funcionar "sem microfone e sem
+modelo baixado" precisa neutralizar **tudo** o que o ambiente escreve na tela,
+não só o campo principal. E antes de commitar imagem do README, abra a imagem.
+
+**Arquivos** — `src/ui.rs` (`demonstrar`, tela de resultado), `assets/capturas/`.
+**Ambiente** — Linux; o efeito da extensão do GNOME só aparece em quem a tem
+instalada.

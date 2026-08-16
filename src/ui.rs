@@ -60,14 +60,20 @@ pub struct App {
 /// imagens do README a partir de um clone qualquer, sem precisar de microfone,
 /// de modelo baixado nem de alguém falando na hora certa.
 struct Demo {
-    desde: std::time::Instant,
+    /// Marcado no primeiro quadro do passeio, e não na construção do `App`.
+    ///
+    /// Entre uma coisa e outra passam segundos que ninguém controla: o eframe
+    /// criando a janela, o glow escolhendo o contexto, o driver Vulkan
+    /// acordando. Contando da construção, esse tempo saía do orçamento da
+    /// primeira fase — foi assim que o passeio chegou a gravar `result` e
+    /// `settings` no mesmo segundo e a não gravar `recording` nenhuma vez.
+    /// Contando daqui, cada tela tem os seus segundos inteiros.
+    desde: Option<std::time::Instant>,
 }
 
 impl Demo {
     fn novo() -> Option<Self> {
-        std::env::var_os("DITADOR_DEMO").map(|_| Self {
-            desde: std::time::Instant::now(),
-        })
+        std::env::var_os("DITADOR_DEMO").map(|_| Self { desde: None })
     }
 }
 
@@ -118,9 +124,18 @@ struct Oferta {
 #[derive(Default)]
 struct Captura {
     tela: Option<View>,
-    frames_restantes: u32,
+    /// Quando esta tela apareceu — a foto sai `ASSENTAR` depois (ver o uso).
+    assentou_em: Option<std::time::Instant>,
     arquivo: Option<String>,
 }
+
+/// Quanto se espera uma tela nova parar de se mexer antes de fotografá-la.
+///
+/// Acima do teto da animação de entrada — `Appearance::animation_ms` é limitado
+/// a 1000 ms em `config.rs` —, que é a única coisa que ainda muda depois do
+/// primeiro quadro. Vale a folga: a fase mais curta do passeio dura 4 s, e uma
+/// captura tirada cedo demais sai com a tela no meio do caminho.
+const ASSENTAR: Duration = Duration::from_millis(1200);
 
 impl App {
     pub fn new(
@@ -172,17 +187,35 @@ impl App {
              Já pedi ao Marcelo que adiante a parte de compras, que é a que sempre atrasa, \
              e deixei a apresentação de terça marcada só depois do almoço.";
 
-        let Some(demo) = &self.demo else {
+        let Some(demo) = &mut self.demo else {
             return false;
         };
-        let t = demo.desde.elapsed().as_secs_f32();
+        let inicio = *demo.desde.get_or_insert_with(std::time::Instant::now);
+        let t = inicio.elapsed().as_secs_f32();
 
         state.model = ModelState::Ready;
+        // O passeio promete telas limpas numa máquina qualquer, e as duas
+        // queixas que ele não controla chegam por vias próprias: a thread do
+        // Whisper escreve em `message` que o modelo não está lá, e quem não
+        // estiver no grupo `input` ganha o aviso do atalho. As duas saíram na
+        // captura do README — a do modelo por cima dos botões da tela de
+        // resultado, porque o passeio rodou no minuto em que o download ainda
+        // não tinha terminado. Forçar `Ready` sem limpá-las é dizer meia
+        // verdade para a tela.
+        state.message.clear();
+        state.aviso_atalho = None;
+        // Pelo mesmo motivo, o passeio ignora as integrações da máquina em que
+        // roda: com a extensão do GNOME no ar, `tela_visivel` esconde as telas
+        // de gravação e de transcrição — que é o certo no uso normal, e é
+        // justamente a primeira imagem do README. O script parava com "o
+        // passeio não gravou recording.png", sem dizer que a causa era a
+        // extensão instalada de quem estava gerando as imagens.
+        state.integracoes = Default::default();
         state.view = match t {
             _ if t < 4.0 => {
                 // Alguns segundos para trás, para o cronômetro da imagem não
                 // ficar parado em zero.
-                state.recording_since = demo.desde.checked_sub(Duration::from_secs(7));
+                state.recording_since = inicio.checked_sub(Duration::from_secs(7));
                 View::Recording
             }
             _ if t < 9.0 => {
@@ -235,16 +268,29 @@ impl App {
             }
         }
 
-        // Espera a tela assentar (animação, layout) antes de fotografar.
+        // Espera a tela assentar (animação, layout) antes de fotografar — em
+        // tempo, e não em quadros contados.
+        //
+        // Contava doze quadros, o que é a mesma coisa só enquanto a janela
+        // recebe os 60 por segundo que se supõe. Ela não recebe: recém-criada e
+        // com sincronia vertical, esta aqui roda a cerca de dois quadros por
+        // segundo sob XWayland — com `DITADOR_QUADROS=1`, que desliga a
+        // sincronia, a mesma interface faz 1800. Os doze quadros viraram cinco
+        // segundos, mais do que os quatro da primeira tela do passeio, e a
+        // captura da gravação simplesmente não saía; as outras duas saíam
+        // atrasadas, no mesmo segundo. E as animações que esta espera existe
+        // para deixar terminar são cronometradas — é do relógio que ela
+        // precisava desde o começo.
         if self.captura.tela != Some(view) {
             self.captura.tela = Some(view);
-            self.captura.frames_restantes = 12;
-        } else if self.captura.frames_restantes > 0 {
-            self.captura.frames_restantes -= 1;
-            ctx.request_repaint();
-            if self.captura.frames_restantes == 0 && view != View::Hidden {
+            self.captura.assentou_em = (view != View::Hidden).then(std::time::Instant::now);
+        } else if let Some(desde) = self.captura.assentou_em {
+            if desde.elapsed() >= ASSENTAR {
+                self.captura.assentou_em = None;
                 self.captura.arquivo = Some(format!("{view:?}").to_lowercase());
                 ctx.send_viewport_cmd(ViewportCommand::Screenshot(egui::UserData::default()));
+            } else {
+                ctx.request_repaint();
             }
         }
     }
@@ -733,11 +779,21 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !state.message.is_empty() {
-                    ui.label(
-                        RichText::new(&state.message)
-                            .size(12.5)
-                            .color(paleta().erro),
-                    );
+                    // `truncate()`, e não um `encurtar` com número fixo: o que
+                    // sobra aqui depende dos botões à esquerda, que mudam com o
+                    // "Copiar e colar" e com o zoom. Sem ele, uma mensagem
+                    // comprida — a do modelo ausente tem o caminho inteiro
+                    // dentro — passava por cima dos dois botões, ilegível e
+                    // deixando-os ilegíveis.
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&state.message)
+                                .size(12.5)
+                                .color(paleta().erro),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&state.message);
                 } else if copiado {
                     ui.label(
                         RichText::new("na área de transferência")
