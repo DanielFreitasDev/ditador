@@ -13,6 +13,58 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.6.0 — 2026-08-16
+
+### Novidades
+
+- O número da próxima versão sai dos commits, e não da memória de quem lança ([`3fd5799`](https://github.com/DanielFreitasDev/ditador/commit/3fd579995c199934e5057baacce488ae60e4e11e))
+- A régua da CI passa a olhar o KDE, que era o único lado sem portão nenhum ([`442b3a4`](https://github.com/DanielFreitasDev/ditador/commit/442b3a4fcebf223112ccfbd7204ed348bb3352f6))
+- Publicar uma versão passa a ser um botão, com instalador de Windows junto ([`a10fccd`](https://github.com/DanielFreitasDev/ditador/commit/a10fccd177de70d60ea110008be8cfd71b41a041))
+- O que se descobre investigando passa a sobreviver à sessão em que se descobriu ([`4ba5443`](https://github.com/DanielFreitasDev/ditador/commit/4ba54436437cdaee01dd860862f038329f0a1345))
+
+### Correções e ajustes
+
+- Registrar o que o cargo audit diz, para não reinvestigar a mesma cadeia ([`5481944`](https://github.com/DanielFreitasDev/ditador/commit/5481944975a9be809fff77b0ab9efb919f4b783a))
+- O Ditador diz pelo D-Bus em que pé está ([`8aa22f8`](https://github.com/DanielFreitasDev/ditador/commit/8aa22f808b9fdeb010d14d484e2389165b8028f2))
+- O GNOME Shell mostra o Ditador na barra, nas Configurações rápidas e na tela ([`36ee4fc`](https://github.com/DanielFreitasDev/ditador/commit/36ee4fcf04b2521effa130bddea982a04867611e))
+- As barras do microfone sobem e descem no aviso do GNOME ([`708f843`](https://github.com/DanielFreitasDev/ditador/commit/708f843e54ec53d1d222e95ee5a845bfe40659ad))
+- O empacotar.sh avisa que o apt não troca um binário de mesma versão ([`9ff781a`](https://github.com/DanielFreitasDev/ditador/commit/9ff781ad2cbcb00e2ceb28452725f41ade407f0b))
+- O Plasma mostra o Ditador como um widget seu, e não como um ícone hospedado ([`11d2d6d`](https://github.com/DanielFreitasDev/ditador/commit/11d2d6d0afc0fc78605c9d35c03eff221157eac7))
+- O teste de ciclo de vida da extensão passou a rodar, e a falhar quando falha ([`1d0ff30`](https://github.com/DanielFreitasDev/ditador/commit/1d0ff300d0f59856923fc0946a2775b4b592ed4c))
+- O ícone da bandeja não pisca ao lado do widget do Plasma — medido, não suposto ([`a8d4a99`](https://github.com/DanielFreitasDev/ditador/commit/a8d4a990f204f3da2fd754ee482123c5fa5ad29c))
+- Os arquivos criados no Windows não chegam ao Linux com fim de linha trocado ([`e9cef8d`](https://github.com/DanielFreitasDev/ditador/commit/e9cef8d4f955b956468f3a7c62a0a3779b6e2de3))
+- A assinatura do modelo era conferida ao contrário, e recusava todo download ([`34cd2fb`](https://github.com/DanielFreitasDev/ditador/commit/34cd2fba8497f74b2f6b54bee28491072f3337f1))
+- O Ditador roda no Windows, e o Linux não perdeu nada no caminho ([`e9ef55d`](https://github.com/DanielFreitasDev/ditador/commit/e9ef55d52189a9cdf15f0418384c324164ccac77))
+- Dá para medir qual backend é mais rápido, em vez de supor ([`ee4893a`](https://github.com/DanielFreitasDev/ditador/commit/ee4893a800bf8d4b3e3ff786c79c714832fdd32a))
+- Compilar no Windows deixa de ser um quebra-cabeça de cinco peças ([`e1e3d40`](https://github.com/DanielFreitasDev/ditador/commit/e1e3d4093f306d40e5180cd6ea3fb2af9950a52e))
+- O atalho global funciona no Windows, e a janela deixou de ter uma caixa atrás ([`903bdd2`](https://github.com/DanielFreitasDev/ditador/commit/903bdd2e58ce6ee6ba25540891d76655e327e077))
+- A lista do que falta estava faltando o item mais importante ([`33cb041`](https://github.com/DanielFreitasDev/ditador/commit/33cb04137a93cd4314c082642a277773021b31e4))
+- Quem quiser saber o estado do Ditador não precisa mais ficar perguntando ([`8bd9b5a`](https://github.com/DanielFreitasDev/ditador/commit/8bd9b5aad4f31887332c2a23f275879051e53313))
+- O Ditador aparece na área de notificação do Windows, e avisa na tela quando ouve ([`69a15c6`](https://github.com/DanielFreitasDev/ditador/commit/69a15c6f37a68628f0449110f78883afa7f5ad09))
+- O Linux deixa de ficar meses sem ver um compilador ([`307f7a6`](https://github.com/DanielFreitasDev/ditador/commit/307f7a663ebf9fce8176864b5b52b378fac6f4eb))
+- A espera de vinte segundos deixa de parecer um programa travado ([`29832ee`](https://github.com/DanielFreitasDev/ditador/commit/29832ee65a4dc93bfed1d51ccf38791366bd97cc))
+- O frontend do Windows ganha os testes que ele não tinha ([`03cdec4`](https://github.com/DanielFreitasDev/ditador/commit/03cdec4111ff766ec8a258d4e056ad3751b1f751))
+- A lista de testes dizia "desinstalação limpa" antes de alguém desinstalar ([`d71e1fe`](https://github.com/DanielFreitasDev/ditador/commit/d71e1fe12c86e50170acf077e47604287e0810cb))
+- O domínio do frontend sai de dentro da interface, e o teste deixa de pendurar ([`ba22b3e`](https://github.com/DanielFreitasDev/ditador/commit/ba22b3e53bbb15ed20adc979e37d2da71f2c5a42))
+- O atalho global voltou a funcionar: a interface roubava o teclado do próprio programa ([`833a434`](https://github.com/DanielFreitasDev/ditador/commit/833a4343b0b4e743add35c5197d91ea9b989a3bf))
+- O Windows também cola sozinho, como o Ubuntu já fazia ([`11288b5`](https://github.com/DanielFreitasDev/ditador/commit/11288b5ce676dc254be8366a4482bce721257e64))
+- O socket do Ubuntu deixa de atender uma palavra que só o Windows fala ([`f8f82f9`](https://github.com/DanielFreitasDev/ditador/commit/f8f82f904cf348c4cadfa08530eb9378e29044a3))
+- O Ditador do Windows deixa de ser mudo: log em arquivo, e três defeitos de posse ([`1d8f3fd`](https://github.com/DanielFreitasDev/ditador/commit/1d8f3fd08e4be45920109c84cdf44e770c2de0cb))
+- O ícone da bandeja do Windows tinha dois donos, e o painel não fechava ([`8997c23`](https://github.com/DanielFreitasDev/ditador/commit/8997c233e72bfd6973b5749396c55ef4b65dbffe))
+- Desinstalar duas vezes deixava o Ditador nas notificações do Windows para sempre ([`2b7b317`](https://github.com/DanielFreitasDev/ditador/commit/2b7b31711342c6f49c218c0f3e1daf8266b4b9c0))
+- O aviso do GNOME sumia se a pessoa voltasse a falar durante o esmaecimento ([`7d5ecca`](https://github.com/DanielFreitasDev/ditador/commit/7d5ecca1d0fc461f3ccfd715647eb84a7a1bb527))
+- A CI passa a compilar o backend que o .deb leva, e a olhar a extensão ([`79dcef7`](https://github.com/DanielFreitasDev/ditador/commit/79dcef7f62812ec680533760ec096d29f7618470))
+- Os dois módulos que o Linux "não usa" ganham o teste que prova que é de propósito ([`d41b9fb`](https://github.com/DanielFreitasDev/ditador/commit/d41b9fbdb8240de022760533fd36e55a011c6987))
+- As mensagens que o teste do contrato imprime apontavam para um arquivo que sumiu ([`2466544`](https://github.com/DanielFreitasDev/ditador/commit/24665443ee6db9e1b434b0dfee6df3a20fdb74bd))
+- A documentação volta a descrever o programa que existe ([`e9172fe`](https://github.com/DanielFreitasDev/ditador/commit/e9172fe07f738b875fc0a5e27d0997ee415178f4))
+- Ligar "iniciar com o Windows" pela tela de configurações apagava a interface ([`49df90f`](https://github.com/DanielFreitasDev/ditador/commit/49df90ff5096e7b54141a857131296593fd2609c))
+- Metade do travamento do portão da extensão era um processo que sobrava ([`399a6da`](https://github.com/DanielFreitasDev/ditador/commit/399a6da221c679ec1d13cffb750901b691cc28f2))
+- A CI achou o que nenhuma máquina de desenvolvimento acharia: a chave Run ausente ([`3ff54fb`](https://github.com/DanielFreitasDev/ditador/commit/3ff54fbc4a7c51533e555a3ba0d7fcb6e2d4ca77))
+- O contêiner do KDE não tinha make, e o CMake culpou o compilador ([`4ed1368`](https://github.com/DanielFreitasDev/ditador/commit/4ed136883addef8d59483543fc40051b8f9e7a7b))
+- O aviso de locale do Qt virava reclamação do qmllint no contêiner do KDE ([`6f6ce7f`](https://github.com/DanielFreitasDev/ditador/commit/6f6ce7fc4fe6f84916a77644ee67e2cd6df1cd00))
+
+[Todas as mudanças desde a `v0.5.0`](https://github.com/DanielFreitasDev/ditador/compare/v0.5.0...v0.6.0)
+
 ## Antes da automação
 
 O histórico até a **0.5.0** não está aqui, e não vai ser reconstruído: escrever
