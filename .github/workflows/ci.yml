@@ -309,9 +309,13 @@ jobs:
       - name: Dependências
         run: |
           apt-get update
+          # `make` explícito: o contêiner é cru, e sem ele o CMake morre em
+          # "unable to find a build program corresponding to Unix Makefiles",
+          # seguido de um "CMAKE_CXX_COMPILER not set" que faz parecer que o
+          # compilador é que está faltando — e ele está instalado.
           apt-get install -y --no-install-recommends \
             git ca-certificates python3 \
-            cmake g++ extra-cmake-modules \
+            cmake make g++ extra-cmake-modules \
             qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools \
             qml6-module-qttest qml6-module-org-kde-ki18n \
             plasma-desktoptheme
