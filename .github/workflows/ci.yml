@@ -120,8 +120,13 @@ jobs:
       - name: Dependências de sistema
         run: |
           sudo apt-get update
+          # `glslc`, e não `glslang-tools`: o que o whisper.cpp procura é o
+          # compilador de shaders do shaderc, e o `FindVulkan` do CMake recusa o
+          # pacote inteiro sem ele — "Could NOT find Vulkan (missing: glslc)",
+          # mesmo com o loader e os cabeçalhos instalados. É o mesmo nome que o
+          # CLAUDE.md lista nas dependências de sistema.
           sudo apt-get install -y --no-install-recommends \
-            cmake libasound2-dev pkg-config libvulkan-dev glslang-tools \
+            cmake libasound2-dev pkg-config libvulkan-dev glslc \
             libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev
 
       # Só a compilação: os testes já rodaram no outro trabalho, e nenhum deles

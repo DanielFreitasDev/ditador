@@ -40,8 +40,8 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ, RegCloseKey, RegDeleteValueW,
-    RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
+    RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 
 /// A chave que o Windows lê no login de cada usuário.
@@ -76,6 +76,46 @@ fn abrir(acesso: u32) -> Result<Chave> {
     if r != ERROR_SUCCESS {
         bail!(
             "abrindo HKCU\\{CHAVE}: {}",
+            std::io::Error::from_raw_os_error(r as i32)
+        );
+    }
+    Ok(Chave(chave))
+}
+
+/// Abre a chave `Run` para escrita, criando-a se ela não existir.
+///
+/// Ela existe em qualquer Windows com algum tempo de uso, mas **não é garantida**:
+/// num perfil recém-criado, em que nada nunca pediu para iniciar com a sessão,
+/// ela simplesmente não está lá. Foi assim que a CI a encontrou, num agente
+/// limpo do GitHub, e o `RegOpenKeyExW` respondeu o que responde nesse caso —
+/// "o sistema não pode encontrar o arquivo especificado", que é uma frase
+/// difícil de ligar a um interruptor de inicialização.
+///
+/// `RegCreateKeyExW` abre a existente ou cria a que falta, que é exatamente a
+/// semântica desejada aqui: quem liga o interruptor quer a chave lá, tendo ela
+/// existido antes ou não. Criar uma subchave do próprio usuário em `HKCU` não
+/// pede privilégio nenhum.
+fn abrir_ou_criar() -> Result<Chave> {
+    let caminho = utf16(CHAVE);
+    let mut chave: HKEY = std::ptr::null_mut();
+    let r = unsafe {
+        RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            caminho.as_ptr(),
+            0,
+            std::ptr::null(),
+            // Não volátil: tem de sobreviver ao reinício, que é o ponto.
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            std::ptr::null(),
+            &mut chave,
+            // Não interessa saber se foi criada agora ou já existia.
+            std::ptr::null_mut(),
+        )
+    };
+    if r != ERROR_SUCCESS {
+        bail!(
+            "abrindo (ou criando) HKCU\\{CHAVE}: {}",
             std::io::Error::from_raw_os_error(r as i32)
         );
     }
@@ -140,7 +180,7 @@ fn ler() -> Option<String> {
 }
 
 fn escrever() -> Result<()> {
-    let chave = abrir(KEY_WRITE)?;
+    let chave = abrir_ou_criar()?;
     let comando = citar(&quem_deve_subir()?);
     let dados = utf16(&comando);
     let nome = utf16(VALOR);
@@ -170,8 +210,10 @@ fn escrever() -> Result<()> {
 fn apagar() -> Result<()> {
     let chave = match abrir(KEY_WRITE) {
         Ok(chave) => chave,
-        // A chave `Run` sempre existe no Windows, mas se não existir também não
-        // há nada armado — que é o resultado que se queria.
+        // A chave `Run` pode não existir — num perfil novo em que nada nunca
+        // pediu para iniciar com a sessão, ela não está lá. E aí também não há
+        // nada armado, que é o resultado que se queria. Desarmar é a única das
+        // duas operações que pode se dar por satisfeita sem tocar no registro.
         Err(_) => return Ok(()),
     };
     let nome = utf16(VALOR);
