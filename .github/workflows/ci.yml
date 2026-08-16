@@ -303,6 +303,16 @@ jobs:
     needs: gnome
     runs-on: ubuntu-latest
     container: ubuntu:26.04
+    # A imagem crua não tem locale nenhum, e o Qt avisa disso em **toda**
+    # ferramenta que se chame: "Detected locale C … Qt depends on a UTF-8
+    # locale". O aviso sai na saída de erro, que é por onde o qmllint também
+    # fala — e o portão, que lê as duas juntas de propósito, tratava isso como
+    # reclamação nova e reprovava. Filtrar o aviso esconderia um problema de
+    # ambiente que é real: o QML deste widget tem acento dentro, e uma
+    # ferramenta em ASCII é a ferramenta errada para conferi-lo.
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     steps:
       # Dentro de um contêiner cru não há nem git nem certificados, e o
       # actions/checkout precisa dos dois.
