@@ -104,6 +104,23 @@ usuário entre máquinas é o comportamento desejável. Há teste para os dois.
 
 ## Instalar
 
+São **dois** caminhos, para dois públicos, e eles fazem a mesma coisa: mesma
+pasta de destino, mesmo atalho, mesma chave `Run`, mesmas duas dependências
+conferidas. Instalar por um e desinstalar pelo outro funciona.
+
+**Quem só quer usar** baixa o `ditador-v*-windows-x64-gpu.exe` (ou `-cpu.exe`) da
+[página de versões](https://github.com/DanielFreitasDev/ditador/releases/latest)
+e executa. É um instalador do Inno Setup, gerado pela CI a partir de
+`instalador/ditador.iss`; ele aparece na lista de aplicativos do Windows e traz
+desinstalador, que pergunta se deve levar junto a configuração e os modelos. Para
+gerá-lo na sua máquina:
+
+```powershell
+.\windows-integration\scripts\empacotar-exe.ps1              # ou -Backend cpu
+```
+
+**Quem tem o código-fonte** e a caixa de ferramentas usa o script, que compila:
+
 ```powershell
 .\windows-integration\scripts\instalar.ps1
 ```

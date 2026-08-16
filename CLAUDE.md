@@ -71,19 +71,32 @@ Deps de sistema: `cmake libasound2-dev libvulkan-dev glslc wl-clipboard` (e `dpk
 
 Existe desde que o projeto passou a ter dois sistemas, e é essa a razão dela: o porte para Windows foi
 feito numa máquina Windows, e o lado Linux ficou meses sem ver um compilador. A cada push, em qualquer
-ramo, ela roda `cargo fmt --check`, testes, clippy e build de release **nos dois sistemas**
-(`ubuntu-latest` e `windows-latest`) com a feature `cpu` — a única que compila num agente sem GPU e sem
-o Vulkan SDK. Ao lado disso: um trabalho só para compilar o Vulkan no Linux, que é o backend que o
-`.deb` leva e que os outros não exercitam; o `npm run lint` e o `--dry-run` dos schemas do GSettings da
-extensão do GNOME; e o build mais os testes do frontend WinUI. `RUSTFLAGS: -D warnings` estende ao
-rustc a régua que o `[lints.clippy]` do `Cargo.toml` já aplicava ao clippy.
+ramo, ela confere os quatro lados do projeto, **encadeados nesta ordem**:
+
+1. **Rust** — `cargo fmt --check`, testes, clippy e build de release nos dois sistemas
+   (`ubuntu-latest` e `windows-latest`) com a feature `cpu`, a única que compila num agente sem GPU e
+   sem o Vulkan SDK; mais um trabalho só para compilar o Vulkan no Linux (o backend que o `.deb` leva) e
+   o `cargo audit`. Só no Linux, porque conferem arquivo e não código: `xmllint` no `dbus/contrato.xml`
+   e `.github/scripts/versao.sh conferir`.
+2. **Windows** — build e testes do frontend WinUI, e a compilação do script do Inno Setup.
+3. **GNOME** — `npm run lint`, `--dry-run` dos schemas do GSettings e o `gnome-extensions pack`.
+4. **KDE** — num contêiner `ubuntu:26.04` (o `ubuntu-latest` é 24.04 e traz Qt 6.4, abaixo do
+   `QT_MINIMO 6.6` do `CMakeLists.txt`): `./kde-plasma/testar.sh --ci`, que compila o plugin C++, roda o
+   `qmllint` e valida o `metadata.json`.
+
+`RUSTFLAGS: -D warnings` estende ao rustc a régua que o `[lints.clippy]` do `Cargo.toml` já aplicava ao
+clippy. O encadeamento é de propósito: em paralelo, um erro de digitação no Rust reprova os quatro ao
+mesmo tempo e a página de resultados vira uma parede vermelha.
 
 O que ela **não** cobre é tudo o que precisa de GPU, microfone, sessão gráfica ou barramento de sessão.
 A medição de backends (`mede_o_backend`, em `src/stt.rs`) continua `#[ignore]` e local; o ciclo de vida
-da extensão do GNOME e o portão do Plasma continuam sendo `./gnome-extension/scripts/testar.sh` e
-`./kde-plasma/testar.sh` na máquina de quem mexe; e do frontend WinUI só a leitura do protocolo do
-canal de controle é testada — janela, ícone, menu e posição seguem nos roteiros manuais do README.
-Verde na CI não substitui nenhum desses.
+da extensão do GNOME e o portão inteiro do Plasma continuam sendo `./gnome-extension/scripts/testar.sh` e
+`./kde-plasma/testar.sh` (sem `--ci`) na máquina de quem mexe; e do frontend WinUI só a leitura do
+protocolo do canal de controle é testada — janela, ícone, menu e posição seguem nos roteiros manuais do
+README. Verde na CI não substitui nenhum desses.
+
+O `release.yml` **chama** este mesmo arquivo (`workflow_call`) antes de publicar qualquer coisa: não há
+duas listas de conferências. Tudo sobre publicação está em `docs/CI-E-RELEASES.md`.
 
 ## Onde mora o que é de cada sistema (`src/plataforma/`)
 
@@ -199,6 +212,7 @@ do `ditador --status`, com um comando a mais: `assinar`.
 .\windows-integration\scripts\instalar.ps1        # compila, instala, sobe. Sem admin.
 .\windows-integration\scripts\desinstalar.ps1     # e -ApagarDados
 .\windows-integration\scripts\build.ps1           # os dois lados
+.\windows-integration\scripts\empacotar-exe.ps1   # o instalador .exe que vai na release
 .\windows-integration\scripts\empacotar-msix.ps1  # o pacote, para o futuro
 python windows-integration\scripts\gerar-icones.py  # depois de mexer no desenho dos .ico
 ```
@@ -235,20 +249,27 @@ librsvg) e commite os PNGs — senão o binário continua com os ícones antigos
 
 ## Lançar uma versão
 
-`Cargo.toml` é a única fonte da verdade da versão (`empacotar.sh` faz grep nela; o binário usa
-`env!("CARGO_PKG_VERSION")`). Ao subir a versão, atualize também:
+**Actions → "Publicar versão" → Run workflow.** É só isso, e é de propósito: o processo inteiro —
+validar, numerar, commitar, taguear, empacotar e publicar — está no `.github/workflows/release.yml`, e
+o passo a passo, com o que fazer quando der errado, está em **`docs/CI-E-RELEASES.md`**. Não faça à
+mão o que ele faz; e se precisar mudar como uma versão é publicada, mude lá, não aqui.
 
-1. `Cargo.lock` — é versionado; qualquer comando cargo atualiza, mas precisa ser commitado
+Os três fatos que continuam valendo, e que o workflow respeita:
 
-O README não tem mais nenhuma versão escrita à mão: os nomes dos `.deb` viraram `ditador_*_amd64.deb` e o
-link aponta para `releases/latest`. Não reintroduza o número lá — era um passo que já foi esquecido.
+- `Cargo.toml` é a única fonte da verdade da versão (`empacotar.sh` faz grep nela; o binário usa
+  `env!("CARGO_PKG_VERSION")`). As cópias que precisam concordar com ele — `Cargo.lock`, que é
+  versionado, e o `version-name` do `gnome-extension/metadata.json` — são mantidas pelo
+  `.github/scripts/versao.sh`, e a CI reprova quando elas se separam
+  (`.github/scripts/versao.sh conferir`).
+- O README não tem nenhuma versão escrita à mão: os nomes dos `.deb` são glob e o link aponta para
+  `releases/latest`. Não reintroduza o número lá — era um passo que já foi esquecido.
+- O modelo não vai como asset: são 574 MB que não mudam entre versões, o app baixa sozinho e o
+  `--baixar-modelo` resolve por terminal. A release 0.2.0 leva uma cópia dele por motivos históricos.
 
-Depois: `cargo audit`, commit `Versão X.Y.Z` (ou `Versão X.Y.Z: <o bug corrigido>`),
-**`git tag vX.Y.Z`**, `./empacotar.sh && ./empacotar.sh cpu`, `sha256sum *.deb > SHA256SUMS` dentro de
-`target/deb/`, e GitHub Release com os dois `.deb` e o `SHA256SUMS` como assets (`gh release create`).
-
-O modelo não vai como asset: são 574 MB que não mudam entre versões, o app baixa sozinho e o
-`--baixar-modelo` resolve por terminal. A release 0.2.0 leva uma cópia dele por motivos históricos.
+O número sai do trailer `Impacto:` dos commits desde a última tag (veja "Commits", abaixo), com a
+ressalva da linha 0.x: enquanto o MAJOR for 0, `incompatível` sobe o MINOR, porque chegar ao 1.0.0 é
+uma decisão e não efeito colateral. Quem quiser mandar no número dispara o workflow com
+`incremento: patch|minor|major`.
 
 ### O que o `cargo audit` costuma dizer
 
@@ -263,17 +284,32 @@ Esse aviso não é acionável aqui e é esperado — a cadeia é
 conhecido aparecendo duas ou três vezes por ano é o comportamento certo, e a lista de exceções é o que
 esconderia o dia em que ele virar problema de verdade.
 
-⚠️ O `git tag` é o passo mais fácil de esquecer, e já foi pulado em quatro versões seguidas: o repositório
-chegou à 0.4.2 tendo `v0.2.0` como única tag, e o único release publicado ainda mostrava a interface de
-vidro que o README já dizia ter removido. Confira com `git tag -l` **antes** de fechar. As versões puladas
-não foram tagueadas depois de propósito — uma tag inventada meses depois aponta para um commit que nunca
-foi empacotado nem publicado, e mentir sobre isso é pior do que a lacuna.
+⚠️ O `git tag` **era** o passo mais fácil de esquecer, e já foi pulado em quatro versões seguidas: o
+repositório chegou à 0.4.2 tendo `v0.2.0` como única tag, e o único release publicado ainda mostrava a
+interface de vidro que o README já dizia ter removido. É por isso que quem cria a tag hoje é o workflow,
+no mesmo passo em que grava a versão — não há mais como publicar sem ela. As versões puladas continuam
+sem tag de propósito: uma tag inventada meses depois aponta para um commit que nunca foi empacotado nem
+publicado, e mentir sobre isso é pior do que a lacuna.
 
 ## Commits
 
 Assunto em português, sentence case, sem prefixo e sem conventional commits — descreve o efeito, não o arquivo
 (`Mais ar embaixo das fileiras de botões`). Corpo longo em prosa, explicando causa e raciocínio. Todo commit
 termina com o trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+
+Acima dele, quando a mudança for mais do que um conserto, vai o trailer **`Impacto:`** — é dele que sai o
+número da próxima versão, e o assunto do commit é o que aparece no changelog:
+
+| Trailer | Sobe | Quando |
+|---|---|---|
+| `Impacto: correção` | PATCH | conserto, ajuste, texto, documentação |
+| `Impacto: funcionalidade` | MINOR | coisa nova que não quebra quem já usa |
+| `Impacto: incompatível` | MAJOR | quebra quem já usa |
+
+**Sem o trailer, o commit vale PATCH** — é o padrão certo aqui, porque a maioria dos commits deste
+projeto é conserto e esquecer o trailer não pode publicar uma versão que promete mais do que mudou. Ele
+é trailer, e não prefixo no assunto, justamente para não desfazer a regra do parágrafo acima: a
+categoria da mudança não pertence à frase que descreve o efeito dela.
 
 ## Armadilhas — não "consertar"
 

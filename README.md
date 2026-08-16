@@ -22,11 +22,14 @@
 **Com o pacote pronto** (Ubuntu 24.04 ou mais novo):
 
 ```bash
-sudo apt install ./ditador_*_amd64.deb          # ou ditador-cpu_… se a máquina não tem GPU
-sudo usermod -aG input $USER                    # para o atalho global ler o teclado
+sudo apt install ./ditador-v*-linux-amd64-gpu.deb   # ou …-cpu.deb, se a máquina não tem GPU
+sudo usermod -aG input $USER                        # para o atalho global ler o teclado
 ```
 
-O `.deb` sai da [página de versões](https://github.com/DanielFreitasDev/ditador/releases/latest).
+O `.deb` sai da [página de versões](https://github.com/DanielFreitasDev/ditador/releases/latest),
+onde também estão o instalador `.exe` do Windows e o ZIP da extensão do GNOME —
+cada release traz as instruções completas de instalação, atualização e remoção,
+que também estão em [`docs/INSTALACAO.md`](docs/INSTALACAO.md).
 Se algo não funcionar, `ditador --diagnostico` confere, um a um, tudo de que o
 programa depende e diz o que está faltando.
 
@@ -208,7 +211,14 @@ no lugar do systemd. Nada de WSL, de D-Bus instalado à força nem de camada de
 compatibilidade — as duas APIs são diferentes e o que atravessa a fronteira é o
 propósito, não a chamada.
 
-Instalar é um comando, e **sem administrador**:
+Para **usar**, baixe o `ditador-v*-windows-x64-gpu.exe` (ou `-cpu.exe`) da
+[página de versões](https://github.com/DanielFreitasDev/ditador/releases/latest)
+e execute: é um instalador comum, **sem administrador**, que põe tudo em
+`%LOCALAPPDATA%\Programs\Ditador`, instala o .NET e o Windows App Runtime que
+faltarem, cria o atalho no menu Iniciar e deixa um desinstalador na lista de
+aplicativos do Windows.
+
+Para **compilar**, é um comando, e também sem administrador:
 
 ```powershell
 .\windows-integration\scripts\instalar.ps1
@@ -217,7 +227,8 @@ Instalar é um comando, e **sem administrador**:
 Ele compila os dois lados, instala o .NET e o Windows App Runtime que faltarem,
 copia tudo para `%LOCALAPPDATA%\Programs\Ditador`, cria o atalho no menu Iniciar,
 registra o início com a sessão e sobe o programa. Para desfazer:
-`.\windows-integration\scripts\desinstalar.ps1`.
+`.\windows-integration\scripts\desinstalar.ps1`. E para gerar o instalador `.exe`
+na sua máquina: `.\windows-integration\scripts\empacotar-exe.ps1`.
 
 <p align="center">
   <img src="assets/capturas/windows-gravando.png" alt="O aviso de gravação no rodapé da tela, com cronômetro e nível do microfone" width="372">
@@ -413,18 +424,24 @@ cd gnome-extension && npm run lint && ./scripts/testar.sh
 ```
 
 Parte disso também roda sozinha. O `.github/workflows/ci.yml` responde a cada
-push e a cada pull request, em qualquer ramo, com `fmt`, testes, clippy e
-compilação de release no **ubuntu-latest e no windows-latest** — com a feature
-`cpu`, que é a única que compila num agente sem GPU. Ao lado, um trabalho só
-para a compilação com **Vulkan**, que é o backend que o `instalar.sh` usa e que
-o `.deb` leva: compilar não precisa de placa nenhuma, e sem isso um erro desse
-caminho apareceria pela primeira vez na hora de lançar uma versão. Mais o lint e
-os schemas da extensão do GNOME, e a compilação com os testes do frontend WinUI.
+push e a cada pull request, em qualquer ramo, e confere os quatro lados do
+projeto em ordem: **Rust** (`fmt`, testes, clippy e release no ubuntu-latest e no
+windows-latest com a feature `cpu`, mais um trabalho só para o **Vulkan**, que é
+o backend que o `instalar.sh` usa e que o `.deb` leva, e o `cargo audit`);
+**Windows** (build e testes do frontend WinUI); **GNOME** (lint, schemas e
+empacotamento da extensão); e **KDE** (o plugin C++ compilado e o `qmllint` do
+widget, num contêiner do Ubuntu 26.04, que é o alvo declarado deles).
 
 O que **não** cabe num agente sem tela continua sendo local, e é por isso que o
 portão acima existe: a medição de backends (`#[ignore]`), o ciclo de vida da
-extensão num GNOME Shell aninhado e o widget do Plasma precisam de GPU, de
-microfone, de sessão gráfica ou de barramento de sessão.
+extensão num GNOME Shell aninhado e o widget do Plasma em execução precisam de
+GPU, de microfone, de sessão gráfica ou de barramento de sessão.
+
+Publicar uma versão é um botão — *Actions → Publicar versão* —, e a partir dele
+tudo é automático: validação, número da versão (pelo trailer `Impacto:` dos
+commits), commit, tag, os dois `.deb`, os dois instaladores `.exe`, o ZIP da
+extensão, as somas de verificação e as notas. Está documentado em
+[`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 Outros comandos úteis:
 

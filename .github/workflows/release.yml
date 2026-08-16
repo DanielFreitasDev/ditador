@@ -1,0 +1,396 @@
+# Publica uma versão: confere tudo, decide o número, marca a tag e monta a release.
+#
+# É disparado à mão (Actions → "Publicar versão" → Run workflow), e **só** a
+# partir do `main`. O botão é a única parte manual: o número da versão, a tag, o
+# changelog, os pacotes e as instruções saem daqui.
+#
+# ## Por que o disparo é manual
+#
+# Publicar a cada push no `main` transformaria todo commit numa versão — e
+# versão é uma promessa a quem instalou: "vale a pena baixar isto". Quem decide
+# que um conjunto de mudanças virou uma versão é gente. O que **não** é decisão
+# de gente, e por isso está automatizado, é o resto: qual número vem a seguir,
+# se a tag foi criada, se o `.deb` foi gerado dos dois jeitos, se a release
+# ganhou instruções de instalação. Era exatamente aí que este projeto errava —
+# o repositório chegou à 0.4.2 com `v0.2.0` como única tag.
+#
+# ## A ordem, e o que ela garante
+#
+#   1. validar   o `ci.yml` inteiro: Rust → Windows → GNOME → KDE
+#   2. versao    calcula o número, grava nos arquivos, commita e cria a tag
+#   3. artefatos os dois .deb, os dois instaladores .exe e o ZIP da extensão
+#   4. publicar  somas de verificação, notas e a release no GitHub
+#
+# Nada da etapa 2 acontece se a 1 reprovar: a tag não é criada, o `main` não é
+# tocado, e não existe versão pela metade para desfazer. É essa a razão de a
+# validação vir antes de o número existir.
+
+name: Publicar versão
+
+on:
+  workflow_dispatch:
+    inputs:
+      incremento:
+        description: 'Como subir a versão (auto = pelos trailers "Impacto:" dos commits)'
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      rascunho:
+        description: 'Publicar como rascunho, para revisar antes de deixar visível'
+        type: boolean
+        default: false
+
+# `contents: write` porque este workflow escreve no repositório: o commit da
+# versão, a tag e a release. É a única permissão a mais que ele tem.
+permissions:
+  contents: write
+
+# Duas publicações ao mesmo tempo brigariam pela mesma tag. E `cancel-in-progress`
+# fica falso de propósito: uma publicação cancelada no meio deixaria a tag criada
+# e a release não.
+concurrency:
+  group: publicar-versao
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────────────────────────────────── 1. o portão inteiro
+  #
+  # O mesmo `ci.yml` de todo push, chamado como workflow reutilizável. Não há uma
+  # segunda lista de conferências escrita aqui: qualquer coisa que reprove um
+  # push comum reprova uma publicação, pela mesma linha de YAML.
+  validar:
+    name: Validar
+    uses: ./.github/workflows/ci.yml
+
+  # ────────────────────────────────────────────────────── 2. a versão e a tag
+  versao:
+    name: Versão e tag
+    needs: validar
+    runs-on: ubuntu-latest
+    outputs:
+      versao: ${{ steps.calcular.outputs.versao }}
+      tag: ${{ steps.calcular.outputs.tag }}
+      anterior: ${{ steps.calcular.outputs.anterior }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # O histórico inteiro, com as tags: é delas que sai a faixa de commits
+          # que decide o número da versão e monta o changelog.
+          fetch-depth: 0
+
+      - name: Só a partir do main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Versões saem do main. Este disparo veio de $GITHUB_REF."
+            exit 1
+          fi
+
+      # O `versao.sh gravar` chama `cargo metadata` para reescrever o Cargo.lock,
+      # que é versionado e traz a versão do próprio pacote.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Calcular a próxima versão
+        id: calcular
+        run: |
+          ANTERIOR="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+
+          # Uma versão sem nenhuma mudança é uma promessa vazia a quem for
+          # baixá-la — e o changelog dela sairia em branco, o que já diz tudo.
+          if [ -n "$ANTERIOR" ] && [ -z "$(git log --no-merges "$ANTERIOR..HEAD" --format=%H)" ]; then
+            echo "::error::Não há nenhum commit desde a $ANTERIOR. Não há o que publicar."
+            exit 1
+          fi
+
+          NOVA="$(.github/scripts/versao.sh proxima '${{ inputs.incremento }}')"
+
+          if git rev-parse "v$NOVA" >/dev/null 2>&1; then
+            echo "::error::A tag v$NOVA já existe. Alguém publicou esta versão antes."
+            exit 1
+          fi
+
+          echo "versao=$NOVA"      >> "$GITHUB_OUTPUT"
+          echo "tag=v$NOVA"        >> "$GITHUB_OUTPUT"
+          echo "anterior=$ANTERIOR" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Versão \`$NOVA\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| anterior | \`${ANTERIOR:-nenhuma tag}\` |"
+            echo "| incremento pedido | \`${{ inputs.incremento }}\` |"
+            echo "| impacto lido dos commits | \`$(.github/scripts/versao.sh impacto)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Gravar a versão nos arquivos
+        run: |
+          .github/scripts/versao.sh gravar "${{ steps.calcular.outputs.versao }}"
+          .github/scripts/versao.sh conferir
+
+      - name: Atualizar o CHANGELOG.md
+        run: |
+          VERSAO="${{ steps.calcular.outputs.versao }}"
+          MUDANCAS="$(.github/scripts/notas.sh "$VERSAO" --so-mudancas)"
+
+          # A seção nova entra logo abaixo do marcador, para que a mais recente
+          # fique sempre no topo da lista.
+          {
+            echo "## $VERSAO — $(date +%Y-%m-%d)"
+            echo
+            # O changelog do arquivo não repete o título "O que mudou": o nome
+            # do arquivo já diz isso, e aqui as versões vêm em sequência.
+            printf '%s\n' "$MUDANCAS" | tail -n +3
+          } > /tmp/secao.md
+
+          awk '
+            /^<!-- as versões novas entram logo abaixo desta linha -->$/ {
+              print; print ""; while ((getline linha < "/tmp/secao.md") > 0) print linha; next
+            }
+            { print }
+          ' CHANGELOG.md > /tmp/changelog.md
+          mv /tmp/changelog.md CHANGELOG.md
+
+      - name: Commitar e marcar a tag
+        run: |
+          VERSAO="${{ steps.calcular.outputs.versao }}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # O `skip-checks: true` é um trailer que o GitHub entende: sem ele este
+          # commit dispararia o `ci.yml` de novo, sobre o mesmo código que acabou
+          # de passar por ele. É o mecanismo documentado, e não um `[skip ci]`
+          # enfiado no assunto — que o CLAUDE.md não permitiria.
+          git commit -a -F - <<FIM
+          Versão $VERSAO
+
+          Publicada pelo workflow "Publicar versão", com incremento
+          "${{ inputs.incremento }}". O número sai do Cargo.toml, que continua
+          sendo a única fonte da verdade dele; a extensão do GNOME e o Cargo.lock
+          são as cópias que o .github/scripts/versao.sh mantém em dia.
+
+          O changelog desta seção foi montado dos assuntos dos commits desde a
+          ${{ steps.calcular.outputs.anterior }}, agrupados pelo trailer Impacto:
+          de cada um.
+
+          skip-checks: true
+          FIM
+
+          git tag -a "v$VERSAO" -m "Versão $VERSAO"
+          git push origin HEAD:main
+          git push origin "v$VERSAO"
+
+  # ──────────────────────────────────────────────── 3. os artefatos, da tag
+  #
+  # Os três trabalhos abaixo compilam a partir da **tag**, e não do ramo: o que
+  # for publicado tem de ser exatamente o que a tag aponta, inclusive o número
+  # da versão que o passo anterior acabou de gravar.
+
+  linux:
+    name: Pacotes .deb
+    needs: versao
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.versao.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Dependências de sistema
+        run: |
+          sudo apt-get update
+          # `libvulkan-dev` e `glslc` para a variante GPU; `dpkg-dev` e `fakeroot`
+          # para o empacotamento em si.
+          sudo apt-get install -y --no-install-recommends \
+            cmake libasound2-dev pkg-config libvulkan-dev glslc \
+            libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev \
+            dpkg-dev fakeroot
+
+      # O mesmo script que se roda na própria máquina. O agente do GitHub é uma
+      # base mais antiga do que a máquina de quem desenvolve, e isso é uma
+      # vantagem de graça: a glibc contra a qual se compila é o piso do que o
+      # pacote aceita, então o .deb daqui roda em mais distribuições do que um
+      # compilado numa 26.04.
+      - name: Empacotar (GPU e CPU)
+        run: |
+          ./empacotar.sh vulkan
+          ./empacotar.sh cpu
+
+      # O `empacotar.sh` nomeia à moda Debian (`ditador_0.6.0_amd64.deb`), que é
+      # o certo para um pacote. O nome do **anexo da release** é outra coisa: ele
+      # precisa dizer, para quem está na página de download, a versão, o sistema,
+      # a arquitetura e a variante. Daí a cópia com outro nome, aqui e não no
+      # script.
+      - name: Nomear os anexos
+        run: |
+          V="${{ needs.versao.outputs.versao }}"
+          mkdir -p artefatos
+          cp "target/deb/ditador_${V}_amd64.deb"     "artefatos/ditador-v${V}-linux-amd64-gpu.deb"
+          cp "target/deb/ditador-cpu_${V}_amd64.deb" "artefatos/ditador-v${V}-linux-amd64-cpu.deb"
+          ls -lh artefatos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: artefatos/*.deb
+          if-no-files-found: error
+
+  extensao:
+    name: ZIP da extensão do GNOME
+    needs: versao
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.versao.outputs.tag }}
+
+      - name: Ferramentas do GNOME
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gnome-shell
+
+      # O `pack` é o mesmo comando do `gnome-extension/instalar.sh`, com as
+      # mesmas opções: `--extra-source=src` porque só a raiz entra sozinha, e o
+      # `scripts/` de fora de propósito.
+      - name: Empacotar
+        run: |
+          V="${{ needs.versao.outputs.versao }}"
+          cd gnome-extension
+          gnome-extensions pack --force --extra-source=src --out-dir=. .
+          mkdir -p ../artefatos
+          cp ditador@danielfreitasdev.github.io.shell-extension.zip \
+             "../artefatos/ditador-gnome-extension-v${V}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extensao
+          path: artefatos/*.zip
+          if-no-files-found: error
+
+  windows:
+    name: Instalador .exe (${{ matrix.variante }})
+    needs: versao
+    runs-on: windows-latest
+    # O whisper.cpp com Vulkan compila o gerador de shaders como um sub-projeto
+    # CMake inteiro. Numa máquina sem cache, isso passa de uma hora.
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variante: gpu
+            backend: vulkan
+          - variante: cpu
+            backend: cpu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.versao.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # O SDK, e não só o driver: o que falta num agente é o cabeçalho e o
+      # `glslc`. O instalador da LunarG é o caminho do próprio fornecedor, com as
+      # três opções que o tornam silencioso.
+      - name: Vulkan SDK
+        if: matrix.backend == 'vulkan'
+        run: |
+          $url = 'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe'
+          Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\vulkan_sdk.exe"
+          & "$env:RUNNER_TEMP\vulkan_sdk.exe" --root C:\VulkanSDK --accept-licenses `
+              --default-answer --confirm-command install
+          if ($LASTEXITCODE) { throw "o instalador do Vulkan SDK devolveu $LASTEXITCODE" }
+          # O instalador escreve VULKAN_SDK no ambiente da máquina, que este
+          # processo não relê. O `ambiente.ps1` do projeto sabe reler o registro,
+          # mas dizê-lo aqui é mais curto e não depende dessa ordem.
+          "VULKAN_SDK=C:\VulkanSDK" | Out-File -Append $env:GITHUB_ENV
+          "C:\VulkanSDK\Bin" | Out-File -Append $env:GITHUB_PATH
+
+      # O mesmo script que se roda na própria máquina: ele compila o backend em
+      # Rust, o frontend WinUI, junta os dois e chama o Inno Setup.
+      - name: Compilar e empacotar
+        run: .\windows-integration\scripts\empacotar-exe.ps1 -Backend ${{ matrix.backend }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe-${{ matrix.variante }}
+          path: target/instalador/*.exe
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────── 4. a publicação
+  publicar:
+    name: Release no GitHub
+    needs: [versao, linux, extensao, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.versao.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artefatos
+          merge-multiple: true
+
+      - name: Somas de verificação
+        working-directory: artefatos
+        run: |
+          # Nomes relativos: o arquivo é para ser conferido com um
+          # `sha256sum --check` na pasta de downloads de quem baixou. O arquivo
+          # é montado fora e só depois trazido para cá — escrevendo direto, o
+          # `*` poderia ou não incluí-lo, dependendo da ordem em que o shell
+          # expande o glob e cria o arquivo de saída.
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Montar as notas
+        run: |
+          V="${{ needs.versao.outputs.versao }}"
+          ANTERIOR="${{ needs.versao.outputs.anterior }}"
+
+          # As notas saem do repositório: o changelog do `git log` e o
+          # `docs/INSTALACAO.md` inteiro, com os nomes de arquivo já apontando
+          # para esta versão. O `--desde` é obrigatório aqui porque a HEAD **é**
+          # a tag nova — sem ele, a faixa de commits seria vazia.
+          .github/scripts/notas.sh "$V" ${ANTERIOR:+--desde "$ANTERIOR"} > notas.md
+
+          {
+            echo
+            echo "---"
+            echo
+            echo "## Somas de verificação"
+            echo
+            echo '```'
+            cat artefatos/SHA256SUMS
+            echo '```'
+          } >> notas.md
+
+      - name: Publicar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ needs.versao.outputs.tag }}" \
+            --title "Ditador ${{ needs.versao.outputs.versao }}" \
+            --notes-file notas.md \
+            ${{ inputs.rascunho && '--draft' || '' }} \
+            artefatos/*
+
+          {
+            echo "### Publicado"
+            echo
+            echo "https://github.com/${{ github.repository }}/releases/tag/${{ needs.versao.outputs.tag }}"
+            echo
+            echo '```'
+            cat artefatos/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
