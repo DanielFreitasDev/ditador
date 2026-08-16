@@ -21,6 +21,26 @@ Nomes de teste são frases inteiras: `fn o_desktop_de_autostart_aponta_para_o_bi
 Os comentários explicam *por quê*, não *o quê*, e cada módulo abre com um bloco `//!` justificando decisões.
 Acompanhe esse registro — travessões (`—`) e reticências (`…`) tipográficas inclusive.
 
+## Antes de começar: `git pull`
+
+**Primeira coisa de toda tarefa, antes de ler ou editar qualquer arquivo:**
+
+```
+git pull
+```
+
+Este repositório recebe commits que não saem daqui. O workflow "Publicar versão" grava a versão nova no
+`Cargo.toml`, no `Cargo.lock`, no `metadata.json` e no `CHANGELOG.md`, cria a tag e empurra sozinho — e
+outros automatismos do GitHub também escrevem no `main`. Quer dizer que o `main` local pode estar atrás
+sem que nada nesta máquina tenha mudado, e que ele pode ficar atrás **no meio de uma tarefa**, entre o
+primeiro arquivo lido e o `git push`.
+
+Sem o `pull`, o preço aparece só no fim: o push é recusado por não ser fast-forward e é preciso rebasear
+com o trabalho já pronto — e, pior, o que se produziu pode estar errado por ter partido de um estado
+velho. Já aconteceu com as capturas do README: elas foram geradas mostrando `v0.5.0` no cabeçalho da
+tela de configurações enquanto a 0.6.0 já estava publicada no remoto, e tiveram de ser refeitas depois
+do rebase.
+
 ## Antes de considerar pronto
 
 Nesta ordem, e todos precisam passar:
