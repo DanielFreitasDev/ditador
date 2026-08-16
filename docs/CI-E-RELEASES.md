@@ -265,6 +265,9 @@ Para ver como ficaria antes de publicar:
 
 ## Quando der errado
 
+Antes de investigar, procure em [`LEARNINGS.md`](LEARNINGS.md): as falhas de CI que já custaram uma
+investigação estão registradas lá, com o sintoma exato e a causa.
+
 **"A tag vX.Y.Z já existe."** Alguém publicou essa versão antes, ou uma
 publicação anterior morreu depois de criar a tag. Confira com `git tag -l` e a
 página de releases; se a tag existe e a release não, apague a tag

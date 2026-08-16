@@ -53,6 +53,43 @@ portões da extensão do GNOME (`./gnome-extension/scripts/testar.sh`) e do Plas
 que os tenha. Mexeu na extensão ou no widget, rode o portão dele na sua máquina — e conte com o
 `testar.sh` da extensão precisar de mais de uma tentativa, que ele já faz sozinho até três vezes.
 
+## Memória técnica persistente (`docs/LEARNINGS.md`)
+
+O projeto guarda em **`docs/LEARNINGS.md`** o que já foi investigado aqui: problemas cuja causa não era
+óbvia, o sintoma exato que eles davam, a causa que se descobriu no fim, o que resolveu e a regra que
+evita a próxima vez. Particularidades das bibliotecas, dos três sistemas de área de trabalho suportados,
+do Whisper, do áudio, do empacotamento e da CI moram lá.
+
+**Antes de investigar, procure lá.** Erro inesperado, erro de compilação, teste que falha, CI vermelha,
+problema de ambiente, comportamento que muda entre Windows, GNOME e KDE, incompatibilidade, áudio que
+não abre, modelo que não carrega, diferença entre CPU e GPU, pacote que não instala, release que não
+sai — a pergunta pode já ter resposta. Pesquise por termos do erro, da mensagem, da biblioteca, do
+módulo, do sistema ou do comportamento observado, e só comece do zero depois disso.
+
+O que estiver lá **não é verdade absoluta**: confira se ainda vale antes de aplicar. Se um contorno
+registrado no passado tiver hoje uma solução oficial ou melhor, use a de hoje, implemente-a e **atualize
+a entrada**, marcando o contorno antigo como obsoleto. O arquivo deve representar o estado atual
+conhecido do projeto, e não congelá-lo em decisões velhas.
+
+**Depois de resolver, registre.** Sem perguntar se pode — faz parte de terminar a tarefa. O critério é:
+*isto pouparia uma investigação, um erro ou um bom tempo de trabalho no futuro?* Registre sobretudo
+quando a causa não era óbvia, quando foram precisas várias tentativas, quando a primeira hipótese estava
+errada, quando a documentação oficial não bastou, ou quando há chance real de o problema voltar. Não
+registre o que se lê no código, o que é trivial nem o que deu certo de primeira: **aquilo não é
+aprendizado, é `git log`**. E antes de criar uma entrada nova, procure uma parecida e melhore aquela.
+
+A divisão de responsabilidade é esta, e vale a pena mantê-la:
+
+- **`CLAUDE.md` diz como trabalhar** — idioma, portões, arquitetura, e as armadilhas que já viraram
+  regra vigente ("não 'conserte' isto").
+- **`docs/LEARNINGS.md` registra o que se aprendeu trabalhando** — sintoma, causa, solução, prevenção.
+
+Este arquivo não deve engordar acumulando problema técnico. Uma entrada do `LEARNINGS.md` que vire regra
+permanente do projeto pode ganhar uma linha na seção "Armadilhas" abaixo; a explicação inteira continua
+lá, que é onde ela cabe.
+
+O formato de cada entrada e as regras de organização estão no topo do próprio `docs/LEARNINGS.md`.
+
 ## Build e empacotamento
 
 Features de GPU são mutuamente exclusivas; `vulkan` é o padrão.
@@ -312,6 +349,10 @@ projeto é conserto e esquecer o trailer não pode publicar uma versão que prom
 categoria da mudança não pertence à frase que descreve o efeito dela.
 
 ## Armadilhas — não "consertar"
+
+Cada linha aqui é uma regra vigente: código que parece errado, não está, e o motivo vem junto. A
+investigação que produziu o conhecimento — sintoma, diagnóstico, o que se tentou antes — mora em
+`docs/LEARNINGS.md`; procure lá antes de investigar qualquer coisa que esta lista não responda.
 
 - **`sair_sem_desmontar` (em `src/main.rs`) pula os destrutores de propósito**: desmontar os buffers do
   ggml/Vulkan dá SIGSEGV no driver NVIDIA, e o systemd trataria isso como falha e reiniciaria o app.
