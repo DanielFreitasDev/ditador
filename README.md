@@ -566,10 +566,11 @@ portão acima existe: a medição de backends (`#[ignore]`), o ciclo de vida da
 extensão num GNOME Shell aninhado e o widget do Plasma em execução precisam de
 GPU, de microfone, de sessão gráfica ou de barramento de sessão.
 
-Publicar uma versão é um botão — *Actions → Publicar versão* —, e a partir dele
-tudo é automático: validação, número da versão (pelo trailer `Impacto:` dos
-commits), commit, tag, os dois `.deb`, os dois instaladores `.exe`, o ZIP da
-extensão, as somas de verificação e as notas. Está documentado em
+Publicar uma versão é **empurrar para o `main`**: a partir daí tudo é
+automático — validação, número da versão (pelo trailer `Impacto:` dos commits),
+commit, tag, os dois `.deb`, os dois instaladores `.exe`, o ZIP da extensão, as
+somas de verificação e as notas. Um push que não deva virar versão leva o
+trailer `Publicar: nao`, e aí só a validação roda. Está documentado em
 [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 Outros comandos úteis:

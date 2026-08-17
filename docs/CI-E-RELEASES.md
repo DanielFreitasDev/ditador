@@ -9,12 +9,34 @@ São **dois** workflows, e não mais:
 
 | Arquivo | Quando roda | O que faz |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | todo push, todo PR | confere os quatro lados do projeto |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | à mão, no botão | valida, numera, marca a tag, empacota e publica |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | todo push **fora do main**, todo PR | confere os quatro lados do projeto |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | **todo push no main** (e no botão) | valida, numera, marca a tag, empacota e publica |
 
 O segundo **chama** o primeiro (`workflow_call`). Não existem duas listas de
 conferências: existe a do `ci.yml`, e uma publicação passa por ela inteira antes
 de qualquer coisa ser gravada.
+
+É por isso que o `ci.yml` ignora o `main`: ali quem confere é a publicação, que
+roda o mesmo arquivo. Deixá-lo nos dois compilaria o whisper.cpp duas vezes por
+push e poria dois resultados na aba Actions para a mesma coisa.
+
+**Empurrar para o `main` publica uma versão.** Não há botão a lembrar de apertar
+— e é essa a razão da mudança: o botão era esquecido. O repositório chegou à
+0.4.2 com `v0.2.0` como única tag, e depois passou da 0.5.0 direto para a 0.6.1
+sem que a 0.6.0 chegasse a ser instalada em máquina nenhuma.
+
+Para um push que **não** deve virar versão — documentação, imagem do README,
+ajuste de comentário —, ponha o trailer `Publicar: nao` no commit da ponta:
+
+```
+Corrige a legenda da captura do README
+
+Publicar: nao
+Co-Authored-By: …
+```
+
+O código é validado do mesmo jeito; o que não acontece é a versão. O disparo
+pelo botão ignora esse trailer, porque quem apertou o botão decidiu apertar.
 
 ---
 

@@ -1,18 +1,28 @@
 # Publica uma versão: confere tudo, decide o número, marca a tag e monta a release.
 #
-# É disparado à mão (Actions → "Publicar versão" → Run workflow), e **só** a
-# partir do `main`. O botão é a única parte manual: o número da versão, a tag, o
-# changelog, os pacotes e as instruções saem daqui.
+# **Todo push no `main` publica uma versão.** É automático desde a 0.6.1, e é o
+# único disparo que interessa no dia a dia; o botão (Actions → "Publicar versão"
+# → Run workflow) continua existindo para republicar ou para forçar um
+# incremento à mão.
 #
-# ## Por que o disparo é manual
+# ## Por que o disparo deixou de ser manual
 #
-# Publicar a cada push no `main` transformaria todo commit numa versão — e
-# versão é uma promessa a quem instalou: "vale a pena baixar isto". Quem decide
-# que um conjunto de mudanças virou uma versão é gente. O que **não** é decisão
-# de gente, e por isso está automatizado, é o resto: qual número vem a seguir,
-# se a tag foi criada, se o `.deb` foi gerado dos dois jeitos, se a release
-# ganhou instruções de instalação. Era exatamente aí que este projeto errava —
-# o repositório chegou à 0.4.2 com `v0.2.0` como única tag.
+# Este arquivo dizia o contrário, e vale registrar o que mudou de opinião —
+# porque o argumento antigo não era ruim. Ele era: publicar a cada push
+# transforma todo commit numa versão, e versão é uma promessa a quem instalou.
+#
+# O que se viu na prática foi outra coisa. O botão era esquecido: o repositório
+# chegou à 0.4.2 com `v0.2.0` como única tag, e depois passou da 0.5.0 direto
+# para a 0.6.1 sem que a 0.6.0 jamais fosse instalada em máquina nenhuma. Um
+# passo manual que se esquece não é um passo de curadoria — é uma lacuna. E o
+# custo de esquecer é alto e silencioso: quem usa o programa fica numa versão
+# velha sem saber que existe outra.
+#
+# A curadoria continua existindo, só que **dentro** do commit em vez de fora
+# dele: o trailer `Impacto:` decide se aquele push é PATCH, MINOR ou MAJOR, e o
+# trailer `Publicar: nao` diz "este push é documentação, valide mas não
+# publique". As duas coisas são escritas por gente, na hora de escrever a
+# mensagem — que é onde a pessoa já está pensando no significado da mudança.
 #
 # ## A ordem, e o que ela garante
 #
@@ -28,6 +38,11 @@
 name: Publicar versão
 
 on:
+  # O `ci.yml` **não** roda em push no main (ele ignora esse ramo), justamente
+  # para não conferir o mesmo código duas vezes: a validação do main acontece
+  # aqui dentro, no trabalho `validar`, que chama aquele mesmo arquivo.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       incremento:
@@ -61,14 +76,77 @@ jobs:
   # O mesmo `ci.yml` de todo push, chamado como workflow reutilizável. Não há uma
   # segunda lista de conferências escrita aqui: qualquer coisa que reprove um
   # push comum reprova uma publicação, pela mesma linha de YAML.
+  #
+  # Ele roda **sempre**, inclusive num push que não vai virar versão: a régua do
+  # main não depende de haver release.
   validar:
     name: Validar
     uses: ./.github/workflows/ci.yml
 
+  # ────────────────────────────────── 1b. este push vira versão, ou só valida?
+  #
+  # Com o disparo automático, todo push no main publicaria — inclusive o que
+  # corrige uma vírgula do README. Cada versão custa dois `.deb`, dois
+  # instaladores `.exe` e um ZIP, e chega como novidade a quem instalou; gastar
+  # isso numa correção de texto esvazia o significado de "versão nova".
+  #
+  # A saída é um trailer, como o `Impacto:`, escrito por quem faz o commit:
+  #
+  #     Publicar: nao
+  #
+  # Com ele, o push é validado e para aqui. Sem ele, publica. O disparo pelo
+  # botão ignora o trailer — quem apertou o botão decidiu apertar.
+  #
+  # É lido do **commit da ponta**, e não de todos os commits do push: quem
+  # decide se um conjunto de mudanças vale uma versão é a última mão que mexeu
+  # nele.
+  decidir:
+    name: Publicar ou só validar
+    runs-on: ubuntu-latest
+    outputs:
+      publicar: ${{ steps.olhar.outputs.publicar }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ler o trailer Publicar do commit da ponta
+        id: olhar
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "publicar=sim" >> "$GITHUB_OUTPUT"
+            echo "-- disparo pelo botão: publica, e o trailer Publicar não vale." >&2
+            exit 0
+          fi
+
+          # `valueonly` e a normalização de acento/caixa são as mesmas do
+          # `versao.sh`: quem escreve a mensagem não deve ter de lembrar da
+          # grafia exata. A tabela vem **antes** do `tr` e traz as maiúsculas
+          # acentuadas — o `tr` não baixa a caixa de caractere multibyte, e sem
+          # isso um "Publicar: NÃO" viraria "nÃo" e publicaria assim mesmo.
+          PEDIDO="$(git log -1 --format='%(trailers:key=Publicar,valueonly)' \
+                    | sed 'y/ÁÀÂÃÉÊÍÓÔÕÚÜÇÑáàâãéêíóôõúüçñ/AAAAEEIOOOUUCNaaaaeeiooouucn/' \
+                    | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+
+          case "$PEDIDO" in
+            nao|no|false|0)
+              echo "publicar=nao" >> "$GITHUB_OUTPUT"
+              {
+                echo "### Sem versão nova"
+                echo
+                echo 'O commit da ponta pede `Publicar: nao`. O código foi validado e nada foi publicado.'
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "publicar=sim" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
   # ────────────────────────────────────────────────────── 2. a versão e a tag
   versao:
     name: Versão e tag
-    needs: validar
+    needs: [validar, decidir]
+    # Pulando este trabalho, todos os que dependem dele são pulados junto — os
+    # pacotes e a release inclusive. É por isso que o `if` mora só aqui.
+    if: needs.decidir.outputs.publicar == 'sim'
     runs-on: ubuntu-latest
     outputs:
       versao: ${{ steps.calcular.outputs.versao }}
@@ -80,6 +158,21 @@ jobs:
           # O histórico inteiro, com as tags: é delas que sai a faixa de commits
           # que decide o número da versão e monta o changelog.
           fetch-depth: 0
+          # A **ponta do main**, e não o commit que disparou este workflow.
+          #
+          # A diferença só aparece em dois pushes seguidos, e ali ela é a
+          # diferença entre funcionar e falhar. O `concurrency` deste arquivo
+          # serializa as publicações, então a segunda espera a primeira — e a
+          # primeira termina empurrando o commit da versão para o main. Se a
+          # segunda tivesse trazido o commit que a disparou, o `git push
+          # origin HEAD:main` do fim seria recusado por não ser fast-forward, e
+          # a versão sairia pela metade: tag criada, main não atualizado.
+          #
+          # Pegando a ponta, o que é marcado é o código que já passou pela
+          # validação **mais** o commit de versão anterior, que é exatamente o
+          # que se quer publicar. Era o comportamento do disparo manual, que
+          # sempre lia o main de agora.
+          ref: main
 
       - name: Só a partir do main
         run: |
@@ -104,7 +197,7 @@ jobs:
             exit 1
           fi
 
-          NOVA="$(.github/scripts/versao.sh proxima '${{ inputs.incremento }}')"
+          NOVA="$(.github/scripts/versao.sh proxima '${{ inputs.incremento || 'auto' }}')"
 
           if git rev-parse "v$NOVA" >/dev/null 2>&1; then
             echo "::error::A tag v$NOVA já existe. Alguém publicou esta versão antes."
@@ -121,7 +214,8 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| anterior | \`${ANTERIOR:-nenhuma tag}\` |"
-            echo "| incremento pedido | \`${{ inputs.incremento }}\` |"
+            echo "| incremento pedido | \`${{ inputs.incremento || 'auto' }}\` |"
+            echo "| disparo | \`${{ github.event_name }}\` |"
             echo "| impacto lido dos commits | \`$(.github/scripts/versao.sh impacto)\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -167,7 +261,7 @@ jobs:
           Versão $VERSAO
 
           Publicada pelo workflow "Publicar versão", com incremento
-          "${{ inputs.incremento }}". O número sai do Cargo.toml, que continua
+          "${{ inputs.incremento || 'auto' }}". O número sai do Cargo.toml, que continua
           sendo a única fonte da verdade dele; a extensão do GNOME e o Cargo.lock
           são as cópias que o .github/scripts/versao.sh mantém em dia.
 

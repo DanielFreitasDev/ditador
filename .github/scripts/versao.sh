@@ -82,8 +82,74 @@ ultima_tag() {
 # Tira os acentos e baixa a caixa, para que "Correção", "correcao" e "CORREÇÃO"
 # sejam a mesma coisa. Quem escreve a mensagem do commit não deve ter de lembrar
 # de qual grafia o script entende.
+#
+# **A tabela vem antes do `tr`, e tem as maiúsculas acentuadas.** Era o
+# contrário, e a promessa do parágrafo acima não se cumpria: o `tr
+# '[:upper:]' '[:lower:]'` não baixa a caixa de caractere multibyte, então
+# "CORREÇÃO" chegava à tabela como "correÇÃo" — com o Ç e o Ã ainda maiúsculos,
+# que não estavam nela — e saía "correÇÃo", que não casa com nada. O `case` do
+# `impacto` então caía no ramo do desconhecido e tratava a mudança como
+# correção. Trocando a ordem e acrescentando as maiúsculas, os seis jeitos de
+# escrever a palavra dão no mesmo.
 normalizar() {
-    tr '[:upper:]' '[:lower:]' | sed 'y/áàâãéêíóôõúüç/aaaaeeiooouuc/' | tr -d '[:space:]'
+    sed 'y/ÁÀÂÃÉÊÍÓÔÕÚÜÇÑáàâãéêíóôõúüçñ/AAAAEEIOOOUUCNaaaaeeiooouucn/' \
+        | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'
+}
+
+# Os valores que o trailer aceita, já normalizados. Fora daqui é erro de
+# digitação, e o `impacto` diz isso em vez de adivinhar.
+impacto_de() {
+    case "$(printf '%s' "$1" | normalizar)" in
+        incompativel|quebra|major|breaking) printf 'incompativel\n' ;;
+        funcionalidade|recurso|minor|feature) printf 'funcionalidade\n' ;;
+        correcao|conserto|patch|fix) printf 'correcao\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+# Os valores do trailer `Impacto:` de um commit — com uma rede embaixo.
+#
+# ## A rede, e por que ela existe
+#
+# O git só reconhece um trailer quando ele está no **último bloco** da mensagem,
+# sem linha em branco separando-o dos outros trailers. Uma linha em branco entre
+# o `Impacto:` e o `Co-Authored-By:` faz o `Impacto:` deixar de ser trailer e
+# virar texto comum — e o `%(trailers:key=Impacto)` devolve vazio.
+#
+# Isso aconteceu de verdade, e caro: o commit dos dez recursos da 0.6.1 trazia
+# `Impacto: funcionalidade` com uma linha em branco a mais, o script leu vazio,
+# a regra "sem trailer vale PATCH" entrou em ação, e dez recursos novos foram
+# publicados como uma correção. Em silêncio: nada na saída dizia que havia uma
+# linha `Impacto:` ali que não estava sendo lida.
+#
+# Com o disparo automático — todo push no main publica — esse erro deixaria de
+# ser um episódio e passaria a ser permanente. Então: quando o trailer de
+# verdade não existe, o valor é procurado numa linha `Impacto:` no começo de
+# qualquer linha da mensagem, e o script **avisa** que a formatação está errada.
+# O aviso vai para a saída de erro, que a CI mostra no log e no resumo.
+#
+# Só valores conhecidos entram por esse caminho: um "Impacto:" citado no meio de
+# uma frase em prosa — a documentação deste projeto fala dele o tempo todo — não
+# pode virar decisão de versão.
+valores_de_impacto() {
+    local sha="$1" valores
+    valores="$(git log -1 "$sha" --format='%(trailers:key=Impacto,valueonly,separator=%x0A)')"
+    if [ -n "$valores" ]; then
+        printf '%s\n' "$valores"
+        return 0
+    fi
+
+    local solta
+    while IFS= read -r solta; do
+        [ -n "$solta" ] || continue
+        if impacto_de "$solta" >/dev/null 2>&1; then
+            echo "!! O commit $(git log -1 --format=%h "$sha") tem uma linha \"Impacto: $solta\"" >&2
+            echo "   que o git NÃO lê como trailer — provavelmente há uma linha em branco" >&2
+            echo "   entre ela e os outros trailers. O valor foi aproveitado assim mesmo," >&2
+            echo "   mas conserte a mensagem: trailers ficam todos no último bloco, juntos." >&2
+            printf '%s\n' "$solta"
+        fi
+    done < <(git log -1 "$sha" --format=%B | sed -n 's/^[Ii]mpacto:[[:space:]]*//p')
 }
 
 impacto() {
@@ -92,25 +158,23 @@ impacto() {
     faixa="${tag:+$tag..}HEAD"
 
     local maior="correcao"
-    local valor
-    while read -r valor; do
-        [ -n "$valor" ] || continue
-        case "$(printf '%s' "$valor" | normalizar)" in
-            incompativel|quebra|major|breaking)
-                maior="incompativel"
-                break  # não há nada maior; parar aqui poupa a leitura do resto
-                ;;
-            funcionalidade|recurso|minor|feature)
-                [ "$maior" = "correcao" ] && maior="funcionalidade"
-                ;;
-            correcao|conserto|patch|fix)
-                ;;
-            *)
+    local sha valor lido
+    while read -r sha; do
+        [ -n "$sha" ] || continue
+        while read -r valor; do
+            [ -n "$valor" ] || continue
+            if ! lido="$(impacto_de "$valor")"; then
                 echo "!! Impacto desconhecido num commit: \"$valor\" (tratado como correção)" >&2
-                ;;
-        esac
-    done < <(git log --no-merges "$faixa" \
-                --format='%(trailers:key=Impacto,valueonly,separator=%x0A)')
+                continue
+            fi
+            case "$lido" in
+                incompativel) maior="incompativel" ;;
+                funcionalidade)
+                    [ "$maior" = "correcao" ] && maior="funcionalidade"
+                    ;;
+            esac
+        done < <(valores_de_impacto "$sha")
+    done < <(git log --no-merges "$faixa" --format=%H)
 
     printf '%s\n' "$maior"
 }

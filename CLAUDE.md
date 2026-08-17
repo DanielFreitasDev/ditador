@@ -306,10 +306,15 @@ librsvg) e commite os PNGs — senão o binário continua com os ícones antigos
 
 ## Lançar uma versão
 
-**Actions → "Publicar versão" → Run workflow.** É só isso, e é de propósito: o processo inteiro —
+**Empurrar para o `main` publica uma versão.** É automático: o processo inteiro —
 validar, numerar, commitar, taguear, empacotar e publicar — está no `.github/workflows/release.yml`, e
 o passo a passo, com o que fazer quando der errado, está em **`docs/CI-E-RELEASES.md`**. Não faça à
 mão o que ele faz; e se precisar mudar como uma versão é publicada, mude lá, não aqui.
+
+**Um push que não deve virar versão leva o trailer `Publicar: nao`** no commit da ponta — documentação,
+imagem do README, ajuste de comentário. O código é validado do mesmo jeito; o que não acontece é a
+versão. O botão (*Actions → Publicar versão*) continua existindo para republicar ou forçar um
+incremento, e ele ignora esse trailer.
 
 Os três fatos que continuam valendo, e que o workflow respeita:
 
@@ -367,6 +372,34 @@ número da próxima versão, e o assunto do commit é o que aparece no changelog
 projeto é conserto e esquecer o trailer não pode publicar uma versão que promete mais do que mudou. Ele
 é trailer, e não prefixo no assunto, justamente para não desfazer a regra do parágrafo acima: a
 categoria da mudança não pertence à frase que descreve o efeito dela.
+
+⚠️ **Os trailers ficam todos no mesmo bloco final, sem linha em branco entre eles.** O git só reconhece
+um trailer no último parágrafo da mensagem; uma linha em branco entre o `Impacto:` e o
+`Co-Authored-By:` faz o primeiro deixar de ser trailer e virar texto comum. Assim:
+
+```
+Impacto: funcionalidade
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```
+
+E **não** assim — que é o que já aconteceu em três commits deste repositório, um deles publicando dez
+recursos novos como se fossem uma correção (a 0.6.1):
+
+```
+Impacto: funcionalidade
+                                  ← esta linha em branco quebra tudo
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```
+
+Confira antes de empurrar — agora que todo push no `main` publica, o erro deixou de ser um episódio:
+
+```
+git log -1 --format='%(trailers:key=Impacto,valueonly)'   # vazio = está errado
+```
+
+O `.github/scripts/versao.sh` tem uma rede para isso desde a 0.7.0: não achando o trailer, ele procura
+uma linha `Impacto:` solta, usa o valor e **avisa** na saída de erro. A rede acerta o número; a
+mensagem continua errada, e é para consertar.
 
 ## Armadilhas — não "consertar"
 

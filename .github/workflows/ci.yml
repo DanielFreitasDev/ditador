@@ -36,10 +36,17 @@
 name: CI
 
 on:
-  # `branches` e não o `push` seco: sem isto, a tag que o `release.yml` cria
-  # dispararia esta régua uma segunda vez sobre o mesmo código.
+  # `branches-ignore` e não o `push` seco, por dois motivos que dão no mesmo:
+  # sem filtro de ramo, a tag que o `release.yml` cria dispararia esta régua uma
+  # segunda vez sobre o mesmo código; e o `main` sai da lista porque **todo push
+  # nele publica uma versão**, e a publicação já chama este arquivo inteiro no
+  # trabalho `validar`. Deixá-lo aqui compilaria o whisper.cpp duas vezes por
+  # push e poria dois resultados na aba Actions para a mesma coisa.
+  #
+  # O main não fica menos conferido por isso — fica conferido no lugar em que a
+  # conferência decide algo: se ela reprovar, não há versão.
   push:
-    branches: ['**']
+    branches-ignore: [main]
   pull_request:
   workflow_dispatch:
   workflow_call:
