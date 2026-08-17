@@ -13,6 +13,14 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.7.0 — 2026-08-17
+
+### Novidades
+
+- Empurrar para o main passa a publicar a versão sozinho ([`3f58c86`](https://github.com/DanielFreitasDev/ditador/commit/3f58c86b05535595ae8c4c19be136ac6edea0fcd))
+
+[Todas as mudanças desde a `v0.6.1`](https://github.com/DanielFreitasDev/ditador/compare/v0.6.1...v0.7.0)
+
 ## 0.6.1 — 2026-08-17
 
 ### Correções e ajustes
