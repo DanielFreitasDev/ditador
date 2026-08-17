@@ -35,15 +35,20 @@ mod autostart;
 mod clipboard;
 mod config;
 mod controller;
+mod dicionario;
+mod historico;
 mod hotkey;
 mod icones;
 mod ipc;
 mod keys;
+mod memoria;
 mod modelo;
 mod plataforma;
+mod portatil;
 mod programas;
 mod resample;
 mod retrato;
+mod sons;
 mod state;
 mod stt;
 mod tema;
@@ -77,8 +82,19 @@ const FILTRO_PADRAO: &str = "info,\
      whisper_rs::whisper_logging_hook=warn,whisper_rs::ggml_logging_hook=warn";
 
 fn main() -> Result<()> {
+    // A primeira de todas: no Windows o destino do arquivo de log sai de
+    // `data_dir()`, e `data_dir()` depende de o modo portátil estar decidido.
+    // Ela não escreve no log justamente por isso — quem conta o que ela
+    // descobriu é o `portatil::relatar()`, logo abaixo.
+    portatil::init();
     // Precisa vir antes de qualquer mexida em variáveis de ambiente.
     clipboard::remember_environment();
+    // E esta, antes de o programa alocar qualquer coisa de grande: ela desliga
+    // a heurística da glibc que faz os buffers de cada ditado ficarem presos nas
+    // arenas do malloc. Medido nesta máquina, são 29 MB de RSS que o processo
+    // segurava para sempre — veja `src/memoria.rs`, que tem a medida e o
+    // teste que a defende.
+    memoria::pinar_o_alocador();
     let mut registro =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(FILTRO_PADRAO));
     // No Linux isto é `None` e o log continua indo para a saída de erro, que o
@@ -131,12 +147,46 @@ fn main() -> Result<()> {
             // Não havia ninguém rodando: sobe o serviço.
             eprintln!("Ditador não estava rodando; iniciando em segundo plano.");
         }
+        Some("--cancelar" | "--cancel") => {
+            return match ipc::send("cancelar") {
+                Some(resposta) => {
+                    println!("{resposta}");
+                    Ok(())
+                }
+                None => {
+                    eprintln!("O Ditador não está rodando.");
+                    std::process::exit(1);
+                }
+            };
+        }
         Some("--configuracoes" | "--settings") => {
             if let Some(resposta) = ipc::send("settings") {
                 println!("{resposta}");
                 return Ok(());
             }
             ao_iniciar = Some(IpcCommand::Settings);
+        }
+        // Com `--janela` abre a lista na instância que estiver rodando; sem
+        // ela, imprime as últimas no terminal — que funciona sem sessão gráfica
+        // e sem o Ditador estar de pé, porque o histórico é um arquivo.
+        Some("--historico" | "--history") => {
+            if args.get(1).map(String::as_str) == Some("--janela") {
+                return match ipc::send("historico") {
+                    Some(resposta) => {
+                        println!("{resposta}");
+                        Ok(())
+                    }
+                    None => {
+                        eprintln!("O Ditador não está rodando.");
+                        std::process::exit(1);
+                    }
+                };
+            }
+            let quantas = args
+                .get(1)
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(20);
+            return imprimir_historico(quantas);
         }
         Some("--encerrar" | "--quit") => {
             return match ipc::send("quit") {
@@ -174,6 +224,13 @@ fn main() -> Result<()> {
 }
 
 fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
+    // Aqui, e não no `main`: o que a detecção do modo portátil descobriu
+    // interessa ao journal de quem está rodando o programa, e não a quem digitou
+    // `ditador --status` num terminal — ali a linha é só barulho antes da
+    // resposta. Quem responde "em que modo estou?" pela linha de comando é o
+    // `--diagnostico`, que tem uma linha própria para isso.
+    portatil::relatar();
+
     let listener = match ipc::bind() {
         ipc::Bind::Escutando(listener) => Some(listener),
         ipc::Bind::JaRodando => {
@@ -229,11 +286,13 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
     let (ui_tx, ui_rx) = crossbeam_channel::unbounded();
     let (ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
 
-    let hotkey = HotkeyListener::start(&config.hotkey, hotkey_tx);
+    let hotkey = HotkeyListener::start(&config.hotkey, &config.atalho_de_cancelar, hotkey_tx);
     let audio = audio::spawn(
         AudioSettings {
             device: config.input_device.clone(),
             max_secs: config.max_recording_secs,
+            sempre_aberto: config.microfone_sempre_aberto,
+            canal: config.canal_do_microfone,
         },
         audio_tx,
     );
@@ -279,8 +338,19 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
                     let _ = ipc_tx.send(IpcCommand::Stop);
                     "ok".to_string()
                 }
+                // Descarta o ditado em curso. Como o `iniciar` e o `parar`, ele
+                // diz o que quer em vez de inverter um estado — e como eles,
+                // desiste sozinho quando não há gravação nenhuma.
+                "cancelar" => {
+                    let _ = ipc_tx.send(IpcCommand::Cancel);
+                    "ok".to_string()
+                }
                 "settings" => {
                     let _ = ipc_tx.send(IpcCommand::Settings);
+                    "ok".to_string()
+                }
+                "historico" => {
+                    let _ = ipc_tx.send(IpcCommand::Historico);
                     "ok".to_string()
                 }
                 "quit" => {
@@ -331,13 +401,7 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
         });
     }
 
-    let controlador = Controller {
-        shared: shared.clone(),
-        sinal: sinal.clone(),
-        audio,
-        stt: stt_cmd_tx,
-        hotkey,
-    };
+    let controlador = Controller::novo(shared.clone(), sinal.clone(), audio, stt_cmd_tx, hotkey);
     std::thread::Builder::new()
         .name("controller".into())
         .spawn(move || {
@@ -497,6 +561,35 @@ fn baixar_modelo(nome: &str) -> Result<()> {
     }
 }
 
+/// Imprime as últimas transcrições no terminal.
+///
+/// Existe porque o histórico é um arquivo e não um banco: dá para lê-lo sem
+/// sessão gráfica, sem o Ditador de pé e sem ferramenta nenhuma. É o caminho de
+/// quem está numa sessão por SSH, de quem quer canalizar o texto para outro
+/// programa, e de quem só precisa recuperar a frase que acabou de se perder.
+fn imprimir_historico(quantas: usize) -> Result<()> {
+    let entradas = historico::ler_recentes(quantas);
+    if entradas.is_empty() {
+        println!(
+            "Nada guardado ainda. O histórico fica em {}",
+            config::caminho_curto(&historico::arquivo())
+        );
+        return Ok(());
+    }
+
+    let agora = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for entrada in &entradas {
+        // O tempo relativo primeiro, numa coluna de largura fixa, e o texto
+        // depois: assim a saída continua legível quando alguém a passa por um
+        // `grep` ou por um `head`.
+        println!("{:>10}  {}", entrada.ha_quanto_tempo(agora), entrada.texto);
+    }
+    Ok(())
+}
+
 /// Confere, uma a uma, as coisas de que o Ditador depende e que ele não
 /// controla.
 ///
@@ -615,6 +708,27 @@ fn diagnostico() -> Result<()> {
         },
     );
 
+    // 5a. Onde as coisas ficam. Informativo, e é a resposta a duas perguntas
+    // que já custaram caro por escrito: "onde está o meu histórico?" e "por que
+    // as configurações que eu salvei sumiram?" — esta última, quando alguém põe
+    // um marcador de modo portátil ao lado do executável sem saber o que ele
+    // faz, ou quando o marcador está lá e a pasta não aceita escrita.
+    linha(
+        None,
+        if portatil::ativo() {
+            "Onde ficam os dados (modo portátil)"
+        } else {
+            "Onde ficam os dados"
+        },
+        &format!(
+            "configuração em {}\n    modelos em {}\n    histórico em {} ({} guardadas)",
+            config::caminho_curto(&config::config_path()),
+            config::caminho_curto(&config::models_dir()),
+            config::caminho_curto(&historico::arquivo()),
+            historico::ler().len()
+        ),
+    );
+
     // 5b. Onde está o log, quando ele é um arquivo nosso. No Linux quem guarda é
     // o journal e esta linha não aparece — dizer "use o journalctl" a quem já
     // está no journal não ajuda ninguém.
@@ -686,7 +800,10 @@ fn ajuda() {
 USO
   ditador                    inicia em segundo plano
   ditador --alternar         começa/para a gravação (para ícone e atalhos)
+  ditador --cancelar         descarta a gravação em curso, sem transcrever
   ditador --configuracoes    abre as configurações
+  ditador --historico [n]    imprime as últimas n transcrições (padrão: 20)
+  ditador --historico --janela   abre a lista na janela do Ditador
   ditador --status           mostra o estado da instância em execução
   ditador --encerrar         fecha o aplicativo
   ditador --baixar-modelo    baixa o modelo de transcrição (~574 MB)
@@ -700,6 +817,11 @@ USO NORMAL
 
 ARQUIVOS
   ~/.config/ditador/config.json
-  ~/.local/share/ditador/models/"#
+  ~/.local/share/ditador/models/
+  ~/.local/share/ditador/historico/historico.jsonl
+
+MODO PORTÁTIL
+  Um arquivo chamado "portatil" ao lado do executável faz tudo isso morar
+  numa pasta "Dados/" vizinha a ele — para pendrive e máquina emprestada."#
     );
 }

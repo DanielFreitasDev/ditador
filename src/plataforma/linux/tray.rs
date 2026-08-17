@@ -216,6 +216,27 @@ impl ksni::Tray for Icone {
                 ..Default::default()
             }
             .into(),
+            // "Descartar" só aparece gravando, e é a única saída de quem grava
+            // por alternar: sem tecla segurada não há o que soltar, e antes
+            // disto a única forma de desistir era esperar o Whisper produzir um
+            // texto que ninguém queria — que ainda ia para a área de
+            // transferência.
+            StandardItem {
+                label: "Descartar o ditado".to_string(),
+                icon_name: "edit-delete-symbolic".to_string(),
+                enabled: gravando,
+                visible: gravando,
+                activate: Box::new(|this: &mut Self| this.enviar(IpcCommand::Cancel)),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Transcrições".to_string(),
+                icon_name: "document-open-recent-symbolic".to_string(),
+                activate: Box::new(|this: &mut Self| this.enviar(IpcCommand::Historico)),
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: "Configurações".to_string(),
                 icon_name: "preferences-system-symbolic".to_string(),

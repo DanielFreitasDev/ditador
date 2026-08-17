@@ -11,6 +11,8 @@ pub enum View {
     Processing,
     Result,
     Settings,
+    /// A lista das transcrições guardadas (ver `src/historico.rs`).
+    Historico,
     Error,
 }
 
@@ -23,6 +25,11 @@ impl View {
             View::Hidden | View::Recording | View::Processing => [440.0, 178.0],
             View::Result => [620.0, 372.0],
             View::Settings => [660.0, 660.0],
+            // Mais larga que a de resultado e da altura da de configurações: é
+            // uma lista, e o que se procura nela é uma frase inteira. Cortar o
+            // texto em quarenta caracteres obrigaria a abrir uma a uma para
+            // achar a certa, que é o oposto do que ela existe para fazer.
+            View::Historico => [700.0, 620.0],
             // A mais alta das mensagens é a do modelo faltando: título, duas
             // linhas de texto, os botões e a nota de rodapé — mais o aviso do
             // atalho, que aparece embaixo de tudo isso e é justamente o caso da
@@ -32,6 +39,17 @@ impl View {
         };
         [w + pad, h + pad]
     }
+}
+
+/// Qual dos dois atalhos a tela de configurações está capturando.
+///
+/// Era um booleano enquanto havia um atalho só. Com o de cancelar, o booleano
+/// não sabia para onde mandar a combinação capturada — e o palpite mais óbvio
+/// (o de ditar, que é o primeiro da tela) trocaria o atalho errado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualAtalho {
+    Ditar,
+    Cancelar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,13 +190,31 @@ pub enum UiAction {
     CloseSettings,
     /// Aplica e grava o rascunho de configuração.
     ApplyDraft,
-    StartHotkeyCapture,
+    StartHotkeyCapture(QualAtalho),
     CancelHotkeyCapture,
+    /// Grava um atalho direto, sem passar pela captura de teclas.
+    ///
+    /// Existe por causa do Esc: ele é o padrão do atalho de cancelar e é também
+    /// a tecla que **desiste** de uma captura, então não há como escolhê-lo
+    /// apertando-o. O botão "Usar Esc" o grava por este caminho. O mesmo vale
+    /// para o vazio, que é como se desliga o cancelamento por tecla.
+    DefinirAtalho(QualAtalho, Vec<String>),
     ReloadModel,
     /// Baixa o modelo sugerido (só faz sentido quando ele está faltando).
     DownloadModel,
     /// Para o download em curso e apaga o arquivo pela metade.
     CancelDownload,
+    /// Abre a lista das transcrições guardadas.
+    AbrirHistorico,
+    /// Fecha a lista e volta ao repouso.
+    FecharHistorico,
+    /// Põe na área de transferência a transcrição de índice `n` da lista
+    /// mostrada (a mais nova é a zero).
+    CopiarDoHistorico(usize),
+    /// Apaga o histórico inteiro, texto e áudio.
+    LimparHistorico,
+    /// Descarta a gravação em curso sem transcrever.
+    Cancelar,
     Quit,
 }
 
@@ -200,7 +236,8 @@ pub struct Shared {
     /// ilegível e modelo faltando — e, dividindo um campo só, o segundo apagava
     /// o primeiro antes de alguém ler.
     pub aviso_atalho: Option<String>,
-    pub capturing_hotkey: bool,
+    /// Qual atalho a tela está capturando agora, se algum.
+    pub capturando: Option<QualAtalho>,
     pub copied_at: Option<Instant>,
     /// Quando a gravação em curso começou. É ele, e não a tela, que diz se o
     /// microfone está aberto — a janela de um resultado pode aparecer por cima
@@ -234,6 +271,15 @@ pub struct Shared {
     /// `Integracoes::mostram_o_aviso` (a sobreposição de gravação, em
     /// `tela_visivel`).
     pub integracoes: Integracoes,
+    /// As transcrições guardadas, da mais nova para a mais velha.
+    ///
+    /// Fica aqui, e não é lida do disco a cada quadro, porque a interface
+    /// redesenha dezenas de vezes por segundo e o histórico é um arquivo: quem
+    /// o carrega é o controlador, ao abrir a tela, e ele só muda quando alguma
+    /// coisa muda de verdade.
+    pub historico: Vec<crate::historico::Entrada>,
+    /// Quanto o histórico ocupa em disco, em bytes, na hora em que foi lido.
+    pub historico_em_disco: u64,
 }
 
 impl Shared {
@@ -247,7 +293,7 @@ impl Shared {
             message: String::new(),
             status: String::new(),
             aviso_atalho: None,
-            capturing_hotkey: false,
+            capturando: None,
             copied_at: None,
             recording_since: None,
             ditado_atual: 0,
@@ -257,6 +303,8 @@ impl Shared {
             download: None,
             quitting: false,
             integracoes: Integracoes::default(),
+            historico: Vec::new(),
+            historico_em_disco: 0,
         }
     }
 

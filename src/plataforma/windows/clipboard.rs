@@ -62,14 +62,16 @@
 //! quem usa teclado na tela ou software de acessibilidade ficaria sem atalho
 //! nenhum.
 
+use crate::config::{MetodoDeColagem, TeclaDeEnvio};
 use anyhow::{Result, anyhow};
 
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VK_CONTROL, VK_LCONTROL, VK_LMENU,
-    VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_V,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VK_CONTROL,
+    VK_INSERT, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN,
+    VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
@@ -99,8 +101,27 @@ pub fn colagem_disponivel() -> bool {
 /// próprio nos torna identificáveis em vez de anônimos. Custa zero.
 const ASSINATURA: usize = 0x0D17_AD05;
 
-/// Envia Ctrl+V para a janela em foco.
-pub fn colar() -> Result<()> {
+/// Envia para a janela em foco o atalho de colar que a configuração escolheu.
+pub fn colar(metodo: MetodoDeColagem, texto: &str) -> Result<()> {
+    conferir_o_foco()?;
+
+    match acorde_de_colagem(metodo) {
+        Some(acorde) => enviar(&montar_sequencia(&segurando_agora(), acorde)),
+        // `Digitar` não usa a área de transferência: o texto sai tecla a tecla.
+        None => digitar(texto),
+    }
+}
+
+/// Aperta a tecla que envia o texto, depois de ele ter sido colado.
+pub fn enviar_tecla(tecla: TeclaDeEnvio) -> Result<()> {
+    let Some(acorde) = acorde_de_envio(tecla) else {
+        return Ok(());
+    };
+    conferir_o_foco()?;
+    enviar(&montar_sequencia(&segurando_agora(), acorde))
+}
+
+fn conferir_o_foco() -> Result<()> {
     if foco_inalcancavel() {
         return Err(anyhow!(
             "a janela em foco tem privilégio maior que o do Ditador e o Windows \
@@ -108,8 +129,50 @@ pub fn colar() -> Result<()> {
              transferência: cole com Ctrl+V"
         ));
     }
+    Ok(())
+}
 
-    enviar(&montar_sequencia(&segurando_agora()))
+/// Digita o texto, caractere a caractere, sem passar pela área de transferência.
+///
+/// `KEYEVENTF_UNICODE` manda o **caractere**, e não uma tecla: o `wVk` vai zero e
+/// o `wScan` carrega a unidade UTF-16. É por isso que este caminho não depende do
+/// layout de teclado — um "ç" sai "ç" num teclado americano — e é a diferença
+/// entre digitar e sintetizar as teclas que produziriam aquelas letras, que seria
+/// impossível de acertar para todo layout que existe.
+///
+/// Os modificadores segurados **precisam** sair da frente aqui, e por um motivo
+/// mais grave do que na colagem: um Ctrl segurado transforma cada caractere
+/// digitado num caractere de controle, e o que chega ao editor não é texto
+/// estranho, é uma sequência de comandos.
+fn digitar(texto: &str) -> Result<()> {
+    if texto.is_empty() {
+        return Ok(());
+    }
+
+    let segurando = segurando_agora();
+    let mut fila: Vec<Tecla> = Vec::new();
+    let atrapalham = segurando.no_caminho_de(&[]);
+    for &vk in &atrapalham {
+        fila.push(Tecla::solta(vk));
+    }
+    for unidade in texto.encode_utf16() {
+        fila.push(Tecla::caractere(unidade, false));
+        fila.push(Tecla::caractere(unidade, true));
+    }
+    for &vk in atrapalham.iter().rev() {
+        fila.push(Tecla::aperta(vk));
+    }
+
+    // Em blocos, e não numa chamada só como a colagem: um texto de mil
+    // caracteres vira quatro mil `INPUT`, e a fila de entrada do Windows tem
+    // limite — passando dele, o `SendInput` aceita uma parte e descarta o resto,
+    // que sairia como um texto cortado no meio sem erro nenhum. O bloco também
+    // dá ao programa de destino a chance de processar o que já chegou.
+    const BLOCO: usize = 200;
+    for pedaco in fila.chunks(BLOCO) {
+        enviar(pedaco)?;
+    }
+    Ok(())
 }
 
 /// O que dizer na tela quando a colagem automática não está disponível.
@@ -142,20 +205,132 @@ pub fn aviso_da_copia() -> Option<&'static str> {
 struct Tecla {
     vk: u16,
     soltar: bool,
+    /// Uma unidade UTF-16 a digitar, em vez de uma tecla a apertar. Com ela o
+    /// `vk` vai zero e o Windows entrega o caractere direto (ver `digitar`).
+    caractere: Option<u16>,
+}
+
+impl Tecla {
+    fn aperta(vk: u16) -> Self {
+        Self {
+            vk,
+            soltar: false,
+            caractere: None,
+        }
+    }
+    fn solta(vk: u16) -> Self {
+        Self {
+            vk,
+            soltar: true,
+            caractere: None,
+        }
+    }
+    fn caractere(unidade: u16, soltar: bool) -> Self {
+        Self {
+            vk: 0,
+            soltar,
+            caractere: Some(unidade),
+        }
+    }
+}
+
+/// Uma combinação a enviar: os modificadores e a tecla principal.
+///
+/// Os modificadores são os virtual-keys **genéricos** (`VK_CONTROL`, `VK_SHIFT`,
+/// `VK_MENU`) e não os de lado. É de propósito: quando o Ditador precisa apertar
+/// um modificador ele não tem por que escolher um lado, e quando a pessoa já está
+/// segurando um, o lado é dela — o que importa é saber que aquele modificador
+/// está coberto.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Acorde {
+    modificadores: &'static [u16],
+    tecla: u16,
+}
+
+fn acorde_de_colagem(metodo: MetodoDeColagem) -> Option<Acorde> {
+    Some(match metodo {
+        MetodoDeColagem::CtrlV => Acorde {
+            modificadores: &[VK_CONTROL],
+            tecla: VK_V,
+        },
+        MetodoDeColagem::ShiftInsert => Acorde {
+            modificadores: &[VK_SHIFT],
+            tecla: VK_INSERT,
+        },
+        MetodoDeColagem::CtrlShiftV => Acorde {
+            modificadores: &[VK_CONTROL, VK_SHIFT],
+            tecla: VK_V,
+        },
+        MetodoDeColagem::Digitar => return None,
+    })
+}
+
+fn acorde_de_envio(tecla: TeclaDeEnvio) -> Option<Acorde> {
+    Some(match tecla {
+        TeclaDeEnvio::Nenhuma => return None,
+        TeclaDeEnvio::Enter => Acorde {
+            modificadores: &[],
+            tecla: VK_RETURN,
+        },
+        TeclaDeEnvio::CtrlEnter => Acorde {
+            modificadores: &[VK_CONTROL],
+            tecla: VK_RETURN,
+        },
+    })
 }
 
 /// O que a pessoa está segurando de verdade no instante da colagem.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 struct Segurando {
-    /// Shift, Alt e Win, que estragariam o Ctrl+V virando outro atalho.
-    atrapalham: Vec<u16>,
-    /// Um Ctrl já pressionado — o único modificador que ajuda.
-    ctrl: bool,
+    /// Os modificadores pressionados, cada um pelo virtual-key **do lado** —
+    /// é ele que precisa ser solto e reapertado, porque soltar o genérico
+    /// deixaria o outro lado preso.
+    teclas: Vec<u16>,
 }
 
-/// Os modificadores que atrapalham, por lado. Ctrl fica de fora de propósito: ele
-/// é o que se quer.
-const ATRAPALHAM: [u16; 6] = [VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN];
+/// Todos os modificadores que interessam, por lado.
+const MODIFICADORES: [u16; 8] = [
+    VK_LCONTROL,
+    VK_RCONTROL,
+    VK_LSHIFT,
+    VK_RSHIFT,
+    VK_LMENU,
+    VK_RMENU,
+    VK_LWIN,
+    VK_RWIN,
+];
+
+/// De um modificador de lado para o genérico correspondente.
+///
+/// O Win precisa de um cuidado que os outros não têm: não existe um "VK_WIN"
+/// genérico, e ele nunca aparece num acorde nosso — então ele é sempre "não
+/// coberto", que é o que faz o Ditador soltá-lo antes de colar. É o certo: a
+/// tecla Win segurada junto com qualquer coisa abre um atalho do Windows.
+fn generico(vk: u16) -> u16 {
+    match vk {
+        VK_LCONTROL | VK_RCONTROL => VK_CONTROL,
+        VK_LSHIFT | VK_RSHIFT => VK_SHIFT,
+        VK_LMENU | VK_RMENU => VK_MENU,
+        outro => outro,
+    }
+}
+
+impl Segurando {
+    /// Os modificadores segurados que **não** fazem parte do acorde — os que
+    /// precisam sair da frente e voltar depois.
+    fn no_caminho_de(&self, acorde: &[u16]) -> Vec<u16> {
+        self.teclas
+            .iter()
+            .copied()
+            .filter(|&vk| !acorde.contains(&generico(vk)))
+            .collect()
+    }
+
+    /// Este modificador do acorde já está sendo segurado pela pessoa?
+    fn ja_tem(&self, modificador: u16) -> bool {
+        self.teclas.iter().any(|&vk| generico(vk) == modificador)
+    }
+}
 
 fn segurando_agora() -> Segurando {
     // O bit alto do `GetAsyncKeyState` é "está pressionada agora". O bit 0, que
@@ -167,49 +342,44 @@ fn segurando_agora() -> Segurando {
     }
 
     Segurando {
-        atrapalham: ATRAPALHAM
+        teclas: MODIFICADORES
             .into_iter()
             .filter(|&vk| pressionada(vk))
             .collect(),
-        ctrl: pressionada(VK_LCONTROL) || pressionada(VK_RCONTROL),
     }
 }
 
 /// Da situação do teclado para a sequência de teclas a enviar.
 ///
 /// A regra é deixar o teclado como estava: tudo que é solto aqui é reapertado no
-/// fim, na ordem inversa, e o que já estava apertado e serve — o Ctrl — não é
-/// tocado. Um `SendInput` que solta uma tecla que a pessoa ainda segura deixa o
-/// sistema em desacordo com a mão dela até a próxima batida, e o sintoma disso é
-/// um Shift que "parou de funcionar".
-fn montar_sequencia(agora: &Segurando) -> Vec<Tecla> {
-    let mut fila = Vec::with_capacity(agora.atrapalham.len() * 2 + 4);
+/// fim, na ordem inversa, e o que já estava apertado e serve — um Ctrl quando o
+/// acorde é Ctrl+V — não é tocado. Um `SendInput` que solta uma tecla que a
+/// pessoa ainda segura deixa o sistema em desacordo com a mão dela até a próxima
+/// batida, e o sintoma disso é um Shift que "parou de funcionar".
+fn montar_sequencia(agora: &Segurando, acorde: Acorde) -> Vec<Tecla> {
+    let atrapalham = agora.no_caminho_de(acorde.modificadores);
+    let faltam: Vec<u16> = acorde
+        .modificadores
+        .iter()
+        .copied()
+        .filter(|&m| !agora.ja_tem(m))
+        .collect();
 
-    for &vk in &agora.atrapalham {
-        fila.push(Tecla { vk, soltar: true });
+    let mut fila = Vec::with_capacity(atrapalham.len() * 2 + faltam.len() * 2 + 2);
+
+    for &vk in &atrapalham {
+        fila.push(Tecla::solta(vk));
     }
-    if !agora.ctrl {
-        fila.push(Tecla {
-            vk: VK_CONTROL,
-            soltar: false,
-        });
+    for &vk in &faltam {
+        fila.push(Tecla::aperta(vk));
     }
-    fila.push(Tecla {
-        vk: VK_V,
-        soltar: false,
-    });
-    fila.push(Tecla {
-        vk: VK_V,
-        soltar: true,
-    });
-    if !agora.ctrl {
-        fila.push(Tecla {
-            vk: VK_CONTROL,
-            soltar: true,
-        });
+    fila.push(Tecla::aperta(acorde.tecla));
+    fila.push(Tecla::solta(acorde.tecla));
+    for &vk in faltam.iter().rev() {
+        fila.push(Tecla::solta(vk));
     }
-    for &vk in agora.atrapalham.iter().rev() {
-        fila.push(Tecla { vk, soltar: false });
+    for &vk in atrapalham.iter().rev() {
+        fila.push(Tecla::aperta(vk));
     }
 
     fila
@@ -229,6 +399,12 @@ fn bandeiras(tecla: &Tecla) -> u32 {
     let mut bandeiras = 0;
     if tecla.soltar {
         bandeiras |= KEYEVENTF_KEYUP;
+    }
+    if tecla.caractere.is_some() {
+        // Com `UNICODE` o `wVk` precisa ser zero e o `wScan` carrega o
+        // caractere; a bandeira de estendida não se aplica e o `MapVirtualKeyW`
+        // não é consultado.
+        return bandeiras | KEYEVENTF_UNICODE;
     }
     if estendida(tecla.vk) {
         bandeiras |= KEYEVENTF_EXTENDEDKEY;
@@ -252,8 +428,13 @@ fn enviar(fila: &[Tecla]) -> Result<()> {
                     wVk: tecla.vk,
                     // O scan code vai preenchido junto com o virtual-key porque há
                     // programas (jogos, terminais, emuladores) que leem o scan e
-                    // ignoram o resto. Não custa nada e alcança mais gente.
-                    wScan: unsafe { MapVirtualKeyW(tecla.vk as u32, MAPVK_VK_TO_VSC) } as u16,
+                    // ignoram o resto. Não custa nada e alcança mais gente. Num
+                    // caractere Unicode ele é o próprio caractere, e é o `wVk`
+                    // que vai zero.
+                    wScan: match tecla.caractere {
+                        Some(unidade) => unidade,
+                        None => unsafe { MapVirtualKeyW(tecla.vk as u32, MAPVK_VK_TO_VSC) as u16 },
+                    },
                     dwFlags: bandeiras(tecla),
                     time: 0,
                     dwExtraInfo: ASSINATURA,
@@ -333,16 +514,24 @@ mod tests {
     use super::*;
 
     fn apertar(vk: u16) -> Tecla {
-        Tecla { vk, soltar: false }
+        Tecla::aperta(vk)
     }
     fn soltar(vk: u16) -> Tecla {
-        Tecla { vk, soltar: true }
+        Tecla::solta(vk)
+    }
+    fn segurando(teclas: &[u16]) -> Segurando {
+        Segurando {
+            teclas: teclas.to_vec(),
+        }
+    }
+    fn ctrl_v() -> Acorde {
+        acorde_de_colagem(MetodoDeColagem::CtrlV).expect("Ctrl+V é um acorde")
     }
 
     #[test]
     fn com_o_teclado_em_repouso_a_sequencia_e_so_o_ctrl_v() {
         assert_eq!(
-            montar_sequencia(&Segurando::default()),
+            montar_sequencia(&Segurando::default(), ctrl_v()),
             vec![
                 apertar(VK_CONTROL),
                 apertar(VK_V),
@@ -356,24 +545,22 @@ mod tests {
     fn um_ctrl_ja_segurado_e_aproveitado_em_vez_de_reapertado() {
         // Apertar por cima e soltar depois deixaria o sistema achando que a
         // pessoa soltou o Ctrl que ela ainda segura — e o próximo clique dela
-        // sairia sem Ctrl nenhum.
-        let agora = Segurando {
-            atrapalham: vec![],
-            ctrl: true,
-        };
-        assert_eq!(montar_sequencia(&agora), vec![apertar(VK_V), soltar(VK_V)]);
+        // sairia sem Ctrl nenhum. Vale para os dois lados da tecla.
+        for lado in [VK_LCONTROL, VK_RCONTROL] {
+            assert_eq!(
+                montar_sequencia(&segurando(&[lado]), ctrl_v()),
+                vec![apertar(VK_V), soltar(VK_V)],
+                "o Ctrl do lado {lado:#x} não foi aproveitado"
+            );
+        }
     }
 
     #[test]
     fn o_shift_segurado_sai_da_frente_e_volta_depois() {
         // Sem isto o Ctrl+V viraria Ctrl+Shift+V, que é "colar sem formatação"
         // em metade dos programas e nada na outra metade.
-        let agora = Segurando {
-            atrapalham: vec![VK_LSHIFT],
-            ctrl: false,
-        };
         assert_eq!(
-            montar_sequencia(&agora),
+            montar_sequencia(&segurando(&[VK_LSHIFT]), ctrl_v()),
             vec![
                 soltar(VK_LSHIFT),
                 apertar(VK_CONTROL),
@@ -387,23 +574,67 @@ mod tests {
 
     #[test]
     fn o_teclado_termina_como_comecou() {
-        // A propriedade que interessa, com qualquer combinação segurada: toda
-        // tecla solta pela colagem é reapertada, e nada sobra apertado além do
-        // que já estava.
-        let agora = Segurando {
-            atrapalham: vec![VK_LSHIFT, VK_RMENU, VK_LWIN],
-            ctrl: false,
-        };
-        let fila = montar_sequencia(&agora);
+        // A propriedade que interessa, com qualquer combinação segurada e
+        // qualquer acorde: toda tecla solta pela colagem é reapertada, tudo que
+        // apertamos é solto, e nada sobra diferente do que estava.
+        let combinacoes: [&[u16]; 5] = [
+            &[],
+            &[VK_LSHIFT],
+            &[VK_LSHIFT, VK_RMENU, VK_LWIN],
+            &[VK_LCONTROL, VK_RSHIFT],
+            &[VK_RWIN, VK_LMENU, VK_RCONTROL, VK_LSHIFT],
+        ];
+        let acordes = [
+            acorde_de_colagem(MetodoDeColagem::CtrlV),
+            acorde_de_colagem(MetodoDeColagem::ShiftInsert),
+            acorde_de_colagem(MetodoDeColagem::CtrlShiftV),
+            acorde_de_envio(TeclaDeEnvio::Enter),
+            acorde_de_envio(TeclaDeEnvio::CtrlEnter),
+        ];
 
-        for &vk in &agora.atrapalham {
-            let soltas = fila.iter().filter(|t| t.vk == vk && t.soltar).count();
-            let apertadas = fila.iter().filter(|t| t.vk == vk && !t.soltar).count();
-            assert_eq!((soltas, apertadas), (1, 1), "tecla {vk:#x}");
+        for teclas in combinacoes {
+            for acorde in acordes.into_iter().flatten() {
+                let agora = segurando(teclas);
+                let fila = montar_sequencia(&agora, acorde);
+
+                // Cada modificador segurado termina apertado — ou porque nunca
+                // foi tocado, ou porque foi solto e devolvido.
+                for &vk in teclas {
+                    let soltas = fila.iter().filter(|t| t.vk == vk && t.soltar).count();
+                    let apertadas = fila.iter().filter(|t| t.vk == vk && !t.soltar).count();
+                    assert_eq!(
+                        soltas, apertadas,
+                        "a tecla {vk:#x} não voltou como estava com {acorde:?}"
+                    );
+                }
+                // E cada modificador que **nós** apertamos é solto.
+                for &m in acorde.modificadores {
+                    if !agora.ja_tem(m) {
+                        let soltas = fila.iter().filter(|t| t.vk == m && t.soltar).count();
+                        let apertadas = fila.iter().filter(|t| t.vk == m && !t.soltar).count();
+                        assert_eq!(
+                            (apertadas, soltas),
+                            (1, 1),
+                            "o modificador {m:#x} de {acorde:?} ficou preso"
+                        );
+                    }
+                }
+                // A tecla principal é apertada e solta, exatamente uma vez.
+                let principal: Vec<bool> = fila
+                    .iter()
+                    .filter(|t| t.vk == acorde.tecla && t.caractere.is_none())
+                    .map(|t| t.soltar)
+                    .collect();
+                assert_eq!(principal, vec![false, true], "{acorde:?}");
+            }
         }
+    }
 
-        // E a volta é na ordem inversa da ida: quem foi solto por último volta
-        // primeiro, que é como um teclado de verdade se comporta.
+    #[test]
+    fn a_volta_e_na_ordem_inversa_da_ida() {
+        // É como um teclado de verdade se comporta: quem foi solto por último
+        // volta primeiro.
+        let fila = montar_sequencia(&segurando(&[VK_LSHIFT, VK_RMENU, VK_LWIN]), ctrl_v());
         let volta: Vec<u16> = fila
             .iter()
             .skip_while(|t| t.vk != VK_CONTROL || !t.soltar)
@@ -411,6 +642,93 @@ mod tests {
             .map(|t| t.vk)
             .collect();
         assert_eq!(volta, vec![VK_LWIN, VK_RMENU, VK_LSHIFT]);
+    }
+
+    #[test]
+    fn o_shift_segurado_e_aproveitado_pelo_shift_insert() {
+        // O mesmo Shift que atrapalha o Ctrl+V é o que o Shift+Insert quer.
+        // Antes de os métodos existirem, "atrapalha" era uma lista fixa — e com
+        // ela este acorde soltaria justamente o modificador de que precisa.
+        let acorde = acorde_de_colagem(MetodoDeColagem::ShiftInsert).expect("acorde");
+        assert_eq!(
+            montar_sequencia(&segurando(&[VK_RSHIFT]), acorde),
+            vec![apertar(VK_INSERT), soltar(VK_INSERT)]
+        );
+    }
+
+    #[test]
+    fn o_ctrl_shift_v_aproveita_os_dois_modificadores() {
+        let acorde = acorde_de_colagem(MetodoDeColagem::CtrlShiftV).expect("acorde");
+        assert_eq!(
+            montar_sequencia(&segurando(&[VK_LCONTROL, VK_LSHIFT]), acorde),
+            vec![apertar(VK_V), soltar(VK_V)]
+        );
+        // E aperta só o que falta.
+        assert_eq!(
+            montar_sequencia(&segurando(&[VK_LCONTROL]), acorde),
+            vec![
+                apertar(VK_SHIFT),
+                apertar(VK_V),
+                soltar(VK_V),
+                soltar(VK_SHIFT)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tecla_win_nunca_e_aproveitada() {
+        // Não existe acorde nosso com Win, e um Win segurado junto com qualquer
+        // coisa abre um atalho do Windows. Ele sempre sai da frente.
+        for win in [VK_LWIN, VK_RWIN] {
+            let fila = montar_sequencia(&segurando(&[win]), ctrl_v());
+            assert_eq!(fila[0], soltar(win), "o {win:#x} não saiu da frente");
+        }
+    }
+
+    #[test]
+    fn o_enter_sozinho_nao_aperta_modificador_nenhum() {
+        let acorde = acorde_de_envio(TeclaDeEnvio::Enter).expect("acorde");
+        assert_eq!(
+            montar_sequencia(&Segurando::default(), acorde),
+            vec![apertar(VK_RETURN), soltar(VK_RETURN)]
+        );
+        // Mas um Ctrl segurado transformaria o Enter em Ctrl+Enter, que envia
+        // noutros programas — então ele sai da frente.
+        let fila = montar_sequencia(&segurando(&[VK_LCONTROL]), acorde);
+        assert_eq!(fila.first(), Some(&soltar(VK_LCONTROL)));
+        assert_eq!(fila.last(), Some(&apertar(VK_LCONTROL)));
+    }
+
+    #[test]
+    fn digitar_manda_o_caractere_e_nao_a_tecla() {
+        // O que faz este caminho não depender de layout: com `UNICODE` o `wVk`
+        // vai zero e o `wScan` carrega o caractere. Um "ç" sai "ç" num teclado
+        // americano.
+        let tecla = Tecla::caractere('ç' as u16, false);
+        assert_eq!(tecla.vk, 0);
+        assert_eq!(tecla.caractere, Some(0xE7));
+        assert_eq!(bandeiras(&tecla) & KEYEVENTF_UNICODE, KEYEVENTF_UNICODE);
+        assert_eq!(bandeiras(&tecla) & KEYEVENTF_KEYUP, 0);
+        assert_eq!(
+            bandeiras(&Tecla::caractere('ç' as u16, true)) & KEYEVENTF_KEYUP,
+            KEYEVENTF_KEYUP
+        );
+        // E a bandeira de estendida nunca entra num caractere: ela não se aplica
+        // e o `wScan` já está ocupado.
+        assert_eq!(bandeiras(&tecla) & KEYEVENTF_EXTENDEDKEY, 0);
+    }
+
+    #[test]
+    fn o_generico_de_cada_lado_e_o_que_se_espera() {
+        assert_eq!(generico(VK_LCONTROL), VK_CONTROL);
+        assert_eq!(generico(VK_RCONTROL), VK_CONTROL);
+        assert_eq!(generico(VK_LSHIFT), VK_SHIFT);
+        assert_eq!(generico(VK_RSHIFT), VK_SHIFT);
+        assert_eq!(generico(VK_LMENU), VK_MENU);
+        assert_eq!(generico(VK_RMENU), VK_MENU);
+        // O Win não tem genérico, e é isso que o mantém sempre "não coberto".
+        assert_eq!(generico(VK_LWIN), VK_LWIN);
+        assert_eq!(generico(VK_RWIN), VK_RWIN);
     }
 
     /// O `SendInput` de verdade, com o Windows de verdade do outro lado.
@@ -432,7 +750,18 @@ mod tests {
     #[test]
     #[ignore = "digita Ctrl+V na janela em foco"]
     fn o_windows_aceita_as_teclas_que_montamos() {
-        colar().expect("o Windows recusou a colagem");
+        colar(MetodoDeColagem::CtrlV, "").expect("o Windows recusou a colagem");
+    }
+
+    /// O mesmo, para o caminho que digita. Ele usa uma bandeira diferente
+    /// (`KEYEVENTF_UNICODE`) e um `wVk` zerado, que é justamente a combinação
+    /// que o `SendInput` recusa quando está errada.
+    ///
+    ///     cargo test --no-default-features --features cpu -- --ignored o_windows_aceita_o_texto
+    #[test]
+    #[ignore = "digita texto na janela em foco"]
+    fn o_windows_aceita_o_texto_que_digitamos() {
+        digitar("ação").expect("o Windows recusou a digitação");
     }
 
     #[test]

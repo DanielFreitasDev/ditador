@@ -70,6 +70,12 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# A soma de verificação do modelo baixado (`src/modelo.rs`). Só o SHA-256, sem
+# features: é a família que a Hugging Face publica no `lfs.oid` de cada arquivo,
+# e comparar com ela é o que separa "o download terminou" de "o download veio
+# inteiro". Uma implementação nossa aqui seria criptografia escrita à mão para
+# economizar uma dependência de 30 kB que não tem transitivas.
+sha2 = { version = "0.10", default-features = false }
 whisper-rs = { version = "0.16", default-features = false, features = ["log_backend"] }
 # Dependência direta apenas para poder ligar o backend de GPU no crate -sys
 # (veja o comentário em [features]). O código só usa a API do whisper-rs.

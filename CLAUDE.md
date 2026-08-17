@@ -567,6 +567,47 @@ investigação que produziu o conhecimento — sintoma, diagnóstico, o que se t
   teste que falhou, falhou. E não vá procurar o defeito no JS da extensão por causa dele: o
   `npm run lint`, o `gjs -m scripts/teste-do-backend.js` e o `--dry-run` dos schemas continuam valendo e
   cobrem o resto.
+- **Toda conta de altura da interface precisa de piso** — use `ui::altura_util`. A janela é
+  redimensionada por comando (`ViewportCommand::InnerSize`), e o comando é atendido no quadro
+  **seguinte**: existe sempre um desenho feito com o tamanho da tela anterior. Vindo da gravação (178)
+  para o resultado (372), a sobra daquele quadro dá 92 e a conta dava −6 — e o `set_min_height` do egui
+  entra em pânico com altura negativa, derrubando o programa. Já derrubava na 0.6.0; só ninguém rodava
+  o passeio numa build de depuração. Investigação em `docs/LEARNINGS.md`.
+- **A correção de termos do `src/dicionario.rs` não pode voltar a ser gulosa.** Ela mede *todas* as
+  janelas de *todas* as posições antes de decidir, e aceita por semelhança decrescente. Experimentando
+  a janela maior primeiro — que é o que parece certo — "usei o kubernetes" virava "usei Kubernetes": a
+  chave `okubernetes` está a uma edição de `kubernetes`, porque acrescentar uma letra é uma edição
+  mesmo quando a letra é uma palavra inteira.
+- **`portatil::init()` é a primeira linha do `main`, antes do logger.** No Windows o destino do arquivo
+  de log sai de `data_dir()`, que depende dessa decisão. É por isso que ela não escreve no log — quem
+  conta o que ela descobriu é o `portatil::relatar()`, logo depois de o logger subir. Não a mova para
+  depois, e não ponha `log::` dentro dela.
+- **`memoria::pinar_o_alocador()` também é do arranque, e não é supérflua.** Sem ela a glibc retém ~29 MB
+  de RSS para sempre depois dos primeiros ditados (medido; a curva estaciona, não cresce sem limite). O
+  teste `os_buffers_de_um_ditado_voltam_para_o_sistema` falha se alguém a remover.
+- **Em `audio::Captura::comecar`, o anel de pré-gravação é despejado *antes* de a bandeira `gravando`
+  subir.** Na ordem contrária, as amostras que chegarem durante o despejo entram no buffer à frente das
+  que já estavam no anel — e o ditado começa com um pedacinho do futuro antes do passado.
+- **O medidor de nível só é alimentado durante a gravação**, mesmo com o microfone aberto o tempo todo
+  (`build`, em `src/audio.rs`). É a mesma regra do sinal `Nivel` do D-Bus, e agora ela precisa ser dita
+  no callback: no modo sempre aberto o callback roda sem parar, e alimentar o medidor fora do ditado
+  faria a thread do D-Bus emitir quinze vezes por segundo com o microfone parado.
+- **`AudioCmd::Cancel` é um comando próprio, e não um `Stop` cujo resultado se joga fora.** O áudio
+  descartado não atravessa o canal — são megabytes que não são copiados — e o controlador não precisa
+  lembrar, quando um `Captured` chegasse, que aquele ditado foi cancelado. Um estado a menos para
+  manter em dia.
+- **O atalho de cancelar é conferido antes do de ditar** (`conferir_cancelar`, em `src/hotkey.rs`), e
+  dispara só na transição de incompleto para completo. Cancelar é instantâneo: não tem par de soltar, e
+  um evento por tecla apertada enquanto a combinação estivesse embaixo mandaria uma enxurrada.
+- **O histórico é gravado antes de o texto ser entregue** (`on_transcription`). Se a colagem cair na
+  janela errada ou a área de transferência recusar, o texto já está a salvo — que é a razão de o módulo
+  existir. Inverter a ordem desfaz o recurso sem quebrar nenhum teste.
+- **O SHA-256 de um modelo da Hugging Face é o `x-linked-etag`, não o `etag`.** O primeiro vem no
+  redirecionamento e é o `lfs.oid`; o segundo vem na resposta final do CDN e é o hash do Xet. Conferir
+  contra o `etag` reprova **todo** download bom. Detalhes em `docs/LEARNINGS.md`.
+- **Nenhum argumento de uma chamada que trave o estado pode vir de `lock(&shared)`.** O `MutexGuard`
+  temporário vive até o fim da expressão, então `on_stt(Evento { ditado: b.estado().ditado_atual, .. })`
+  trava o teste para sempre — sem falhar e sem mensagem. Tire o valor antes da chamada.
 
 ## Variáveis de diagnóstico
 
@@ -575,7 +616,7 @@ Combináveis, lidas em `src/main.rs` e `src/ui.rs`:
 | Variável | Efeito |
 |---|---|
 | `DITADOR_CAPTURA=<dir>` | grava um PNG de cada tela quando ela estabiliza |
-| `DITADOR_DEMO=1` | percorre as três telas com texto de exemplo e sai |
+| `DITADOR_DEMO=1` | percorre as quatro telas com conteúdo de exemplo e sai |
 | `DITADOR_TEMA=claro\|escuro` | ignora o tema configurado |
 | `DITADOR_ZOOM=1.5` | fator de zoom, limitado entre 0.5 e 3.0 |
 | `DITADOR_QUADROS=1` | desliga o vsync e loga FPS a cada 2 s |
@@ -600,6 +641,12 @@ estiver ocupado, manda um comando para a instância viva. O transporte muda de s
 protocolo não — socket Unix em `$XDG_RUNTIME_DIR/ditador.sock` no Linux, named pipe
 `\\.\pipe\Ditador-<SID>` (DACL só do usuário) no Windows —, e os dois carregam uma linha de comando e uma
 linha de resposta, terminadas por `\n`. Subcomandos da CLI têm nome em português com alias em inglês
-(`--alternar|--toggle`, `--encerrar|--quit`). Vale aqui a mesma regra do contrato D-Bus:
-**acrescentar, nunca renomear** — um comando renomeado quebra o atalho que alguém configurou no painel do
-sistema para chamar `ditador --alternar`.
+(`--alternar|--toggle`, `--encerrar|--quit`, `--cancelar|--cancel`, `--historico|--history`). Vale aqui a
+mesma regra do contrato D-Bus: **acrescentar, nunca renomear** — um comando renomeado quebra o atalho que
+alguém configurou no painel do sistema para chamar `ditador --alternar`.
+
+Os comandos do canal hoje: `toggle`, `iniciar`, `parar`, `cancelar`, `settings`, `historico`,
+`integracoes`, `status`, `quit` e — só no Windows — `assinar`. O `cancelar` e o `historico` **não** têm
+método equivalente no D-Bus: a extensão do GNOME e o widget do Plasma não os conhecem, e acrescentá-los
+lá exigiria mexer nos três lados do contrato de uma vez. Quando alguém precisar deles numa integração de
+área de trabalho, é o `dbus/contrato.xml` que ganha o método — acrescentando, nunca renomeando.

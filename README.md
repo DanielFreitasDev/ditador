@@ -35,7 +35,9 @@ programa depende e diz o que está faltando.
 
 Saia da sessão e entre de novo. Abra o **Ditador** pelo menu de aplicativos: na
 primeira vez ele oferece baixar o modelo de transcrição (~574 MB) ali mesmo, com
-barra de progresso. Depois disso, tudo roda sem internet.
+barra de progresso e conferência de soma no fim — um download corrompido é
+recusado e refeito, em vez de virar um arquivo que o Whisper não abre. Depois
+disso, tudo roda sem internet.
 
 Em *Configurações → Sistema* está o interruptor **Iniciar junto com a sessão** —
 ligue e o Ditador sobe sozinho toda vez que você entrar, já em segundo plano.
@@ -93,7 +95,9 @@ avisos em rajada se fundam num só.
 | Ação | Como |
 |---|---|
 | Ditar | Segure **Pause/Break**, fale, solte |
+| Desistir de um ditado | **Esc** enquanto grava, botão *Descartar*, ou `ditador --cancelar` |
 | Copiar | Botão **Copiar** (ou automático, já vem ligado) |
+| Ver o que já foi ditado | Ícone da barra → *Transcrições*, ou `ditador --historico` |
 | Configurar | Ícone da barra → *Configurações*, ou `ditador --configuracoes` |
 | Alternar gravação sem segurar tecla | Ícone da barra → *Ditar agora*, ou `ditador --alternar` |
 | Baixar outro modelo | `ditador --baixar-modelo medium-q5_0` |
@@ -114,12 +118,93 @@ sem precisar abrir nada:
 | carregando | transcrevendo, ou carregando o modelo |
 | triângulo de aviso | o modelo não carregou |
 
-Clicar abre o menu: *Ditar agora*, *Configurações*, *Encerrar*.
+Clicar abre o menu: *Ditar agora*, *Transcrições*, *Configurações*, *Encerrar* — e
+*Descartar o ditado*, que aparece só enquanto se está gravando.
 
 O ícone é um **StatusNotifierItem**. No GNOME, que não tem bandeja nativa, quem
 o exibe é a extensão *Ubuntu AppIndicators*, que vem habilitada no Ubuntu; no
 KDE Plasma a bandeja do sistema o mostra sem precisar de nada. Onde não houver
 nenhum dos dois, o Ditador funciona igual — só avisa no log que ficou sem ícone.
+
+### O que o Ditador guarda, corrige e avisa
+
+Quatro coisas que vale conhecer antes de mexer nas configurações. Todas são
+opcionais, todas nascem ligadas, e nenhuma delas fala com a rede.
+
+<p align="center">
+  <img src="assets/capturas/historico.png" alt="A lista das transcrições guardadas" width="820">
+</p>
+
+**As transcrições ficam guardadas.** Até a 0.6 o trabalho inteiro deste programa
+era produzir um texto que ele não guardava em lugar nenhum: bastava a colagem
+cair na janela errada, um Ctrl+C por cima ou a janela ser fechada sem querer para
+a frase deixar de existir. Agora há uma lista — pelo ícone da barra, em
+*Transcrições* — com as últimas 200, e um botão de copiar em cada uma. Pelo
+terminal, `ditador --historico` imprime as últimas 20 e `ditador --historico 100`
+imprime cem; funciona sem sessão gráfica e sem o Ditador estar de pé, porque o
+histórico é um arquivo de texto (`historico.jsonl`, uma linha por transcrição).
+Em *Configurações → Histórico* dá para mudar o teto, desligar, ou pedir que o
+áudio de cada uma seja guardado junto — o que custa ~2 MB por minuto de fala e
+serve para a outra pergunta, a de saber se o modelo entendeu errado ou se você
+falou errado.
+
+**Termos próprios são corrigidos no texto.** Em *Configurações → Termos
+próprios* você lista as palavras que o modelo erra — nomes, siglas, jargão da sua
+área — e o Ditador conserta a saída: "cuber netes" vira "Kubernetes", "sao paulo"
+vira "São Paulo", "charge bee" vira "ChargeBee". Ele compara ignorando
+maiúsculas, acentos, espaços e pontuação, e aceita alguns erros de letra em
+termos longos. Em termos curtos, **só** casamento exato: uma letra de diferença
+em nome curto é ambígua demais — "Marcelo" e "Marcela" distam uma letra e são
+duas pessoas. O `initial_prompt`, que sugere as palavras ao modelo *antes* de ele
+transcrever, continua existindo e os dois se somam bem.
+
+**O microfone fica aberto.** Antes ele era aberto no instante em que a tecla era
+apertada, o que leva de 40 ms a algumas centenas — e era ali que a primeira
+sílaba se perdia. Agora o stream fica de pé e apertar a tecla só troca uma
+bandeira, o que é instantâneo; além disso os **300 ms anteriores ao aperto**
+entram na gravação, de modo que o áudio começa antes de você apertar. Fora de uma
+gravação nada é guardado: as amostras passam por um anel que se sobrescreve
+sozinho e nunca tocam o disco. O preço é o indicador de "microfone em uso" do
+sistema ficar aceso; quem preferir o contrário desliga em *Configurações →
+Microfone*, e lá também está a escolha de canal, para quem grava por uma
+interface de áudio com várias entradas.
+
+**Há aviso sonoro.** Um tom subindo quando o microfone abre, um descendo quando o
+texto fica pronto, um grave se algo falhar e um curto quando você descarta. Parece
+detalhe e não é: com a janela de resultado desligada — ou com a extensão do GNOME
+no ar, que recolhe a sobreposição — não aparece nada na tela, e o som é a única
+confirmação de que o atalho pegou. Volume regulável em *Configurações → Sons*.
+
+### Como o texto sai
+
+Com a entrega automática ligada, *Configurações → Área de transferência* decide
+**como**:
+
+| Método | Quando usar |
+|---|---|
+| **Ctrl+V** | o padrão; funciona na maioria dos programas |
+| **Shift+Insert** | terminais, onde o Ctrl+V costuma não colar |
+| **Ctrl+Shift+V** | os terminais do GNOME e do KDE |
+| **Digitar** | digita o texto tecla a tecla, **sem passar pela área de transferência** — o que você tinha copiado continua lá |
+
+E **o que apertar depois de colar**: nada, Enter ou Ctrl+Enter. Com Enter, ditar
+num campo de chat vira falar e soltar — a mensagem já foi, sem você encostar no
+teclado. O Ctrl+Enter existe porque em vários programas é ele que envia e o Enter
+sozinho quebra a linha. Há também um interruptor para acrescentar um espaço no
+fim, que serve para ditar duas frases seguidas sem elas grudarem.
+
+### Modo portátil
+
+Um arquivo chamado `portatil` (ou `portable`) ao lado do executável faz a
+configuração, os modelos e o histórico morarem numa pasta `Dados/` vizinha a ele,
+em vez de `~/.config` e `~/.local/share`. Serve para pendrive e para máquina onde
+não se instala nada — no Windows combina com o instalador sem administrador que já
+existe. O `ditador --diagnostico` diz em que modo está e onde cada coisa ficou.
+
+O marcador não basta: a pasta é criada e testada com uma escrita de verdade antes
+de o modo valer. Falhando — um marcador esquecido ao lado de um binário em
+`/usr/bin`, por exemplo —, o programa avisa no log e segue pelos caminhos normais,
+em vez de ficar sem lugar para gravar.
 
 ### Integração com o GNOME Shell
 
@@ -363,6 +448,30 @@ refratada nem sequer acompanhava o que estava atrás em tempo real. O visual
 sólido cabe em `tema.rs` + `widgets.rs`, não pede nada da GPU além do que o egui
 já faz e é legível sobre qualquer coisa.
 
+**Como se sabe que o modelo veio inteiro.** Três conferências, e todas antes de
+o arquivo tomar o lugar do definitivo: o tamanho bate com o anunciado, os quatro
+primeiros bytes são a assinatura GGML, e a soma SHA-256 bate com a esperada. A
+terceira é a que pega o que as outras não pegam — um download truncado que ainda
+tenha o tamanho certo no cabeçalho, um setor ruim, um proxy que reescreve bytes.
+Sem ela o sintoma era o pior possível: 574 MB no lugar certo, com o nome certo,
+que o whisper.cpp recusa carregar com uma mensagem sobre formato inválido, e a
+instalação travada sem ninguém entender por quê. As somas dos modelos oferecidos
+estão numa tabela em `src/modelo.rs`; para os outros vale o `x-linked-etag` que a
+própria Hugging Face declara, que num arquivo do Git LFS *é* o SHA-256.
+
+**Por que o Ditador mexe no alocador da glibc.** Cada ditado aloca e larga alguns
+megabytes de uma vez — o buffer do microfone nasce com a capacidade do teto de
+duração inteiro. A glibc serve alocações grandes por `mmap`, que volta ao sistema
+no `free`, mas o limiar dela é *dinâmico*: ao liberar o primeiro bloco mapeado ela
+o eleva, e daí em diante os blocos grandes passam a sair das arenas — onde as
+alocações pequenas e vivas do programa os fixam. Medido nesta máquina, com o
+padrão de alocação de quarenta ditados: **29,4 MB de RSS retidos**, contra 0,1 MB
+com o limiar pinado. A curva estaciona, então não é vazamento; é um programa que
+fica com trinta megabytes a mais para sempre — e este aqui passa o dia na bandeja
+para atender algumas frases. A correção são duas chamadas (`mallopt` no arranque,
+`malloc_trim` ao fim de cada transcrição) e um teste que falha se alguém as
+remover.
+
 **Por que o programa sai com `_exit`.** Liberar os buffers da GPU enquanto a
 thread principal desmonta o contexto gráfico derruba o driver da NVIDIA
 (SIGSEGV dentro de `ggml_backend_vk_buffer_free_buffer`). Como o systemd leria
@@ -395,7 +504,27 @@ O bloco `appearance` é curto — o visual sólido não tem o que regular:
 Quem vinha da versão do vidro não precisa fazer nada: o `appearance` antigo, com
 os parâmetros ópticos que não existem mais, continua sendo lido sem derrubar o
 resto do arquivo — o tema volta ao padrão e as preferências que sobreviveram
-ficam como estavam.
+ficam como estavam. Vale para qualquer arquivo gravado por uma versão anterior: o
+que ele não tiver nasce no padrão, e há testes garantindo isso.
+
+Os campos acrescentados na 0.7, todos com o padrão entre parênteses:
+
+| Campo | O que faz |
+|---|---|
+| `microfone_sempre_aberto` (`true`) | mantém o stream de pé; apertar a tecla começa a gravar na hora e leva os 300 ms anteriores |
+| `canal_do_microfone` (`null`) | qual canal usar, contado de zero; `null` mistura todos |
+| `metodo_de_colagem` (`"ctrl_v"`) | `"ctrl_v"`, `"shift_insert"`, `"ctrl_shift_v"` ou `"digitar"` |
+| `tecla_de_envio` (`"nenhuma"`) | `"nenhuma"`, `"enter"` ou `"ctrl_enter"`, apertada depois de colar |
+| `espaco_no_fim` (`false`) | acrescenta um espaço ao texto |
+| `atalho_de_cancelar` (`["KEY_ESC"]`) | descarta a gravação em curso; lista vazia desliga |
+| `sons.ativo` / `sons.volume` (`true` / `0.35`) | os avisos sonoros e o volume deles |
+| `dicionario.ativo` / `.termos` / `.sensibilidade` (`true` / `[]` / `0.72`) | a correção de termos próprios |
+| `historico.ativo` / `.limite` / `.guardar_audio` (`true` / `200` / `false`) | o registro das transcrições |
+
+Um cuidado no `atalho_de_cancelar`: igual ao `hotkey`, ele cancelaria todo ditado
+no instante em que ele começa — o mesmo aperto dispararia os dois. Nesse caso o
+programa avisa no log e ignora o de cancelar, ficando sem ele em vez de ficar sem
+o de ditar.
 
 ## Desenvolvimento
 
@@ -459,7 +588,7 @@ E as variáveis de diagnóstico da interface, que se combinam:
 | Variável | O que faz |
 |---|---|
 | `DITADOR_CAPTURA=<pasta>` | grava um PNG de cada tela assim que ela estabiliza |
-| `DITADOR_DEMO=1` | passa sozinho pelas três telas, com texto de exemplo, e sai |
+| `DITADOR_DEMO=1` | passa sozinho pelas quatro telas, com conteúdo de exemplo, e sai |
 | `DITADOR_TEMA=claro\|escuro` | ignora a configuração e força um dos temas |
 | `DITADOR_ZOOM=1.5` | desenha tudo maior, como numa tela densa |
 | `DITADOR_QUADROS=1` | relata quadros/s, sem sincronia vertical |
@@ -495,8 +624,12 @@ quando o tema do sistema ainda não tem os nossos.
   gerenciadores de janela. No Linux ela também exige o `ydotool`; no Windows usa o
   `SendInput` do próprio sistema, que não alcança janelas abertas como
   administrador. A cópia automática não tem nenhum desses problemas.
-- O microfone é aberto no momento em que você pressiona a tecla; em máquinas
-  lentas isso pode cortar a primeira sílaba.
+- **Manter o microfone aberto** (ligado por padrão) deixa o indicador de
+  "microfone em uso" do sistema aceso enquanto o Ditador está no ar. Nada é
+  guardado fora de uma gravação — o áudio passa por um anel de 300 ms que se
+  sobrescreve sozinho e nunca toca o disco —, mas o indicador incomoda algumas
+  pessoas. Desligando, volta o comportamento antigo: o microfone abre no
+  instante do aperto, e em máquina lenta isso pode cortar a primeira sílaba.
 - Trocar de modelo com o programa aberto libera o contexto anterior da GPU; se
   isso se mostrar instável no seu driver, reinicie o serviço depois de trocar.
 

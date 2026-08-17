@@ -11,7 +11,7 @@ Ou à mão, se as capturas já estiverem prontas:
     DITADOR_CAPTURA=/tmp/tiros python3 assets/compor-capturas.py
 
 Espera encontrar `<pasta>-claro/` e `<pasta>-escuro/`, cada uma com
-`recording.png`, `result.png` e `settings.png`.
+`recording.png`, `result.png`, `historico.png` e `settings.png`.
 """
 
 import os
@@ -30,6 +30,7 @@ CENAS = [
     ("gravando", "recording", ["claro", "escuro"], 56, 1200),
     ("resultado", "result", ["claro"], 64, 900),
     ("configuracoes", "settings", ["escuro"], 56, 760),
+    ("historico", "historico", ["escuro"], 56, 820),
 ]
 
 

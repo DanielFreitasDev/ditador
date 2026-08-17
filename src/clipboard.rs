@@ -59,9 +59,24 @@ pub fn paste_available() -> bool {
     nativo::colagem_disponivel()
 }
 
-/// Envia Ctrl+V para a janela em foco.
-pub fn paste() -> Result<()> {
-    nativo::colar()
+/// Entrega o texto à janela em foco, pelo método escolhido.
+///
+/// O `texto` só é usado pelo método `Digitar`, que não passa pela área de
+/// transferência — os outros três apenas sintetizam o atalho de colar, e o que
+/// eles colam é o que o `copy` acabou de pôr lá. Ele vai como argumento nos
+/// quatro casos para que o chamador não precise saber qual é qual: a pergunta
+/// que ele faz é "entregue este texto", e a resposta de como fazer isso é da
+/// configuração.
+pub fn paste(metodo: crate::config::MetodoDeColagem, texto: &str) -> Result<()> {
+    nativo::colar(metodo, texto)
+}
+
+/// Aperta a tecla que envia o texto, logo depois de ele ser colado.
+///
+/// Sem nada configurado é um sucesso que não faz nada, e é por isso que o
+/// chamador pode chamá-la sempre.
+pub fn submit(tecla: crate::config::TeclaDeEnvio) -> Result<()> {
+    nativo::enviar_tecla(tecla)
 }
 
 /// Aviso de que a cópia está indo por um caminho pior, se estiver.

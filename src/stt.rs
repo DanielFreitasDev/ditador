@@ -190,6 +190,13 @@ fn run(rx: Receiver<SttCmd>, events: Sender<SttEvent>) {
                             });
                         }
                     }
+                    // Os buffers deste ditado — o áudio na taxa do dispositivo,
+                    // o reamostrado e o scratch do ggml — acabaram de ser
+                    // liberados. Este é o momento de devolvê-los ao sistema, e
+                    // esta é a thread certa: ela já esperou pelo modelo, e o
+                    // milissegundo do `malloc_trim` não atrasa nada que alguém
+                    // esteja olhando. Ver `src/memoria.rs`.
+                    crate::memoria::devolver_ao_sistema();
                 }
                 Err(_) => {
                     // O canal fechou: o programa está encerrando. Não liberamos

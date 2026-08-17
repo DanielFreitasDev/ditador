@@ -270,3 +270,183 @@ não só o campo principal. E antes de commitar imagem do README, abra a imagem.
 **Arquivos** — `src/ui.rs` (`demonstrar`, tela de resultado), `assets/capturas/`.
 **Ambiente** — Linux; o efeito da extensão do GNOME só aparece em quem a tem
 instalada.
+
+## Interface — `Negative height makes no sense, but got: -6` ao trocar de tela
+
+**Contexto** — o passeio de demonstração (`DITADOR_DEMO=1`) derrubava o programa
+na transição da tela de gravação para a de resultado. Aconteceu com o código da
+0.6.0 também: é um defeito antigo, que só nunca tinha sido acionado porque
+ninguém rodava o passeio numa build de depuração.
+
+**Sintoma**
+
+```
+thread 'main' panicked at egui-0.36.1/src/ui.rs:749:
+Negative height makes no sense, but got: -6
+   3: ditador::ui::App::result::{{closure}}
+   4: ditador::widgets::cartao::{{closure}}
+```
+
+**Causa** — a janela deste programa não tem tamanho próprio por tela: cada troca
+manda um `ViewportCommand::InnerSize`, e o comando é **atendido no quadro
+seguinte**. Existe portanto sempre um desenho feito com o tamanho da tela
+anterior. Vindo da gravação (178 pontos de altura) para o resultado (372), a
+sobra daquele quadro é de 92 pontos, e a conta da tela de resultado —
+`available_height() - (10 + ALTURA + 12 + RESPIRO)`, menos os 24 da margem do
+cartão — dá −6. O `set_min_height` do egui entra em pânico com altura negativa.
+
+Medido com um `eprintln!` na própria função: `available=92 altura_texto=18
+max_rect=[[40.0 40.0] - [444.0 182.0]]` — 182 é a altura da janela de gravação,
+não a de resultado.
+
+**Solução** — `ui::altura_util(ui, rodape)`, que subtrai o rodapé e nunca devolve
+menos de 24. As quatro contas de altura da interface (resultado, configurações,
+histórico e a margem interna do cartão do resultado) passam por lá.
+
+**Prevenção** — **toda** conta de altura desta interface precisa de piso. Não é
+zelo: a janela é redimensionada por comando, então o quadro com o tamanho errado
+não é um caso raro, é um por troca de tela. O piso vale por aquele quadro; o
+seguinte já vem com a janela certa.
+
+**Arquivos** — `src/ui.rs` (`altura_util`, `result`, `settings`, `historico`).
+**Ambiente** — Linux/XWayland, build de depuração. Numa build de release a
+janela às vezes chega a tempo, o que é justamente o que fez o defeito atravessar
+várias versões sem aparecer.
+**Comandos** — `DITADOR_DEMO=1 DITADOR_CAPTURA=/tmp/x RUST_BACKTRACE=1
+target/debug/ditador`
+
+## Dicionário — a correção de termos comia o artigo antes do termo
+
+**Contexto** — a primeira versão do `src/dicionario.rs` transformava "usei o
+kubernetes ontem" em "usei Kubernetes ontem". O artigo desaparecia.
+
+**Causa** — a varredura era gulosa da esquerda para a direita e experimentava as
+janelas **maiores primeiro**, aceitando a primeira que casasse. A chave da janela
+de duas palavras "o kubernetes" é `okubernetes`, que está a **uma** edição de
+`kubernetes`: acrescentar uma letra é uma edição, mesmo quando a letra é uma
+palavra inteira. Aquela janela casava com 0,91 de semelhança, era testada antes
+por ser maior, e engolia o artigo — sem a varredura nunca chegar a experimentar a
+palavra seguinte sozinha, que casa exato.
+
+O mesmo valia para qualquer palavra curta antes de um termo longo: "e
+kubernetes", "do saopaulo", "com chargebee".
+
+**Solução** — medir **todas** as janelas de **todas** as posições antes de
+decidir, ordenar por semelhança (decrescente), depois por tamanho da janela, e
+aceitar de cima para baixo descartando as que se sobrepõem a uma já aceita. O
+casamento exato (1,0) passa a ganhar do aproximado (0,91) mesmo estando à direita
+dele. O tamanho da janela só desempata: com "Charge" e "ChargeBee" cadastrados,
+as duas janelas de "charge bee" casam exato e a maior é a certa.
+
+**Prevenção** — casamento aproximado com janela variável não pode ser guloso da
+esquerda para a direita. Uma janela maior *sempre* tem mais chance de estar a
+poucas edições de um termo longo, então "maior primeiro" é o oposto do certo.
+
+**Arquivos** — `src/dicionario.rs` (`corrigir`, `Candidato`, `melhor_termo`).
+**Comandos** — `cargo test --no-default-features --features cpu dicionario`
+
+## Linux/memória — o RSS crescia 29 MB e não voltava, sem haver vazamento
+
+**Contexto** — investigação de quanto de memória o Ditador retém por ditado,
+antes de decidir se valia mexer no alocador.
+
+**Sintoma** — reproduzindo o padrão de alocação de um ditado quarenta vezes
+seguidas (buffer do microfone de 23 MB, vetor reamostrado, alocações pequenas
+sobrevivendo no meio do ciclo), o RSS do processo sobe para ~30 MB acima do
+inicial e **fica lá**. Com `mallopt(M_MMAP_THRESHOLD, 128 kB)` no arranque, o
+mesmo teste retém 84 kB.
+
+| | RSS retido depois de 40 ditados |
+|---|---|
+| como estava | 29,4 MB |
+| com o limiar pinado | 0,1 MB |
+
+**Causa** — a glibc serve alocações acima do "limiar de mmap" com um `mmap`
+privado, que volta ao sistema no `free`. O limiar é **dinâmico**: ao liberar um
+bloco mapeado, a glibc o eleva até o tamanho daquele bloco (teto de 32 MB),
+supondo que virá outro igual. A partir daí os blocos grandes saem das arenas do
+malloc, e memória de arena liberada fica em cache para reúso — com as alocações
+pequenas e vivas do programa fixando aquelas páginas.
+
+**Vale registrar a forma da curva**, porque ela não é a de um vazamento: o
+consumo sobe nos primeiros ditados e depois **estaciona**. Não é um programa que
+engorda sem limite; é um programa que fica com trinta megabytes a mais para
+sempre. Num aplicativo que sobe com a sessão e passa o dia na bandeja, é
+justamente a memória que não deveria estar ocupada — mas quem procurar aqui
+esperando ver o número crescer sem parar não vai ver.
+
+**Solução** — `src/memoria.rs`: `mallopt(M_MMAP_THRESHOLD, 128 kB)` na primeira
+linha do `main` e `malloc_trim(0)` ao fim de cada transcrição, na thread do
+Whisper. Dois `extern "C"` escritos à mão, sem dependência nova, atrás de
+`cfg(all(target_os = "linux", target_env = "gnu"))` — na musl as duas funções não
+existem e o binário não linkaria.
+
+**Prevenção** — o teste `os_buffers_de_um_ditado_voltam_para_o_sistema` reproduz
+o padrão e falha se o RSS retido passar de 8 MB. Quem remover a chamada do `main`
+por parecer supérflua descobre ali, e não pelo relato de uma máquina lenta no fim
+do dia.
+
+**Arquivos** — `src/memoria.rs`, `src/main.rs` (primeira linha), `src/stt.rs`
+(fim do laço de trabalho).
+**Ambiente** — Linux com glibc (medido na 2.43, Ubuntu). Não se aplica ao
+Windows, ao macOS nem à musl: a heurística de limiar dinâmico é da glibc.
+
+## Hugging Face — qual cabeçalho carrega o SHA-256 de um modelo
+
+**Contexto** — implementar a conferência de soma do download do modelo, para o
+caso do arquivo que chega com o tamanho certo e os bytes errados.
+
+**O que se descobriu** — a resposta de `resolve/main/<arquivo>` traz **dois**
+cabeçalhos parecidos e com valores diferentes:
+
+* `x-linked-etag`, na resposta do **redirecionamento** (302), é o SHA-256 do
+  arquivo do Git LFS — o mesmo valor que a API publica em `lfs.oid`;
+* `etag`, na resposta **final** do CDN (200), é o hash do Xet, que é outra coisa.
+
+Conferir contra o segundo reprova **todo** download bom. E há um terceiro caso:
+para arquivos que não são LFS, o `x-linked-etag` carrega o SHA-1 do Git, de 40
+caracteres — daí a conferência de tamanho e de alfabeto antes de aceitar o valor.
+
+**Como pedir a soma pela API**, que é de onde a tabela `SOMAS` saiu:
+
+```bash
+curl -s -X POST https://huggingface.co/api/models/ggerganov/whisper.cpp/paths-info/main \
+  -H 'Content-Type: application/json' \
+  -d '{"paths":["ggml-large-v3-turbo-q5_0.bin"]}' | jq -r '.[].lfs.oid'
+```
+
+**Arquivos** — `src/modelo.rs` (`SOMAS`, `linked_etag`, `conferir`, `somar`).
+
+## Testes — um `MutexGuard` nos argumentos de uma chamada trava o próprio teste
+
+**Contexto** — um teste novo do controlador pendurava para sempre, sem falhar e
+sem mensagem; o `cargo test` ficava rodando até o tempo limite.
+
+**Sintoma** — nenhum. O teste simplesmente não termina.
+
+**Causa** — isto:
+
+```rust
+b.controlador.on_stt(SttEvent::Done {
+    ditado: b.estado().ditado_atual,   // <- o guard vive até o `;`
+    ...
+});
+```
+
+O `b.estado()` devolve um `MutexGuard`, e um temporário criado dentro de uma
+expressão vive até o fim dela — ou seja, o mutex continua travado enquanto
+`on_stt` roda, e a primeira coisa que `on_stt` faz é travá-lo.
+
+**Solução** — tirar o valor antes da chamada:
+
+```rust
+let ditado = b.estado().ditado_atual;
+b.controlador.on_stt(SttEvent::Done { ditado, ... });
+```
+
+**Prevenção** — nenhuma chamada que trave o estado compartilhado pode receber, em
+qualquer argumento, algo que venha de `lock(&shared)`. O teste
+`o_fim_da_gravacao_nao_atropela_a_tela_de_configuracoes` já traz o comentário; a
+armadilha voltou de todo modo, o que é a razão desta entrada.
+
+**Arquivos** — `src/controller.rs` (módulo de testes).

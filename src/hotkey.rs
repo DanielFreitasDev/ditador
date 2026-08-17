@@ -67,6 +67,12 @@ pub enum HotkeyEvent {
     Down,
     /// O atalho deixou de estar completo.
     Up,
+    /// O atalho de cancelar foi apertado.
+    ///
+    /// Ao contrário do de ditar, este dispara **no aperto** e não tem par de
+    /// soltar: cancelar é uma ação instantânea, não um estado que se mantém. É
+    /// por isso que ele é um evento só, e não um `Down`/`Up` próprio.
+    Cancelar,
     /// Uma nova combinação foi capturada nas configurações (vazio = cancelado).
     Captured(Vec<String>),
     /// Nenhum teclado pôde ser lido.
@@ -81,6 +87,15 @@ pub enum HotkeyEvent {
 
 pub struct HotkeyListener {
     target: RwLock<Vec<u16>>,
+    /// A combinação que descarta o ditado em curso. Vazia desliga.
+    cancelar: RwLock<Vec<u16>>,
+    /// A combinação de cancelar está completa agora?
+    ///
+    /// Existe pelo mesmo motivo que o `engaged`: sem ele, uma tecla segurada
+    /// mandaria um `Cancelar` por evento de teclado que chegasse enquanto ela
+    /// estivesse embaixo — e no Linux o autorrepetição do evdev chega mesmo.
+    /// Guardando a transição, sai um `Cancelar` por aperto.
+    cancelar_engatado: AtomicBool,
     /// Quem está segurando cada tecla, por dispositivo.
     ///
     /// Guardar só o código não bastava: com dois teclados — ou com o teclado
@@ -102,9 +117,15 @@ impl HotkeyListener {
     /// Existe separado do `start` para os testes: a vigia da plataforma entra
     /// num laço infinito e abre os teclados de verdade da máquina, o que faria
     /// `cargo test` passar a ler as teclas de quem roda.
-    pub fn novo(hotkey: &[String], tx: Sender<HotkeyEvent>) -> Arc<Self> {
+    pub fn novo(hotkey: &[String], cancelar: &[String], tx: Sender<HotkeyEvent>) -> Arc<Self> {
         Arc::new(Self {
             target: RwLock::new(codes_of(hotkey, Some(&tx))),
+            // O atalho de cancelar não avisa quando não é reconhecido: ele é
+            // opcional (vazio é uma configuração válida) e um `Unavailable` por
+            // causa dele apagaria o aviso do atalho de ditar, que é o que
+            // importa. Uma linha de log basta — e é o que `codes_of` já faz.
+            cancelar: RwLock::new(codes_of(cancelar, None)),
+            cancelar_engatado: AtomicBool::new(false),
             pressed: Mutex::new(HashMap::new()),
             engaged: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
@@ -113,8 +134,8 @@ impl HotkeyListener {
         })
     }
 
-    pub fn start(hotkey: &[String], tx: Sender<HotkeyEvent>) -> Arc<Self> {
-        let listener = Self::novo(hotkey, tx);
+    pub fn start(hotkey: &[String], cancelar: &[String], tx: Sender<HotkeyEvent>) -> Arc<Self> {
+        let listener = Self::novo(hotkey, cancelar, tx);
         crate::plataforma::teclado::vigiar(listener.clone());
         listener
     }
@@ -126,6 +147,12 @@ impl HotkeyListener {
         // receberia o `Up` que o fecha.
         self.desengatar();
         *self.target.write().unwrap_or_else(|e| e.into_inner()) = codes_of(hotkey, Some(&self.tx));
+    }
+
+    /// Troca a combinação que cancela o ditado. Vazia desliga o recurso.
+    pub fn set_cancelar(&self, atalho: &[String]) {
+        self.cancelar_engatado.store(false, Ordering::SeqCst);
+        *self.cancelar.write().unwrap_or_else(|e| e.into_inner()) = codes_of(atalho, None);
     }
 
     /// A próxima combinação pressionada vira o novo atalho.
@@ -209,6 +236,11 @@ impl HotkeyListener {
             return;
         }
 
+        // O de cancelar é conferido antes, e independentemente: as duas
+        // combinações podem ter teclas em comum, e quem decide se o cancelamento
+        // vale alguma coisa é o controlador — que só age com o microfone aberto.
+        self.conferir_cancelar();
+
         let target = lock(&self.target).clone();
         if target.is_empty() {
             return;
@@ -225,6 +257,28 @@ impl HotkeyListener {
         } else if !complete && was {
             self.engaged.store(false, Ordering::SeqCst);
             let _ = self.tx.send(HotkeyEvent::Up);
+        }
+    }
+
+    /// Emite `Cancelar` na transição de incompleto para completo.
+    ///
+    /// Só na transição, e nunca no soltar: cancelar é uma ação instantânea. Um
+    /// evento por tecla apertada enquanto a combinação estivesse embaixo
+    /// mandaria uma enxurrada — a autorrepetição do evdev chega aqui como
+    /// `Repetiu`, que o `evento` já filtra, mas qualquer *outra* tecla apertada
+    /// junto reentraria neste caminho.
+    fn conferir_cancelar(&self) {
+        let combinacao = lock(&self.cancelar).clone();
+        if combinacao.is_empty() {
+            return;
+        }
+        let completa = {
+            let pressed = lock_mut(&self.pressed);
+            combinacao.iter().all(|k| pressed.contains_key(k))
+        };
+        let antes = self.cancelar_engatado.swap(completa, Ordering::SeqCst);
+        if completa && !antes {
+            let _ = self.tx.send(HotkeyEvent::Cancelar);
         }
     }
 
@@ -340,9 +394,20 @@ mod tests {
         Arc<HotkeyListener>,
         crossbeam_channel::Receiver<HotkeyEvent>,
     ) {
+        ouvinte_com_cancelar(atalho, &[])
+    }
+
+    fn ouvinte_com_cancelar(
+        atalho: &[&str],
+        cancelar: &[&str],
+    ) -> (
+        Arc<HotkeyListener>,
+        crossbeam_channel::Receiver<HotkeyEvent>,
+    ) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let nomes: Vec<String> = atalho.iter().map(|k| k.to_string()).collect();
-        (HotkeyListener::novo(&nomes, tx), rx)
+        let cancelar: Vec<String> = cancelar.iter().map(|k| k.to_string()).collect();
+        (HotkeyListener::novo(&nomes, &cancelar, tx), rx)
     }
 
     /// Aperta ou solta uma tecla no teclado principal.
@@ -423,6 +488,94 @@ mod tests {
 
         listener.begin_capture();
         assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
+    }
+
+    #[test]
+    fn o_atalho_de_cancelar_dispara_uma_vez_por_aperto() {
+        let (listener, rx) = ouvinte_com_cancelar(&["KEY_PAUSE"], &["KEY_ESC"]);
+
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)));
+
+        // Segurando o Esc, qualquer outra tecla apertada reentra no mesmo
+        // caminho. Sem guardar a transição, sairia um `Cancelar` por tecla.
+        tecla(&listener, "KEY_A", Acao::Apertou);
+        tecla(&listener, "KEY_A", Acao::Soltou);
+        assert!(
+            rx.try_recv().is_err(),
+            "saiu mais de um Cancelar por aperto"
+        );
+
+        // Soltar não manda nada: cancelar é instantâneo, não é um estado.
+        tecla(&listener, "KEY_ESC", Acao::Soltou);
+        assert!(rx.try_recv().is_err(), "soltar mandou evento");
+
+        // E o aperto seguinte volta a valer.
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)));
+    }
+
+    #[test]
+    fn sem_atalho_de_cancelar_nada_e_emitido() {
+        // Vazio é uma configuração válida — é assim que se desliga o recurso.
+        let (listener, rx) = ouvinte_com_cancelar(&["KEY_PAUSE"], &[]);
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        tecla(&listener, "KEY_ESC", Acao::Soltou);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn cancelar_e_ditar_convivem_no_mesmo_teclado() {
+        // O caso real: a pessoa está segurando o atalho de ditar e aperta o de
+        // cancelar. Os dois precisam ser avaliados, e nesta ordem — o
+        // `Cancelar` antes, para o controlador poder descartar a gravação que o
+        // `Down` abriu.
+        let (listener, rx) = ouvinte_com_cancelar(&["KEY_PAUSE"], &["KEY_ESC"]);
+        tecla(&listener, "KEY_PAUSE", Acao::Apertou);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Down)));
+
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)));
+        // O atalho de ditar continua engatado: quem solta a tecla é a pessoa.
+        assert!(rx.try_recv().is_err());
+
+        tecla(&listener, "KEY_PAUSE", Acao::Soltou);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Up)));
+    }
+
+    #[test]
+    fn trocar_o_atalho_de_cancelar_solta_o_anterior() {
+        // Trocando a combinação com a tecla antiga ainda embaixo, o engate
+        // ficaria preso em `true` e o primeiro aperto da nova seria engolido.
+        let (listener, rx) = ouvinte_com_cancelar(&["KEY_PAUSE"], &["KEY_ESC"]);
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        assert!(matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)));
+
+        listener.set_cancelar(&["KEY_F12".to_string()]);
+        tecla(&listener, "KEY_F12", Acao::Apertou);
+        assert!(
+            matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)),
+            "o primeiro aperto do atalho novo foi engolido"
+        );
+
+        // E o antigo deixou de valer.
+        tecla(&listener, "KEY_ESC", Acao::Soltou);
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        assert!(rx.try_recv().is_err(), "o atalho antigo continuou valendo");
+    }
+
+    #[test]
+    fn o_atalho_de_cancelar_nao_dispara_durante_a_captura() {
+        // O Esc pertence à captura enquanto ela está aberta: é ele que a
+        // cancela. Um `Cancelar` saindo daí descartaria um ditado que nem
+        // existe e confundiria o controlador.
+        let (listener, rx) = ouvinte_com_cancelar(&["KEY_PAUSE"], &["KEY_ESC"]);
+        listener.begin_capture();
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        assert!(
+            !matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)),
+            "o atalho de cancelar disparou dentro da captura"
+        );
     }
 
     #[test]

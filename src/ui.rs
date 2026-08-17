@@ -15,8 +15,8 @@
 //! mais nativo do que a nossa sombra pareceria.
 
 use crate::audio::Levels;
-use crate::config::{IDIOMAS, Tema};
-use crate::state::{ModelState, SharedState, Sinal, UiAction, View, lock};
+use crate::config::{IDIOMAS, MetodoDeColagem, TeclaDeEnvio, Tema};
+use crate::state::{ModelState, QualAtalho, SharedState, Sinal, UiAction, View, lock};
 use crate::stt;
 use crate::tema::{self, medio, nota, paleta, titulo};
 use crate::widgets::{self, Botao, Icone};
@@ -55,8 +55,8 @@ pub struct App {
 }
 
 /// Diagnóstico opcional: com `DITADOR_DEMO=1` o programa passa sozinho pelas
-/// três telas que ilustram o README — gravando, resultado e configurações —,
-/// com conteúdo de exemplo, e sai. Junto com `DITADOR_CAPTURA` é o que gera as
+/// quatro telas que ilustram o README — gravando, resultado, transcrições e
+/// configurações —, com conteúdo de exemplo, e sai. Junto com `DITADOR_CAPTURA` é o que gera as
 /// imagens do README a partir de um clone qualquer, sem precisar de microfone,
 /// de modelo baixado nem de alguém falando na hora certa.
 struct Demo {
@@ -223,7 +223,15 @@ impl App {
                 state.status = "3,4 s · Vulkan".to_string();
                 View::Result
             }
-            _ if t < 15.0 => View::Settings,
+            _ if t < 14.0 => {
+                // O histórico do passeio é inventado aqui, e não lido do disco:
+                // a imagem do README precisa sair igual em qualquer clone, e o
+                // histórico de quem gera as imagens é dele.
+                state.historico = historico_de_exemplo();
+                state.historico_em_disco = 48_320;
+                View::Historico
+            }
+            _ if t < 20.0 => View::Settings,
             _ => {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
                 View::Hidden
@@ -298,6 +306,55 @@ impl App {
     fn act(&self, action: UiAction) {
         let _ = self.actions.send(action);
     }
+}
+
+/// As transcrições que o passeio de demonstração mostra.
+///
+/// Inventadas aqui, e não lidas do disco, por dois motivos: a imagem do README
+/// precisa sair igual em qualquer clone, e o histórico de quem gera as imagens é
+/// dele — não é para aparecer numa captura publicada.
+///
+/// Os instantes são relativos ao agora, para os rótulos de tempo ("há 5 min",
+/// "ontem") saírem com sentido em qualquer dia em que as imagens sejam refeitas.
+fn historico_de_exemplo() -> Vec<crate::historico::Entrada> {
+    let agora = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let exemplos: [(u64, &str, u64); 4] = [
+        (
+            90,
+            "Confirmei com o time da manhã: o relatório de agosto sai na sexta, \
+             com os números de julho já fechados.",
+            7_400,
+        ),
+        (
+            22 * 60,
+            "Pede ao Marcelo para adiantar a parte de compras, que é a que sempre \
+             atrasa.",
+            4_100,
+        ),
+        (
+            5 * 3_600,
+            "Subimos o Kubernetes em São Paulo hoje à tarde; a migração do banco \
+             fica para amanhã.",
+            6_250,
+        ),
+        (
+            26 * 3_600,
+            "Reunião de terça remarcada para depois do almoço.",
+            2_900,
+        ),
+    ];
+    exemplos
+        .into_iter()
+        .map(|(atras, texto, duracao_ms)| crate::historico::Entrada {
+            quando: agora.saturating_sub(atras),
+            texto: texto.to_string(),
+            audio: None,
+            duracao_ms,
+        })
+        .collect()
 }
 
 /// Qual dos dois desenhos vale agora.
@@ -425,11 +482,11 @@ impl eframe::App for App {
         // janela sem decoração e sempre-no-topo, e antes não fazia nada. Na
         // captura de atalho o Esc pertence à captura (ele cancela a escolha da
         // tecla), então ali este atalho não vale.
-        if !state.capturing_hotkey && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.act(if view == View::Settings {
-                UiAction::CloseSettings
-            } else {
-                UiAction::Hide
+        if state.capturando.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.act(match view {
+                View::Settings => UiAction::CloseSettings,
+                View::Historico => UiAction::FecharHistorico,
+                _ => UiAction::Hide,
             });
         }
 
@@ -445,6 +502,7 @@ impl eframe::App for App {
                 View::Processing => self.processing(ui, &state),
                 View::Result => self.result(ui, &mut state),
                 View::Settings => self.settings(ui, &mut state),
+                View::Historico => self.historico(ui, &state),
                 View::Error => self.error(ui, &state),
                 View::Hidden => {}
             });
@@ -524,7 +582,13 @@ fn apply_window(ctx: &egui::Context, view: View) {
 
     if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
         let x = ((monitor.x - w) / 2.0).max(0.0);
-        let y = if view == View::Settings {
+        // As telas altas vão para o meio da tela; as baixas, para o rodapé,
+        // perto de onde se está escrevendo. Encostar uma janela de 620 pontos
+        // no rodapé a empurraria para fora por cima — o `max(0.0)` a salvaria de
+        // sair da tela, e ela ficaria com o rodapé (onde estão os botões) abaixo
+        // da borda de baixo.
+        let ao_centro = matches!(view, View::Settings | View::Historico);
+        let y = if ao_centro {
             ((monitor.y - h) / 2.0).max(0.0)
         } else {
             (monitor.y - h - 130.0).max(0.0)
@@ -581,6 +645,29 @@ impl App {
             ui.label(nota("Solte"));
             widgets::keycap(ui, &keys::combo_label(&state.config.hotkey));
             ui.label(nota("para transcrever"));
+
+            // A saída, do lado direito da mesma fileira. Ela precisa existir
+            // aqui e não só na tecla: quem grava por alternar — pelo ícone da
+            // barra, por um atalho do painel — não tem tecla segurada nenhuma,
+            // e antes disto a única forma de desistir era esperar o Whisper
+            // produzir um texto que ninguém queria.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let atalho = &state.config.atalho_de_cancelar;
+                let dica = if atalho.is_empty() {
+                    "Joga fora esta gravação sem transcrever".to_string()
+                } else {
+                    format!(
+                        "Joga fora esta gravação sem transcrever ({})",
+                        keys::combo_label(atalho)
+                    )
+                };
+                if widgets::botao(ui, "Descartar")
+                    .on_hover_text(dica)
+                    .clicked()
+                {
+                    self.act(UiAction::Cancelar);
+                }
+            });
         });
     }
 
@@ -720,10 +807,22 @@ impl App {
 
         // O que sobra depois do cartão: o espaço, a fileira de botões e o mesmo
         // respiro embaixo deles que as configurações têm.
-        let altura_texto = ui.available_height() - (10.0 + widgets::ALTURA + 12.0 + RESPIRO);
+        //
+        // O piso não é zelo — sem ele o programa **caía**, e o caminho é comum:
+        // ao trocar de tela, o comando de redimensionar a janela é enviado num
+        // quadro e atendido no seguinte, então este desenho acontece uma vez com
+        // a janela ainda no tamanho da tela anterior. Vindo da gravação (178
+        // pontos) para o resultado (372), a sobra dava 92 e a conta abaixo, −6 —
+        // e o `set_min_height` do egui entra em pânico com altura negativa
+        // ("Negative height makes no sense"). O quadro seguinte já vem com a
+        // janela certa; o que faltava era atravessar este.
+        let altura_texto = altura_util(ui, 10.0 + widgets::ALTURA + 12.0 + RESPIRO);
         let mut editou = false;
         widgets::cartao(ui, |ui| {
-            ui.set_min_height(altura_texto - 24.0);
+            // O `- 24` é a margem vertical do cartão. O piso é o mesmo do
+            // `altura_util`, e pelo mesmo motivo: um quadro só, sem derrubar.
+            let dentro = (altura_texto - 24.0).max(24.0);
+            ui.set_min_height(dentro);
             // Os dois ramos rolam. O editável não rolava, e o `TextEdit` do
             // egui não tem rolagem própria nem teto de altura: numa fala de uns
             // 45 s (o teto padrão é 120) o campo crescia além da janela, que é
@@ -731,7 +830,7 @@ impl App {
             // "Copiar e colar" para fora — sem rolagem, sem como alcançá-los, e
             // com o resto do texto invisível. E este é o ramo padrão.
             egui::ScrollArea::vertical()
-                .max_height(altura_texto - 24.0)
+                .max_height(dentro)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     if state.config.editable_result {
@@ -802,6 +901,160 @@ impl App {
                     );
                 } else if state.config.auto_copy {
                     ui.label(nota("cópia automática ligada"));
+                }
+            });
+        });
+    }
+
+    // -------------------------------------------------------------- histórico
+
+    /// A lista das transcrições guardadas.
+    ///
+    /// A rede que faltava: até a 0.6 o trabalho inteiro deste programa era
+    /// produzir um texto que ele não guardava em lugar nenhum. Aqui ele volta.
+    fn historico(&self, ui: &mut egui::Ui, state: &crate::state::Shared) {
+        drag_area(ui, "historico");
+
+        ui.horizontal(|ui| {
+            ui.label(titulo("Transcrições", 19.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::botao_icone(ui, Icone::Fechar, "Fechar").clicked() {
+                    self.act(UiAction::FecharHistorico);
+                }
+                if widgets::botao_icone(ui, Icone::Ajustes, "Configurações").clicked() {
+                    self.act(UiAction::OpenSettings);
+                }
+                if !state.historico.is_empty() {
+                    widgets::etiqueta(
+                        ui,
+                        &format!(
+                            "{} · {}",
+                            state.historico.len(),
+                            crate::modelo::tamanho_legivel(state.historico_em_disco)
+                        ),
+                        paleta().texto_fraco,
+                    );
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
+        let rodape = 10.0 + 1.0 + 14.0 + widgets::ALTURA + ui.spacing().item_spacing.y + RESPIRO;
+        let altura = altura_util(ui, rodape);
+
+        if state.historico.is_empty() {
+            widgets::cartao(ui, |ui| {
+                ui.set_min_height(altura - 24.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(altura / 3.0);
+                    ui.label(medio("Nada guardado ainda.", 15.0));
+                    ui.add_space(6.0);
+                    ui.label(nota(if state.config.historico.ativo {
+                        "As transcrições aparecem aqui assim que você ditar a primeira."
+                    } else {
+                        "O histórico está desligado em Configurações → Histórico."
+                    }));
+                });
+            });
+        } else {
+            let agora = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            egui::ScrollArea::vertical()
+                .max_height(altura)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for (indice, entrada) in state.historico.iter().enumerate() {
+                        widgets::cartao(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    tema::tecnico(entrada.ha_quanto_tempo(agora), 12.0)
+                                        .color(paleta().texto_fraco),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if widgets::botao(ui, "Copiar").clicked() {
+                                            self.act(UiAction::CopiarDoHistorico(indice));
+                                        }
+                                        if entrada.duracao_ms > 0 {
+                                            ui.label(nota(format!(
+                                                "{:.1} s",
+                                                entrada.duracao_ms as f64 / 1000.0
+                                            )));
+                                        }
+                                    },
+                                );
+                            });
+                            ui.add_space(4.0);
+                            // A frase inteira, até onde ela ainda serve para
+                            // varrer a lista com o olho. Um ditado de dois
+                            // minutos é uma parede de texto que empurra todos os
+                            // outros para fora da tela — nesse caso vale o
+                            // começo, e o resto fica no "Copiar" e no repouso do
+                            // ponteiro.
+                            const CABE_INTEIRO: usize = 320;
+                            let texto = entrada.texto.trim();
+                            if texto.chars().count() <= CABE_INTEIRO {
+                                ui.label(RichText::new(texto).size(14.0));
+                            } else {
+                                ui.label(RichText::new(entrada.resumo(CABE_INTEIRO)).size(14.0))
+                                    .on_hover_text(texto);
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                });
+        }
+
+        ui.add_space(10.0);
+        let (linha, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+        ui.painter()
+            .rect_filled(linha, CornerRadius::ZERO, paleta().borda);
+        ui.add_space(14.0);
+
+        ui.horizontal(|ui| {
+            if ui
+                .add(Botao::new("Fechar").principal().largura_minima(110.0))
+                .clicked()
+            {
+                self.act(UiAction::FecharHistorico);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled_ui(!state.historico.is_empty(), |ui| {
+                    // Apagar tudo é um botão de perigo e sem confirmação. A
+                    // confirmação seria uma segunda janela sobre uma janela sem
+                    // decoração e sempre-no-topo, e o que se perde aqui é um
+                    // registro de conveniência — não o trabalho de ninguém.
+                    if ui
+                        .add(Botao::new("Apagar tudo").perigo())
+                        .on_hover_text("Apaga as transcrições guardadas e os áudios delas")
+                        .clicked()
+                    {
+                        self.act(UiAction::LimparHistorico);
+                    }
+                });
+                if !state.message.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(encurtar(&state.message, 60))
+                            .size(12.5)
+                            .color(paleta().erro),
+                    )
+                    .on_hover_text(&state.message);
+                } else if state
+                    .copied_at
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
+                {
+                    ui.label(
+                        RichText::new("na área de transferência")
+                            .size(12.5)
+                            .color(paleta().ok),
+                    );
                 }
             });
         });
@@ -1003,13 +1256,17 @@ impl App {
         // sozinho ao fechar a área de rolagem, e o respiro embaixo dos botões.
         let rodape = 10.0 + 1.0 + 14.0 + widgets::ALTURA + ui.spacing().item_spacing.y + RESPIRO;
         egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - rodape)
+            .max_height(altura_util(ui, rodape))
             .show(ui, |ui| {
                 self.settings_atalho(ui, state);
                 self.settings_aparencia(ui, state);
                 self.settings_sistema(ui, state);
+                self.settings_microfone(ui, state);
                 self.settings_transcricao(ui, state);
+                self.settings_dicionario(ui, state);
                 self.settings_area_transferencia(ui, state);
+                self.settings_historico(ui, state);
+                self.settings_sons(ui, state);
                 self.settings_desempenho(ui, state);
                 self.settings_avancado(ui, state);
                 ui.add_space(6.0);
@@ -1067,7 +1324,7 @@ impl App {
         widgets::secao(ui, "Atalho");
         widgets::cartao(ui, |ui| {
             widgets::linha(ui, "Segure para falar", |ui| {
-                if state.capturing_hotkey {
+                if state.capturando == Some(QualAtalho::Ditar) {
                     ui.label(medio("pressione a combinação…", 14.0));
                     if widgets::botao(ui, "Cancelar").clicked() {
                         self.act(UiAction::CancelHotkeyCapture);
@@ -1079,7 +1336,7 @@ impl App {
                         .on_hover_text("Clique e pressione a nova tecla ou combinação")
                         .clicked()
                     {
-                        self.act(UiAction::StartHotkeyCapture);
+                        self.act(UiAction::StartHotkeyCapture(QualAtalho::Ditar));
                     }
                 }
             });
@@ -1088,6 +1345,52 @@ impl App {
                 "A leitura é passiva: a tecla continua funcionando normalmente nos \
                  outros programas. Prefira teclas sem função própria (Pause, F13…). \
                  Esc cancela a captura.",
+            ));
+
+            ui.add_space(10.0);
+            widgets::linha(ui, "Descartar o ditado", |ui| {
+                if state.capturando == Some(QualAtalho::Cancelar) {
+                    ui.label(medio("pressione a combinação…", 14.0));
+                    if widgets::botao(ui, "Cancelar").clicked() {
+                        self.act(UiAction::CancelHotkeyCapture);
+                    }
+                } else {
+                    // Os dois botões diretos existem por causa do Esc: ele é o
+                    // padrão daqui e é também a tecla que **desiste** de uma
+                    // captura, então não há como escolhê-lo apertando-o. Sem
+                    // eles, quem trocasse o atalho uma vez não teria como
+                    // voltar ao padrão nem como desligar o recurso.
+                    if state.draft.atalho_de_cancelar.is_empty() {
+                        if widgets::botao(ui, "Usar Esc").clicked() {
+                            self.act(UiAction::DefinirAtalho(
+                                QualAtalho::Cancelar,
+                                vec!["KEY_ESC".to_string()],
+                            ));
+                        }
+                    } else if widgets::botao(ui, "Desligar").clicked() {
+                        self.act(UiAction::DefinirAtalho(QualAtalho::Cancelar, Vec::new()));
+                    }
+
+                    let atual = if state.draft.atalho_de_cancelar.is_empty() {
+                        "desligado".to_string()
+                    } else {
+                        keys::combo_label(&state.draft.atalho_de_cancelar)
+                    };
+                    if ui
+                        .add(Botao::new(tema::tecnico(atual, 13.0)))
+                        .on_hover_text("Clique e pressione a nova tecla ou combinação")
+                        .clicked()
+                    {
+                        self.act(UiAction::StartHotkeyCapture(QualAtalho::Cancelar));
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            ui.label(nota(
+                "Joga fora a gravação em curso sem transcrever nada — para quando \
+                 você apertou sem querer ou se enrolou no meio da frase. Fora de uma \
+                 gravação a tecla não faz nada, então o Esc do dia a dia continua o \
+                 mesmo.",
             ));
         });
     }
@@ -1153,6 +1456,81 @@ impl App {
         });
     }
 
+    /// O microfone: qual, qual canal dele, e se ele fica aberto.
+    ///
+    /// Saiu de dentro de "Transcrição" quando ganhou três controles: o aparelho
+    /// não é um detalhe da transcrição, é a metade da frente do programa.
+    fn settings_microfone(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        widgets::secao(ui, "Microfone");
+        widgets::cartao(ui, |ui| {
+            widgets::linha(ui, "Aparelho", |ui| {
+                let atual = state
+                    .draft
+                    .input_device
+                    .clone()
+                    .unwrap_or_else(|| "Padrão do sistema".to_string());
+                let dispositivos = state.devices.clone();
+                lista(ui, "microfone", &encurtar(&atual, 40)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut state.draft.input_device, None, "Padrão do sistema");
+                    for nome in &dispositivos {
+                        ui.selectable_value(
+                            &mut state.draft.input_device,
+                            Some(nome.clone()),
+                            encurtar(nome, 46),
+                        );
+                    }
+                });
+            });
+
+            widgets::linha(ui, "Canal", |ui| {
+                let atual = match state.draft.canal_do_microfone {
+                    None => "Misturar todos".to_string(),
+                    Some(n) => format!("Canal {}", n + 1),
+                };
+                lista(ui, "canal", &atual).show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut state.draft.canal_do_microfone,
+                        None,
+                        "Misturar todos",
+                    );
+                    // Oito é o que cabe numa interface de áudio comum. A
+                    // configuração aceita qualquer número editada à mão, e o
+                    // `audio.rs` confere contra o que o aparelho tem de verdade.
+                    for n in 0u16..8 {
+                        ui.selectable_value(
+                            &mut state.draft.canal_do_microfone,
+                            Some(n),
+                            format!("Canal {}", n + 1),
+                        );
+                    }
+                });
+            });
+            ui.add_space(2.0);
+            ui.label(nota(
+                "Microfone comum tem um canal só e não precisa disto. Numa interface \
+                 de áudio com várias entradas, misturar todas junta o chiado das que \
+                 estão vazias à sua voz.",
+            ));
+
+            ui.add_space(8.0);
+            widgets::interruptor(
+                ui,
+                &mut state.draft.microfone_sempre_aberto,
+                "Manter o microfone aberto",
+            );
+            ui.label(nota(if state.draft.microfone_sempre_aberto {
+                "Apertar a tecla começa a gravar na hora, e os 300 ms anteriores ao \
+                 aperto entram junto — é o que impede a primeira sílaba de se perder. \
+                 Nada é guardado fora de uma gravação, mas o indicador de \"microfone \
+                 em uso\" do sistema fica aceso enquanto o Ditador está no ar."
+            } else {
+                "O microfone é aberto no instante em que você aperta a tecla, o que \
+                 leva de 40 ms a algumas centenas — e a primeira sílaba pode se \
+                 perder nesse intervalo."
+            }));
+        });
+    }
+
     fn settings_transcricao(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
         widgets::secao(ui, "Transcrição");
         widgets::cartao(ui, |ui| {
@@ -1170,24 +1548,139 @@ impl App {
             });
 
             widgets::interruptor(ui, &mut state.draft.translate, "Traduzir para inglês");
+        });
+    }
 
-            widgets::linha(ui, "Microfone", |ui| {
-                let atual = state
-                    .draft
-                    .input_device
-                    .clone()
-                    .unwrap_or_else(|| "Padrão do sistema".to_string());
-                let dispositivos = state.devices.clone();
-                lista(ui, "microfone", &encurtar(&atual, 40)).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut state.draft.input_device, None, "Padrão do sistema");
-                    for nome in &dispositivos {
-                        ui.selectable_value(
-                            &mut state.draft.input_device,
-                            Some(nome.clone()),
-                            encurtar(nome, 46),
-                        );
+    /// Termos próprios: a lista e a régua de quanto o texto pode diferir.
+    fn settings_dicionario(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        widgets::secao(ui, "Termos próprios");
+        widgets::cartao(ui, |ui| {
+            widgets::interruptor(
+                ui,
+                &mut state.draft.dicionario.ativo,
+                "Corrigir termos meus no texto transcrito",
+            );
+            ui.add_space(4.0);
+
+            ui.add_enabled_ui(state.draft.dicionario.ativo, |ui| {
+                ui.label(nota(
+                    "Um por linha — nomes, siglas, jargão da sua área. É esta grafia \
+                     que vai para o texto.",
+                ));
+                // Um campo de texto com uma linha por termo, e não uma lista com
+                // botões de mais e menos: colar dez termos de uma vez é o que
+                // alguém faz na primeira vez que abre esta tela, e uma lista com
+                // botões transforma isso em dez cliques.
+                let mut texto = state.draft.dicionario.termos.join("\n");
+                if ui
+                    .add(
+                        egui::TextEdit::multiline(&mut texto)
+                            .desired_rows(3)
+                            .hint_text("Kubernetes\nChargeBee\nSão Paulo")
+                            .margin(Margin::symmetric(10, 8))
+                            .desired_width(f32::INFINITY),
+                    )
+                    .changed()
+                {
+                    // Sem `trim` de cada linha aqui: quem está digitando pode ter
+                    // acabado de apertar Enter, e aparar agora apagaria a linha em
+                    // branco embaixo do cursor. Quem apara é o `sanear`, na
+                    // gravação.
+                    state.draft.dicionario.termos = texto.split('\n').map(str::to_string).collect();
+                }
+
+                let mut sensibilidade = (state.draft.dicionario.sensibilidade * 100.0) as i64;
+                if widgets::deslizante(ui, &mut sensibilidade, 50..=100, "Exigência", |v| {
+                    if v >= 100 {
+                        "exata".to_string()
+                    } else {
+                        format!("{v}%")
                     }
-                });
+                })
+                .changed()
+                {
+                    state.draft.dicionario.sensibilidade = sensibilidade as f32 / 100.0;
+                }
+                ui.label(nota(
+                    "Mais baixo corrige mais e erra mais. Em \"exata\" só a grafia \
+                     conta — o que já resolve maiúsculas, acentos e palavras \
+                     partidas. Termos de menos de oito letras nunca são \
+                     aproximados: uma letra de diferença em nome curto é ambígua \
+                     demais.",
+                ));
+            });
+        });
+    }
+
+    /// O registro das transcrições.
+    fn settings_historico(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        widgets::secao(ui, "Histórico");
+        widgets::cartao(ui, |ui| {
+            widgets::interruptor(
+                ui,
+                &mut state.draft.historico.ativo,
+                "Guardar as transcrições",
+            );
+            ui.add_space(2.0);
+            ui.label(nota(
+                "A rede para quando a colagem cai na janela errada ou você fecha a \
+                 janela sem querer. Abra pelo ícone da barra, ou pelo terminal com \
+                 ditador --historico.",
+            ));
+
+            ui.add_enabled_ui(state.draft.historico.ativo, |ui| {
+                ui.add_space(6.0);
+                let mut limite = state.draft.historico.limite as i64;
+                if widgets::deslizante(ui, &mut limite, 10..=2000, "Guardar as últimas", |v| {
+                    v.to_string()
+                })
+                .changed()
+                {
+                    state.draft.historico.limite = limite as usize;
+                }
+
+                widgets::interruptor(
+                    ui,
+                    &mut state.draft.historico.guardar_audio,
+                    "Guardar também o áudio",
+                );
+                if state.draft.historico.guardar_audio {
+                    ui.label(nota(
+                        "Cerca de 2 MB por minuto de fala. Serve para conferir se o \
+                         modelo entendeu errado ou se você falou errado — o texto \
+                         sozinho já responde \"o que eu falei mesmo?\".",
+                    ));
+                }
+            });
+
+            if widgets::botao(ui, "Ver as transcrições").clicked() {
+                self.act(UiAction::AbrirHistorico);
+            }
+        });
+    }
+
+    /// Os avisos sonoros.
+    fn settings_sons(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        widgets::secao(ui, "Sons");
+        widgets::cartao(ui, |ui| {
+            widgets::interruptor(ui, &mut state.draft.sons.ativo, "Avisar por som");
+            ui.add_space(2.0);
+            ui.label(nota(
+                "Um tom subindo quando o microfone abre e um descendo quando o texto \
+                 fica pronto — mais um grave se alguma coisa falhar. É a única \
+                 confirmação que existe quando a janela de resultado está desligada.",
+            ));
+
+            ui.add_enabled_ui(state.draft.sons.ativo, |ui| {
+                let mut volume = (state.draft.sons.volume * 100.0) as i64;
+                if widgets::deslizante(ui, &mut volume, 0..=100, "Volume", |v| format!("{v}%"))
+                    .changed()
+                {
+                    state.draft.sons.volume = volume as f32 / 100.0;
+                }
+                if widgets::botao(ui, "Ouvir").clicked() {
+                    crate::sons::tocar(crate::sons::Som::Inicio, state.draft.sons.volume);
+                }
             });
         });
     }
@@ -1229,15 +1722,51 @@ impl App {
                 widgets::interruptor(
                     ui,
                     &mut state.draft.auto_paste,
-                    "Colar na janela em foco (Ctrl+V)",
+                    "Entregar o texto na janela em foco",
                 );
             });
             if !cola_sozinho {
                 ui.label(nota(clipboard::COMO_HABILITAR_A_COLAGEM));
             } else if state.draft.auto_paste {
+                ui.add_space(4.0);
+                widgets::linha(ui, "Como", |ui| {
+                    let opcoes: Vec<(MetodoDeColagem, &str)> = MetodoDeColagem::TODOS
+                        .iter()
+                        .map(|m| (*m, m.nome()))
+                        .collect();
+                    lista(ui, "metodo-colagem", state.draft.metodo_de_colagem.nome()).show_ui(
+                        ui,
+                        |ui| {
+                            for (metodo, nome) in &opcoes {
+                                ui.selectable_value(
+                                    &mut state.draft.metodo_de_colagem,
+                                    *metodo,
+                                    *nome,
+                                );
+                            }
+                        },
+                    );
+                });
+                ui.label(nota(state.draft.metodo_de_colagem.explicacao()));
+
+                ui.add_space(4.0);
+                widgets::linha(ui, "Depois de colar, apertar", |ui| {
+                    let opcoes: Vec<(TeclaDeEnvio, &str)> =
+                        TeclaDeEnvio::TODAS.iter().map(|t| (*t, t.nome())).collect();
+                    widgets::segmentado(ui, &mut state.draft.tecla_de_envio, &opcoes);
+                });
+                if state.draft.tecla_de_envio != TeclaDeEnvio::Nenhuma {
+                    ui.label(nota(
+                        "Ditar num campo de chat vira falar e soltar: a mensagem já \
+                         foi. Em vários programas — Slack, caixas de comentário — \
+                         quem envia é o Ctrl+Enter, e o Enter sozinho quebra a linha.",
+                    ));
+                }
+
+                ui.add_space(4.0);
                 ui.label(nota(
-                    "Com a colagem automática a janela de resultado não aparece — \
-                     o texto vai direto para onde você estava escrevendo.",
+                    "Com a entrega automática a janela de resultado não aparece — o \
+                     texto vai direto para onde você estava escrevendo.",
                 ));
                 // As ressalvas da plataforma, ditas antes de a chave valer e não
                 // depois de o texto ter ido para a janela errada. Elas não são as
@@ -1245,6 +1774,16 @@ impl App {
                 // plataforma.
                 ui.label(nota(clipboard::SOBRE_A_COLAGEM));
             }
+
+            ui.add_space(6.0);
+            widgets::interruptor(
+                ui,
+                &mut state.draft.espaco_no_fim,
+                "Acrescentar um espaço no fim",
+            );
+            ui.label(nota(
+                "Para ditar duas frases seguidas sem elas grudarem uma na outra.",
+            ));
 
             if let Some(aviso) = clipboard::aviso_da_copia() {
                 ui.label(nota(aviso));
@@ -1403,6 +1942,23 @@ fn lista(ui: &egui::Ui, id: &str, selecionado: &str) -> egui::ComboBox {
         .width(ui.available_width())
         .wrap_mode(egui::TextWrapMode::Truncate)
         .icon(widgets::seta)
+}
+
+/// A altura que sobra para o conteúdo depois de reservar o rodapé, nunca
+/// negativa.
+///
+/// O piso existe porque a janela deste programa é redimensionada por comando: ao
+/// trocar de tela, o pedido vai num quadro e é atendido no seguinte, então há
+/// sempre um desenho feito com o tamanho da tela anterior. Quando a tela nova é
+/// mais alta que a anterior, a sobra desse quadro é menor do que o rodapé pede — e
+/// o `set_min_height` do egui entra em pânico com altura negativa, derrubando o
+/// programa inteiro.
+///
+/// O mínimo é pequeno de propósito: ele vale por um quadro, e o que se quer dele é
+/// atravessar aquele quadro sem derrubar nada — não desenhar bonito.
+fn altura_util(ui: &egui::Ui, rodape: f32) -> f32 {
+    const MINIMO: f32 = 24.0;
+    (ui.available_height() - rodape).max(MINIMO)
 }
 
 /// Faixa invisível no topo que permite arrastar a janela sem decoração.

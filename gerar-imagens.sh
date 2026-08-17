@@ -2,7 +2,7 @@
 # Refaz as imagens do README.
 #
 # Roda o Ditador nos dois temas com o passeio de demonstração ligado — ele passa
-# sozinho pelas três telas, com um texto de exemplo, e grava um PNG de cada uma —
+# sozinho pelas quatro telas, com conteúdo de exemplo, e grava um PNG de cada uma —
 # e depois pousa as capturas sobre um fundo liso. Não precisa de microfone, do
 # modelo baixado nem de ninguém falar na hora certa; precisa só de uma sessão
 # gráfica aberta.
@@ -37,7 +37,7 @@ for tema in claro escuro; do
     DITADOR_CAPTURA="$tiros-$tema" \
         target/release/ditador
 
-    for tela in recording result settings; do
+    for tela in recording result historico settings; do
         if [ ! -f "$tiros-$tema/$tela.png" ]; then
             echo "!! o passeio não gravou $tela.png no tema $tema" >&2
             exit 1

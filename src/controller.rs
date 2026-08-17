@@ -2,9 +2,10 @@
 
 use crate::audio::{AudioCmd, AudioEvent, AudioHandle, AudioSettings};
 use crate::clipboard;
-use crate::config::Config;
+use crate::config::{Config, MetodoDeColagem, TeclaDeEnvio};
 use crate::hotkey::{HotkeyEvent, HotkeyListener};
-use crate::state::{ModelState, SharedState, Sinal, UiAction, View, lock};
+use crate::sons::{self, Som};
+use crate::state::{ModelState, QualAtalho, SharedState, Sinal, UiAction, View, lock};
 use crate::stt::{SttCmd, SttEvent, TranscribeOptions};
 use crossbeam_channel::{Receiver, select};
 use std::sync::Arc;
@@ -25,7 +26,11 @@ pub enum IpcCommand {
     Start,
     /// Para de gravar e manda transcrever, se estiver gravando.
     Stop,
+    /// Descarta a gravação em curso sem transcrever.
+    Cancel,
     Settings,
+    /// Abre a lista das transcrições guardadas.
+    Historico,
     Quit,
 }
 
@@ -43,9 +48,53 @@ pub struct Controller {
     pub audio: AudioHandle,
     pub stt: crossbeam_channel::Sender<SttCmd>,
     pub hotkey: Arc<HotkeyListener>,
+    /// O que o histórico precisa saber sobre o ditado que está sendo
+    /// transcrito, e que só o evento do áudio conhece.
+    ///
+    /// Guarda um ditado só — falar de novo enquanto a frase anterior é
+    /// transcrita sobrescreve o anterior, e aí aquela entrada fica sem áudio. O
+    /// texto, que é o que importa, nunca se perde por isso.
+    para_o_historico: std::sync::Mutex<Option<AudioGuardado>>,
+}
+
+/// O que espera a transcrição terminar para ser guardado com ela.
+///
+/// A duração vem sempre; as amostras, só quando o histórico foi configurado para
+/// guardar o áudio. A separação é o ponto: a cópia das amostras é de megabytes e
+/// só existe quando alguém pediu, mas a duração é um `u64` — e ela é a informação
+/// que a lista de transcrições mostra ao lado de cada frase.
+///
+/// Isto já esteve junto, e o defeito só apareceu num ditado de verdade: com o
+/// áudio desligado (que é o padrão) **nada** era guardado, então a duração ficava
+/// em zero e a lista nunca a mostrava.
+struct AudioGuardado {
+    ditado: u64,
+    duracao_ms: u64,
+    amostras: Option<Vec<f32>>,
+    taxa: u32,
 }
 
 impl Controller {
+    /// Monta o controlador. O campo do áudio guardado nasce vazio e não faz
+    /// parte da configuração de ninguém — por isso ele não vai na struct
+    /// literal de quem constrói.
+    pub fn novo(
+        shared: SharedState,
+        sinal: Sinal,
+        audio: AudioHandle,
+        stt: crossbeam_channel::Sender<SttCmd>,
+        hotkey: Arc<HotkeyListener>,
+    ) -> Self {
+        Self {
+            shared,
+            sinal,
+            audio,
+            stt,
+            hotkey,
+            para_o_historico: std::sync::Mutex::new(None),
+        }
+    }
+
     pub fn run(self, channels: Channels) {
         self.apply_audio_settings();
         self.load_model();
@@ -101,12 +150,25 @@ impl Controller {
         match event {
             HotkeyEvent::Down => self.start_recording(),
             HotkeyEvent::Up => self.stop_recording(),
+            HotkeyEvent::Cancelar => self.cancelar_gravacao(),
 
             HotkeyEvent::Captured(keys) => {
                 let mut state = lock(&self.shared);
-                state.capturing_hotkey = false;
+                // Para onde a combinação vai depende de qual botão abriu a
+                // captura. Um booleano não sabia disso, e o palpite mais óbvio
+                // — o atalho de ditar, que é o primeiro da tela — trocaria o
+                // errado quando a pessoa estivesse escolhendo o de cancelar.
+                let qual = state.capturando.take();
                 if !keys.is_empty() {
-                    state.draft.hotkey = keys;
+                    match qual {
+                        Some(QualAtalho::Ditar) => state.draft.hotkey = keys,
+                        Some(QualAtalho::Cancelar) => state.draft.atalho_de_cancelar = keys,
+                        // A captura foi cancelada por outro caminho enquanto a
+                        // combinação estava a caminho. Descartar é o certo:
+                        // gravar num campo que ninguém escolheu é pior do que
+                        // não gravar.
+                        None => {}
+                    }
                 }
                 drop(state);
                 self.sinal.mudou();
@@ -155,7 +217,14 @@ impl Controller {
                 state.message = format!("Não consegui acessar o microfone: {message}");
                 state.erro_e_so_espera = false;
                 state.view = View::Error;
+                let aviso = state.config.sons;
                 drop(state);
+                // O aviso sonoro importa mais aqui do que em qualquer outro
+                // lugar: quem dita com a janela desligada não veria esta tela
+                // aparecer, e ficaria falando para um microfone que não abriu.
+                if aviso.ativo {
+                    sons::tocar(Som::Falha, aviso.volume);
+                }
                 self.sinal.mudou();
             }
 
@@ -165,6 +234,30 @@ impl Controller {
                 sample_rate,
                 duration_ms,
             } => {
+                // O que o histórico precisa e só este evento conhece: a duração
+                // sempre, e as amostras só quando a chave do áudio está ligada —
+                // porque aquela cópia é de megabytes.
+                {
+                    let (ativo, guardar_audio) = {
+                        let state = lock(&self.shared);
+                        (
+                            state.config.historico.ativo,
+                            state.config.historico.guardar_audio,
+                        )
+                    };
+                    if ativo {
+                        *self
+                            .para_o_historico
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = Some(AudioGuardado {
+                            ditado,
+                            duracao_ms: duration_ms,
+                            amostras: guardar_audio.then(|| samples.clone()),
+                            taxa: sample_rate,
+                        });
+                    }
+                }
+
                 let (atual, too_short, options) = {
                     let mut state = lock(&self.shared);
                     // Só o ditado mais novo manda na tela e no cronômetro. O
@@ -312,18 +405,49 @@ impl Controller {
     }
 
     fn on_transcription(&self, ditado: u64, text: String, elapsed_ms: u128) {
-        let (auto_copy, auto_paste, show_result) = {
-            let state = lock(&self.shared);
-            (
-                state.config.auto_copy,
-                state.config.auto_paste,
-                state.config.show_result,
-            )
+        let config = lock(&self.shared).config.clone();
+        let (auto_copy, auto_paste, show_result) =
+            (config.auto_copy, config.auto_paste, config.show_result);
+
+        // O texto é acertado **uma vez**, aqui, antes de qualquer coisa
+        // consumi-lo. Assim a janela, a área de transferência, a colagem e o
+        // histórico veem todos exatamente o mesmo texto — o que se lê é o que
+        // se cola é o que fica guardado. Deixar o espaço do fim só para a
+        // colagem, por exemplo, faria o botão "Copiar" da janela entregar uma
+        // coisa e a colagem automática outra.
+        let text = crate::dicionario::corrigir(&text, &config.dicionario);
+        let text = if config.espaco_no_fim && !text.is_empty() {
+            format!("{text} ")
+        } else {
+            text
         };
+
+        // Guardar vem antes de entregar, e de propósito: se alguma coisa der
+        // errado da entrega para frente — a área de transferência recusando, a
+        // colagem caindo na janela errada — o texto já está a salvo. É a razão
+        // de este módulo existir.
+        if !text.is_empty() {
+            let guardado = self.do_ditado(ditado);
+            crate::historico::registrar(
+                &config.historico,
+                &text,
+                guardado.as_ref().map_or(0, |g| g.duracao_ms),
+                guardado
+                    .as_ref()
+                    .and_then(|g| g.amostras.as_ref().map(|a| (a.as_slice(), g.taxa))),
+            );
+        }
+
+        // Com `Digitar`, colar não passa pela área de transferência — então
+        // copiar só acontece se a cópia automática tiver sido pedida por si
+        // mesma. É assim que "não quero que o Ditador mexa no que eu copiei"
+        // funciona sem uma chave a mais para explicar.
+        let vai_para_a_area =
+            auto_copy || (auto_paste && config.metodo_de_colagem.usa_a_area_de_transferencia());
 
         let mut copy_error = None;
         if !text.is_empty()
-            && (auto_copy || auto_paste)
+            && vai_para_a_area
             && let Err(e) = clipboard::copy(&text)
         {
             log::warn!("não consegui copiar o ditado {ditado}: {e:#}");
@@ -357,7 +481,10 @@ impl Controller {
                 state.text = text.clone();
                 state.message = copy_error.clone().unwrap_or_default();
                 let a_salvo = (auto_copy || auto_paste) && copy_error.is_none();
-                state.copied_at = a_salvo.then(Instant::now);
+                // "Copiado" só quando houve cópia: com `Digitar` e a cópia
+                // automática desligada nada foi para a área de transferência, e
+                // o aviso verde estaria mentindo.
+                state.copied_at = (vai_para_a_area && copy_error.is_none()).then(Instant::now);
                 let tela = Self::tela_do_resultado(a_salvo, auto_paste, show_result);
                 if Self::resultado_pode_aparecer(tela, ocupada) {
                     state.view = tela;
@@ -367,8 +494,38 @@ impl Controller {
         }
         self.sinal.mudou();
 
+        // O aviso sonoro de fim toca aqui, e não quando a tecla é solta: o que
+        // se quer saber é que **o texto está pronto**, não que a gravação
+        // acabou — quem soltou a tecla já sabe que soltou. Nos modos sem janela
+        // este é o único sinal de que dá para colar.
+        if config.sons.ativo {
+            let aviso = if text.is_empty() {
+                Som::Falha
+            } else {
+                Som::Fim
+            };
+            sons::tocar(aviso, config.sons.volume);
+        }
+
         if auto_paste && copy_error.is_none() && !text.is_empty() {
-            self.colar_depois();
+            self.colar_depois(&text, config.metodo_de_colagem, config.tecla_de_envio);
+        }
+    }
+
+    /// O que ficou guardado para este ditado, se for mesmo o dele.
+    ///
+    /// Falar de novo enquanto a frase anterior é transcrita sobrescreve o
+    /// guardado, e aí a entrada anterior fica sem duração e sem áudio. É a
+    /// decisão certa: o contrário seria uma fila de buffers de megabytes
+    /// crescendo sem teto para resolver um caso raro de um recurso opcional.
+    fn do_ditado(&self, ditado: u64) -> Option<AudioGuardado> {
+        let mut guardado = self
+            .para_o_historico
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match guardado.as_ref() {
+            Some(a) if a.ditado == ditado => guardado.take(),
+            _ => None,
         }
     }
 
@@ -378,27 +535,59 @@ impl Controller {
     /// colagem cai no nada — ou, pior, dentro do próprio campo de resultado.
     const ESPERA_ANTES_DE_COLAR: Duration = Duration::from_millis(250);
 
-    /// Cola o que já está na área de transferência, numa thread à parte.
+    /// Espera entre colar e apertar a tecla de envio.
     ///
-    /// Só é chamada depois de uma cópia bem-sucedida. Isso é o contrato: colar
-    /// sem ter copiado joga na janela do usuário o conteúdo anterior da área de
-    /// transferência, que é dele e não tem nada a ver com o que ele acabou de
-    /// falar.
-    fn colar_depois(&self) {
+    /// O programa de destino precisa ter processado o texto antes de receber o
+    /// Enter, senão a mensagem é enviada vazia — ou pior, pela metade. Cinquenta
+    /// milissegundos são suficientes para um campo de chat comum e curtos o
+    /// bastante para ninguém perceber.
+    const ESPERA_ANTES_DE_ENVIAR: Duration = Duration::from_millis(50);
+
+    /// Entrega o texto à janela em foco, numa thread à parte.
+    ///
+    /// Só é chamada depois de uma cópia bem-sucedida — ou, no método `Digitar`,
+    /// sem cópia nenhuma, que é o ponto dele. Esse é o contrato dos três métodos
+    /// que usam a área de transferência: colar sem ter copiado joga na janela do
+    /// usuário o conteúdo anterior dela, que é dele e não tem nada a ver com o
+    /// que ele acabou de falar.
+    fn colar_depois(&self, texto: &str, metodo: MetodoDeColagem, envio: TeclaDeEnvio) {
         let shared = self.shared.clone();
         let sinal = self.sinal.clone();
+        let texto = texto.to_string();
         let _ = std::thread::Builder::new()
             .name("colar".into())
             .spawn(move || {
                 std::thread::sleep(Self::ESPERA_ANTES_DE_COLAR);
-                if let Err(e) = clipboard::paste() {
-                    log::warn!("copiei, mas a colagem falhou: {e:#}");
+                if let Err(e) = clipboard::paste(metodo, &texto) {
+                    log::warn!("a colagem falhou: {e:#}");
                     let mut state = lock(&shared);
-                    state.message = format!("Copiei, mas não consegui colar: {e:#}");
+                    // A frase muda com o método: dizer "copiei, mas não
+                    // consegui colar" depois de uma digitação seria mentira —
+                    // ali nada foi copiado, e mandar a pessoa apertar Ctrl+V
+                    // colaria o que ela tinha copiado antes.
+                    state.message = if metodo.usa_a_area_de_transferencia() {
+                        format!("Copiei, mas não consegui colar: {e:#}")
+                    } else {
+                        format!("Não consegui digitar o texto: {e:#}")
+                    };
                     state.erro_e_so_espera = false;
                     state.view = View::Result;
                     drop(state);
                     sinal.mudou();
+                    return;
+                }
+
+                if envio == TeclaDeEnvio::Nenhuma {
+                    return;
+                }
+                std::thread::sleep(Self::ESPERA_ANTES_DE_ENVIAR);
+                if let Err(e) = clipboard::submit(envio) {
+                    // Uma falha aqui não estraga nada: o texto **já está** na
+                    // janela de destino, e o que faltou foi apertar Enter, que a
+                    // pessoa faz com a mão. Por isso vira log e não janela — que
+                    // roubaria o foco justamente do campo onde o texto acabou de
+                    // chegar.
+                    log::warn!("colei, mas não consegui apertar a tecla de envio: {e:#}");
                 }
             });
     }
@@ -438,7 +627,7 @@ impl Controller {
                 self.hotkey.cancel_capture();
                 let mut state = lock(&self.shared);
                 state.draft = state.config.clone();
-                state.capturing_hotkey = false;
+                state.capturando = None;
                 let repouso = tela_de_repouso(&state);
                 state.view = repouso;
                 drop(state);
@@ -447,10 +636,10 @@ impl Controller {
 
             UiAction::ApplyDraft => self.apply_draft(),
 
-            UiAction::StartHotkeyCapture => {
+            UiAction::StartHotkeyCapture(qual) => {
                 self.hotkey.begin_capture();
                 let mut state = lock(&self.shared);
-                state.capturing_hotkey = true;
+                state.capturando = Some(qual);
                 drop(state);
                 self.sinal.mudou();
             }
@@ -458,10 +647,71 @@ impl Controller {
             UiAction::CancelHotkeyCapture => {
                 self.hotkey.cancel_capture();
                 let mut state = lock(&self.shared);
-                state.capturing_hotkey = false;
+                state.capturando = None;
                 drop(state);
                 self.sinal.mudou();
             }
+
+            UiAction::DefinirAtalho(qual, teclas) => {
+                self.hotkey.cancel_capture();
+                let mut state = lock(&self.shared);
+                state.capturando = None;
+                match qual {
+                    QualAtalho::Ditar => state.draft.hotkey = teclas,
+                    QualAtalho::Cancelar => state.draft.atalho_de_cancelar = teclas,
+                }
+                drop(state);
+                self.sinal.mudou();
+            }
+
+            UiAction::AbrirHistorico => self.abrir_historico(),
+
+            UiAction::FecharHistorico => self.voltar_ao_repouso(),
+
+            UiAction::CopiarDoHistorico(indice) => {
+                let texto = lock(&self.shared)
+                    .historico
+                    .get(indice)
+                    .map(|e| e.texto.clone());
+                let Some(texto) = texto else { return };
+                let mut state = lock(&self.shared);
+                match clipboard::copy(&texto) {
+                    Ok(()) => {
+                        state.copied_at = Some(Instant::now());
+                        state.message.clear();
+                        // O texto vai para o campo do resultado também: quem
+                        // recuperou uma transcrição antiga em geral quer
+                        // colá-la, e a tela de resultado é onde estão os botões
+                        // que fazem isso.
+                        state.text = texto;
+                    }
+                    Err(e) => {
+                        log::warn!("não consegui copiar do histórico: {e:#}");
+                        state.message = format!("Não consegui copiar: {e:#}");
+                    }
+                }
+                drop(state);
+                self.sinal.mudou();
+            }
+
+            UiAction::LimparHistorico => {
+                let mut state = lock(&self.shared);
+                match crate::historico::limpar() {
+                    Ok(()) => {
+                        state.historico.clear();
+                        state.historico_em_disco = 0;
+                        state.message.clear();
+                    }
+                    Err(e) => {
+                        log::warn!("não consegui apagar o histórico: {e:#}");
+                        state.message = format!("Não consegui apagar o histórico: {e:#}");
+                    }
+                }
+                drop(state);
+                self.sinal.mudou();
+            }
+
+            UiAction::Cancelar => self.cancelar_gravacao(),
 
             UiAction::ReloadModel => self.load_model(),
 
@@ -503,19 +753,42 @@ impl Controller {
             // e `stop_recording` se não estiver. A regra continua num lugar só.
             IpcCommand::Start => self.start_recording(),
             IpcCommand::Stop => self.stop_recording(),
+            IpcCommand::Cancel => self.cancelar_gravacao(),
             IpcCommand::Settings => self.on_ui(UiAction::OpenSettings),
+            IpcCommand::Historico => self.on_ui(UiAction::AbrirHistorico),
             IpcCommand::Quit => self.on_ui(UiAction::Quit),
         }
+    }
+
+    /// Carrega o histórico do disco e mostra a lista.
+    ///
+    /// A leitura acontece **fora** do mutex, como a enumeração dos microfones em
+    /// `OpenSettings` e pelo mesmo motivo: ela toca o disco, e segurar o estado
+    /// compartilhado durante uma chamada de sistema prende a interface junto.
+    fn abrir_historico(&self) {
+        let entradas = crate::historico::ler_recentes(500);
+        let em_disco = crate::historico::tamanho_em_disco();
+        let mut state = lock(&self.shared);
+        state.historico = entradas;
+        state.historico_em_disco = em_disco;
+        state.view = View::Historico;
+        drop(state);
+        self.sinal.mudou();
     }
 
     // ------------------------------------------------------------- gravação
 
     fn start_recording(&self) {
-        let ditado = {
+        let (ditado, sons_ligados, volume) = {
             let mut state = lock(&self.shared);
 
-            // Não atrapalha quem está mexendo nas configurações.
-            if state.view == View::Settings || state.capturing_hotkey {
+            // Não atrapalha quem está mexendo nas configurações — nem quem está
+            // escolhendo um atalho, nem quem está lendo o histórico, que é uma
+            // tela de leitura e não teria como voltar depois.
+            if state.view == View::Settings
+                || state.view == View::Historico
+                || state.capturando.is_some()
+            {
                 return;
             }
             // Quem responde por "já estamos ouvindo" é o `recording_since`, e
@@ -554,9 +827,20 @@ impl Controller {
             state.recording_since = Some(Instant::now());
             state.view = View::Recording;
             state.ditado_atual += 1;
-            state.ditado_atual
+            (
+                state.ditado_atual,
+                state.config.sons.ativo,
+                state.config.sons.volume,
+            )
         };
         self.audio.send(AudioCmd::Start { ditado });
+        // O aviso de início é o par do de fim (que toca quando o texto fica
+        // pronto): juntos, eles cercam o intervalo em que falar adianta. É a
+        // única confirmação de que o atalho pegou para quem dita com a janela
+        // desligada ou com a extensão do GNOME no ar.
+        if sons_ligados {
+            sons::tocar(Som::Inicio, volume);
+        }
         self.sinal.mudou();
     }
 
@@ -580,6 +864,40 @@ impl Controller {
         self.sinal.mudou();
     }
 
+    /// Descarta a gravação em curso sem transcrever nada.
+    ///
+    /// A saída que faltava: começou a gravar por engano, ou se enrolou no meio
+    /// da frase, e a única alternativa era soltar a tecla e esperar o Whisper
+    /// produzir um texto indesejado — que ainda ia para a área de transferência
+    /// e, com a colagem automática ligada, para a janela em que a pessoa estava
+    /// escrevendo.
+    ///
+    /// Sem gravação em curso não faz nada, e é isso que permite ligar o atalho
+    /// numa tecla de uso comum: o Esc do dia a dia atravessa sem efeito nenhum.
+    fn cancelar_gravacao(&self) {
+        let sons_do_cancelamento = {
+            let mut state = lock(&self.shared);
+            if state.recording_since.is_none() {
+                return;
+            }
+            state.recording_since = None;
+            state.status.clear();
+            // O número do ditado avança para que um `Captured` de um áudio que
+            // já estivesse a caminho — o teto de duração estourando no mesmo
+            // instante, por exemplo — não seja confundido com o ditado de agora.
+            state.ditado_atual += 1;
+            let repouso = tela_de_repouso(&state);
+            state.view = repouso;
+            state.config.sons
+        };
+        self.audio.send(AudioCmd::Cancel);
+        log::info!("ditado cancelado a pedido");
+        if sons_do_cancelamento.ativo {
+            sons::tocar(Som::Cancelado, sons_do_cancelamento.volume);
+        }
+        self.sinal.mudou();
+    }
+
     // ---------------------------------------------------------------- apoio
 
     fn copy_current(&self, then_paste: bool) {
@@ -594,6 +912,11 @@ impl Controller {
         // mensagem "Copiei, mas não consegui colar" apagava a verdadeira, "Não
         // consegui copiar": o programa afirmava ter copiado justamente quando
         // não copiou.
+        let (metodo, envio) = {
+            let state = lock(&self.shared);
+            (state.config.metodo_de_colagem, state.config.tecla_de_envio)
+        };
+
         let copiou = match clipboard::copy(&text) {
             Ok(()) => {
                 let mut state = lock(&self.shared);
@@ -614,7 +937,7 @@ impl Controller {
         self.sinal.mudou();
 
         if then_paste && copiou {
-            self.colar_depois();
+            self.colar_depois(&text, metodo, envio);
         }
     }
 
@@ -640,14 +963,16 @@ impl Controller {
         if draft.hotkey != previous.hotkey {
             self.hotkey.set_target(&draft.hotkey);
         }
-
+        if draft.atalho_de_cancelar != previous.atalho_de_cancelar {
+            self.hotkey.set_cancelar(&draft.atalho_de_cancelar);
+        }
         let reload_model =
             draft.model_path != previous.model_path || draft.use_gpu != previous.use_gpu;
 
         {
             let mut state = lock(&self.shared);
             state.config = draft;
-            state.capturing_hotkey = false;
+            state.capturando = None;
             let repouso = tela_de_repouso(&state);
             state.view = repouso;
             state.message.clear();
@@ -666,6 +991,8 @@ impl Controller {
         self.audio.send(AudioCmd::Configure(AudioSettings {
             device: config.input_device.clone(),
             max_secs: config.max_recording_secs,
+            sempre_aberto: config.microfone_sempre_aberto,
+            canal: config.canal_do_microfone,
         }));
     }
 
@@ -792,9 +1119,22 @@ mod tests {
             // Obrigatório: com a cópia automática ligada — que é o padrão — o
             // desfecho de um ditado mexe na área de transferência da máquina de
             // quem roda `cargo test`, e sem sessão gráfica o arboard trava.
+            //
+            // O histórico e os sons entram pelo mesmo motivo: o primeiro
+            // escreveria no `~/.local/share` de quem roda os testes, e os
+            // segundos abririam o dispositivo de saída de áudio dele — os dois
+            // são efeitos colaterais que um teste de unidade não pode ter.
             let config = Config {
                 auto_copy: false,
                 auto_paste: false,
+                historico: crate::config::Historico {
+                    ativo: false,
+                    ..crate::config::Historico::PADRAO
+                },
+                sons: crate::config::Sons {
+                    ativo: false,
+                    ..crate::config::Sons::PADRAO
+                },
                 ..Config::default()
             };
 
@@ -809,16 +1149,20 @@ mod tests {
             drop(estado);
 
             Self {
-                controlador: Controller {
-                    shared: shared.clone(),
-                    sinal: Sinal::default(),
-                    audio: crate::audio::AudioHandle {
+                controlador: Controller::novo(
+                    shared.clone(),
+                    Sinal::default(),
+                    crate::audio::AudioHandle {
                         tx: audio_tx,
                         levels: Default::default(),
                     },
-                    stt: stt_tx,
-                    hotkey: HotkeyListener::novo(&Config::default().hotkey, hotkey_tx),
-                },
+                    stt_tx,
+                    HotkeyListener::novo(
+                        &Config::default().hotkey,
+                        &Config::default().atalho_de_cancelar,
+                        hotkey_tx,
+                    ),
+                ),
                 audio: audio_rx,
                 stt: stt_rx,
             }
@@ -1057,6 +1401,148 @@ mod tests {
         // Sem ninguém gravando, as duas telas valem como sempre.
         assert!(Controller::resultado_pode_aparecer(View::Hidden, false));
         assert!(Controller::resultado_pode_aparecer(View::Result, false));
+    }
+
+    #[test]
+    fn cancelar_descarta_a_gravacao_e_nao_transcreve_nada() {
+        // A saída que faltava: o áudio é jogado fora no `audio.rs` e nada
+        // chega ao Whisper.
+        let b = Bancada::nova();
+        b.controlador.on_hotkey(HotkeyEvent::Down);
+        assert!(b.estado().gravando());
+        b.limpar();
+
+        b.controlador.on_hotkey(HotkeyEvent::Cancelar);
+
+        assert!(!b.estado().gravando(), "o microfone continuou aberto");
+        assert_eq!(b.estado().view, View::Hidden);
+        assert!(
+            matches!(b.audio.try_recv(), Ok(AudioCmd::Cancel)),
+            "o comando de descartar não chegou ao áudio"
+        );
+        assert!(
+            b.stt.try_recv().is_err(),
+            "um ditado cancelado foi mandado para a transcrição"
+        );
+    }
+
+    #[test]
+    fn cancelar_sem_gravacao_nao_faz_nada() {
+        // É o que permite pôr o atalho numa tecla de uso comum: o Esc do dia a
+        // dia atravessa sem efeito nenhum.
+        let b = Bancada::nova();
+        b.limpar();
+        let antes = b.estado().ditado_atual;
+
+        b.controlador.on_hotkey(HotkeyEvent::Cancelar);
+
+        assert!(b.audio.try_recv().is_err(), "mandou comando sem gravação");
+        assert_eq!(b.estado().ditado_atual, antes, "gastou um número de ditado");
+        assert_eq!(b.estado().view, View::Hidden);
+    }
+
+    #[test]
+    fn o_audio_de_um_ditado_cancelado_nao_toma_a_tela_depois() {
+        // O teto de duração pode estourar no mesmo instante do cancelamento, e
+        // aí um `Captured` chega para um ditado que já não existe. O número do
+        // ditado avança justamente para que ele seja reconhecido como antigo.
+        let b = Bancada::nova();
+        b.controlador.on_hotkey(HotkeyEvent::Down);
+        let ditado = b.estado().ditado_atual;
+        b.limpar();
+
+        b.controlador.on_hotkey(HotkeyEvent::Cancelar);
+        b.controlador.on_audio(AudioEvent::Captured {
+            ditado,
+            samples: vec![0.0; 16_000],
+            sample_rate: 16_000,
+            duration_ms: 1_000,
+        });
+
+        assert_eq!(
+            b.estado().view,
+            View::Hidden,
+            "o áudio de um ditado cancelado abriu a tela de transcrição"
+        );
+    }
+
+    #[test]
+    fn a_captura_manda_a_combinacao_para_o_atalho_que_a_pediu() {
+        // Um booleano não sabia para onde mandar, e o palpite mais óbvio — o
+        // atalho de ditar, que é o primeiro da tela — trocaria o errado.
+        let b = Bancada::nova();
+        let original = b.estado().draft.hotkey.clone();
+
+        b.controlador
+            .on_ui(UiAction::StartHotkeyCapture(QualAtalho::Cancelar));
+        b.controlador
+            .on_hotkey(HotkeyEvent::Captured(vec!["KEY_F12".to_string()]));
+
+        assert_eq!(b.estado().draft.atalho_de_cancelar, vec!["KEY_F12"]);
+        assert_eq!(
+            b.estado().draft.hotkey,
+            original,
+            "a combinação foi para o atalho errado"
+        );
+        assert_eq!(b.estado().capturando, None);
+
+        // E o outro caminho continua valendo.
+        b.controlador
+            .on_ui(UiAction::StartHotkeyCapture(QualAtalho::Ditar));
+        b.controlador
+            .on_hotkey(HotkeyEvent::Captured(vec!["KEY_F13".to_string()]));
+        assert_eq!(b.estado().draft.hotkey, vec!["KEY_F13"]);
+        assert_eq!(b.estado().draft.atalho_de_cancelar, vec!["KEY_F12"]);
+    }
+
+    #[test]
+    fn uma_combinacao_capturada_sem_ninguem_esperando_e_descartada() {
+        // A captura pode ser cancelada por outro caminho enquanto a combinação
+        // está a caminho pelo canal. Gravar num campo que ninguém escolheu é
+        // pior do que não gravar.
+        let b = Bancada::nova();
+        let hotkey = b.estado().draft.hotkey.clone();
+        let cancelar = b.estado().draft.atalho_de_cancelar.clone();
+
+        b.controlador
+            .on_hotkey(HotkeyEvent::Captured(vec!["KEY_F12".to_string()]));
+
+        assert_eq!(b.estado().draft.hotkey, hotkey);
+        assert_eq!(b.estado().draft.atalho_de_cancelar, cancelar);
+    }
+
+    #[test]
+    fn o_dicionario_e_o_espaco_do_fim_valem_para_tudo_de_uma_vez() {
+        // O texto é acertado uma vez só, antes de qualquer coisa consumi-lo:
+        // a janela, a área de transferência e o histórico precisam ver
+        // exatamente o mesmo texto.
+        let b = Bancada::nova();
+        {
+            let mut estado = b.estado();
+            estado.config.dicionario = crate::config::Dicionario {
+                ativo: true,
+                termos: vec!["Kubernetes".to_string()],
+                sensibilidade: crate::config::Dicionario::SENSIBILIDADE_PADRAO,
+            };
+            estado.config.espaco_no_fim = true;
+        }
+
+        // O número sai antes da chamada, e não dentro dos argumentos dela: o
+        // guard do mutex vive até o fim da expressão, e passá-lo ali travaria o
+        // estado compartilhado contra o próprio `on_stt`. É a mesma armadilha
+        // que o teste das configurações já registra logo acima.
+        let ditado = b.estado().ditado_atual;
+        b.controlador.on_stt(SttEvent::Done {
+            ditado,
+            text: "subimos o cuber netes hoje".to_string(),
+            elapsed_ms: 100,
+        });
+
+        assert_eq!(
+            b.estado().text,
+            "subimos o Kubernetes hoje ",
+            "o texto que a janela mostra não passou pelo dicionário"
+        );
     }
 
     #[test]
