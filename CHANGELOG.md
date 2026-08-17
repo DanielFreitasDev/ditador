@@ -13,6 +13,16 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.6.1 — 2026-08-17
+
+### Correções e ajustes
+
+- A captura do README mostrava o aviso de modelo faltando por cima dos botões ([`b602aaf`](https://github.com/DanielFreitasDev/ditador/commit/b602aaf1d4a9635126489ed5dc3ab743bba78f5f))
+- Toda tarefa começa com um git pull, porque o repositório se mexe sozinho ([`73070a8`](https://github.com/DanielFreitasDev/ditador/commit/73070a8d887799d4f58af02f77f344ed0979cbf1))
+- O texto ditado deixa de existir só na área de transferência ([`499c8aa`](https://github.com/DanielFreitasDev/ditador/commit/499c8aa606325b856a79f3082ea6e975c24f7067))
+
+[Todas as mudanças desde a `v0.6.0`](https://github.com/DanielFreitasDev/ditador/compare/v0.6.0...v0.6.1)
+
 ## 0.6.0 — 2026-08-16
 
 ### Novidades
