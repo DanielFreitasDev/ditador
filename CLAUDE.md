@@ -458,6 +458,17 @@ investigação que produziu o conhecimento — sintoma, diagnóstico, o que se t
   esconde as telas de gravação por `Shared::tela_visivel`. É assim porque o barramento solta o nome sozinho
   quando a conexão cai — Shell reiniciado, extensão morta no meio do `disable()`, tanto faz: o ícone volta.
   Um protocolo de "avise quando sair" perderia todos esses casos.
+- **O nome no barramento é pedido com `allow_name_replacements(false)` e `replace_existing_names(false)`**
+  (`pedir_o_nome`, em `src/plataforma/linux/dbus.rs`). Não são linhas supérfluas: o padrão do zbus é
+  `AllowReplacement | ReplaceExisting | DoNotQueue`, e com ele um segundo Ditador **roubava** o nome do que
+  já estava rodando — os dois escrevendo no journal a mesma linha de sucesso — e, ao sair, deixava o nome
+  sem dono nenhum, com o legítimo de pé e invisível para a extensão. E, como o nome *da extensão* continuava
+  no barramento, o ícone da bandeja também não voltava. Há um teste que sobe o próprio `dbus-daemon` para
+  provar isso; a investigação inteira está em `docs/LEARNINGS.md`.
+- **A vigília de uma integração que perde o fluxo anota a ausência** (`desistir_de_vigiar`, no mesmo
+  arquivo). O fluxo só acaba com a conexão morta, e aí não há como saber quem está no ar: assumir que a
+  integração saiu devolve o ícone e a tela de gravação. Errar para esse lado custa dois ícones; errar para o
+  outro custa nenhum, que foi o que se observou.
 - **`tela_visivel` esconde só `Recording` e `Processing`.** Resultado, configurações e erro continuam do
   aplicativo mesmo com a extensão ligada: são telas com texto para copiar e com os botões que resolvem o
   problema, e um OSD não tem onde pôr isso.
@@ -621,6 +632,13 @@ investigação que produziu o conhecimento — sintoma, diagnóstico, o que se t
 - **Em `audio::Captura::comecar`, o anel de pré-gravação é despejado *antes* de a bandeira `gravando`
   subir.** Na ordem contrária, as amostras que chegarem durante o despejo entram no buffer à frente das
   que já estavam no anel — e o ditado começa com um pedacinho do futuro antes do passado.
+- **O teto de duração é `AtomicUsize` e tem o `ajustar_o_teto`, porque ele muda sem o microfone ser
+  reaberto.** `pede_reabertura` não inclui o `max_secs` de propósito (reabrir por causa de um deslizante
+  fecharia o microfone de quem só arrastou um controle), e no modo sempre aberto — o padrão — o `abrir()`
+  acontece uma vez por execução: lido só ali, o "Gravação máxima" das configurações não valia até
+  reiniciar o programa. Pelo mesmo motivo o `comecar()` **reserva o buffer de novo a cada ditado**: o
+  `terminar()` leva a alocação embora junto com as amostras, e sem a reserva o buffer voltava a crescer
+  dentro do callback de áudio, que é o que o `with_capacity` do construtor existia para impedir.
 - **O medidor de nível só é alimentado durante a gravação**, mesmo com o microfone aberto o tempo todo
   (`build`, em `src/audio.rs`). É a mesma regra do sinal `Nivel` do D-Bus, e agora ela precisa ser dita
   no callback: no modo sempre aberto o callback roda sem parar, e alimentar o medidor fora do ditado

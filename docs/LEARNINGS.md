@@ -315,6 +315,34 @@ várias versões sem aparecer.
 **Comandos** — `DITADOR_DEMO=1 DITADOR_CAPTURA=/tmp/x RUST_BACKTRACE=1
 target/debug/ditador`
 
+## Interface — o deslizante de porcentagem perdia um ponto em 53 e em 59
+
+**Contexto** — o volume dos avisos sonoros e a exigência do dicionário são
+guardados como fração (`f32`, de 0 a 1) e mostrados como inteiro de 0 a 100. A
+conversão acontece nos dois sentidos toda vez que a tela de configurações abre.
+
+**Sintoma** — escolher 53 % de volume, salvar, reabrir as configurações e ver
+52 %. O valor gravado mudava junto no Salvar seguinte. Só com esses dois números.
+
+**Causa** — `(fracao * 100.0) as i64` **trunca**. Em `f32`,
+`0.53 * 100.0 = 52,999998` e `0.59 * 100.0 = 58,999996`; os outros 99 valores da
+faixa arredondam para o inteiro exato e voltam certos, o que é o pior tipo de
+defeito — parece funcionar em quase todo lugar.
+
+**Solução** — `por_cento` e `de_por_cento` em `src/ui.rs`, com `.round()`, usadas
+pelos dois deslizantes.
+
+**Prevenção** — conversão de `f32` para inteiro que representa um valor escolhido
+por alguém arredonda, nunca trunca. E o teste varre a faixa inteira: um caso
+isolado teria passado, porque 98 % dos valores estavam certos.
+
+**Arquivos** — `src/ui.rs` (`por_cento`, `de_por_cento`).
+**Comandos** — a varredura que encontrou os dois:
+
+```rust
+(0..=100).filter(|v| ((*v as f32 / 100.0) * 100.0) as i64 != *v)
+```
+
 ## Dicionário — a correção de termos comia o artigo antes do termo
 
 **Contexto** — a primeira versão do `src/dicionario.rs` transformava "usei o
@@ -450,3 +478,152 @@ qualquer argumento, algo que venha de `lock(&shared)`. O teste
 armadilha voltou de todo modo, o que é a razão desta entrada.
 
 **Arquivos** — `src/controller.rs` (módulo de testes).
+
+# Integrações de área de trabalho
+
+## D-Bus/zbus — o Ditador some da barra e a extensão diz "Indisponível", com o programa rodando
+
+**Contexto** — o Ditador estava de pé havia duas horas, ditando e transcrevendo
+normalmente. A extensão do GNOME Shell mostrava "Indisponível" e **não havia
+ícone nenhum** na barra — nem o da extensão, nem o StatusNotifierItem de reserva.
+`ditador --status` respondia na hora, pelo socket, dizendo "modelo: pronto".
+
+**Sintoma** — o nome bem-conhecido não tem dono, num processo que o pegou e
+continua vivo:
+
+```
+$ gdbus call --session --dest org.freedesktop.DBus \
+    --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.GetNameOwner io.github.danielfreitasdev.Ditador
+Erro: …NameHasNoOwner: Could not get owner of name '…Ditador': no such name
+```
+
+No journal, **nada**: a única linha sobre D-Bus continuava sendo a de sucesso,
+escrita no arranque.
+
+**Causa** — o padrão do zbus para as bandeiras do `RequestName`.
+`BitFlags::<RequestNameFlags>::default()` vale
+`AllowReplacement | ReplaceExisting | DoNotQueue`, e o `connection::Builder` usa
+esse padrão quando ninguém diz nada. Quer dizer que o Ditador pedia o nome
+**oferecendo-o** a quem viesse depois e **tomando-o** de quem já estava lá.
+
+Uma segunda instância — a instância única só barra quem consegue tomar o socket
+de controle, e o caminho `Bind::SemSocket` existe justamente para quando ele não
+dá — roubava o nome da que estava rodando. Os dois processos escreviam a mesma
+linha dizendo que a interface tinha subido. Quando o intruso saía, o
+`DoNotQueue` impedia o legítimo de voltar para a fila, e o nome ficava **sem dono
+nenhum** para sempre.
+
+O ícone não voltar é a segunda metade, e é o que torna o defeito invisível: quem
+recolhe o StatusNotifierItem é `Integracoes::gnome`, que é anotado pela vigília
+do nome *da extensão* — e a extensão continuava lá. Então o Ditador seguia
+achando que alguém mostrava o ícone por ele, enquanto esse alguém já não
+conseguia enxergá-lo.
+
+**Solução** — pedir o nome com as duas bandeiras desligadas
+(`allow_name_replacements(false)`, `replace_existing_names(false)`). A segunda
+instância passa a receber `Error::NameTaken` e registra "sem a interface D-Bus
+(name already taken on the bus)", que é o degrau abaixo certo — e a primeira
+nunca perde o nome.
+
+Em separado, a vigília de cada integração agora **anota a ausência** quando o
+fluxo de avisos acaba (`desistir_de_vigiar`). O fluxo só acaba com a conexão
+morta, e daí em diante não há como saber quem está no ar: assumir "não há
+integração" traz o ícone de volta e devolve a tela de gravação. Errar para esse
+lado custa dois ícones; errar para o outro custa nenhum.
+
+**Prevenção** — nunca aceitar o padrão do `RequestName` de uma biblioteca de
+D-Bus sem olhar quais bandeiras ele traz. Para um programa de instância única a
+resposta certa é sempre "quem chegou primeiro fica"; `ReplaceExisting` só faz
+sentido para quem substitui um serviço de propósito, e `AllowReplacement` só para
+quem quer ser substituído.
+
+E, do lado do diagnóstico: uma conexão de barramento que morre **não avisa
+ninguém**. Todo caminho que dependa dela precisa dizer no log quando falha —
+o `publicar` reprovado era um `log::debug!`, invisível no filtro padrão.
+
+**Arquivos** — `src/plataforma/linux/dbus.rs` (`PODE_SER_SUBSTITUIDO`,
+`SUBSTITUIMOS_QUEM_JA_TEM`, `pedir_o_nome`, `desistir_de_vigiar`),
+`src/plataforma/linux/tray.rs`, `src/state.rs` (`Integracoes`).
+**Ambiente** — Linux, qualquer área de trabalho com barramento de sessão.
+zbus 5.19.
+**Comandos** — para reproduzir sem tocar na sessão de ninguém, o teste
+`uma_segunda_instancia_nao_rouba_o_nome_da_que_ja_esta_no_ar` sobe o próprio
+`dbus-daemon`. À mão:
+
+```
+gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+  --method org.freedesktop.DBus.GetNameOwner io.github.danielfreitasdev.Ditador
+```
+
+# Áudio
+
+## Áudio — a "Gravação máxima" das configurações não valia até reiniciar o programa
+
+**Contexto** — modo **sempre aberto** (`microfone_sempre_aberto`, o padrão desde
+a 0.7), em que o stream do cpal fica de pé entre os ditados.
+
+**Sintoma** — arrastar o deslizante "Gravação máxima" de 120 s para 600 s,
+salvar, e as gravações continuarem sendo cortadas em 120 s. Nada na tela nem no
+log dizia por quê — e a linha do journal ao encerrar pelo teto dizia **600 s**,
+porque ela lê a configuração nova enquanto o corte usava a antiga.
+
+**Causa** — `AudioSettings::pede_reabertura` não inclui `max_secs`, de propósito:
+reabrir o dispositivo por causa de um deslizante fecharia o microfone de quem só
+arrastou um controle. Só que o teto era calculado uma vez, dentro de `abrir()`, e
+guardado no `Captura`. No modo sob demanda isso não aparecia — o dispositivo é
+reaberto a cada ditado —, e no modo sempre aberto `abrir()` acontece **uma vez
+por execução do programa**.
+
+O comentário do `pede_reabertura` chegava a afirmar que o teto "é lido a cada
+gravação". Não era, e foi essa frase que fez o defeito passar despercebido em
+duas leituras do arquivo.
+
+**Solução** — `max_samples` virou `AtomicUsize` e ganhou o `ajustar_o_teto`, que
+o `Configure` chama no dispositivo que ficou aberto. A conta saiu para
+`teto_em_amostras`, usada pelos dois lugares.
+
+No mesmo passo apareceu um vizinho: o `terminar()` leva a alocação do buffer
+embora junto com as amostras (é o que evita copiar megabytes para entregá-las),
+então do **segundo** ditado em diante o buffer nascia com capacidade zero e
+crescia dentro do callback de áudio — um `realloc` com cópia de tudo em tempo
+real, que é exatamente o que o `Vec::with_capacity` do construtor existia para
+impedir. O `comecar()` agora reserva de novo, nesta thread, que pode esperar o
+alocador.
+
+**Prevenção** — valor de configuração guardado dentro de um recurso de vida longa
+precisa de um caminho de atualização, ou de reabertura. E comentário que afirma
+"é lido a cada X" merece um teste: aqui os dois modos de microfone divergiam
+justamente nesse ponto.
+
+**Arquivos** — `src/audio.rs` (`Captura::max_samples`, `ajustar_o_teto`,
+`teto_em_amostras`, o braço `Configure` do `run`).
+**Ambiente** — os dois sistemas; só aparece com `microfone_sempre_aberto`.
+
+# Histórico
+
+## Histórico — a entrada mostrava o áudio de outra frase
+
+**Contexto** — histórico com "Guardar também o áudio" ligado, ditando duas vezes
+seguidas — o uso normal deste programa, que aceita falar de novo enquanto a frase
+anterior é transcrita.
+
+**Sintoma** — duas entradas do `historico.jsonl` com o mesmo valor no campo
+`audio`, e um WAV só no disco. Quem abrisse o áudio da primeira ouvia a segunda.
+
+**Causa** — o nome do arquivo era `{instante}-{pid}.wav`. O instante tem
+resolução de **segundo** e o `pid` é o mesmo dentro de um processo: duas
+transcrições que terminassem no mesmo segundo produziam o mesmo nome, e a segunda
+gravava por cima da primeira. O comentário no código dizia que o nome cobria
+"dois ditados no mesmo segundo" — cobria dois *Ditadores*, que é outra coisa.
+
+**Solução** — um contador atômico do processo entra no nome
+(`{instante}-{pid}-{n}.wav`), que é a mesma receita que o `config.rs` já usa para
+o arquivo temporário do `salvar_em`.
+
+**Prevenção** — nome de arquivo montado com relógio precisa de um desempate que
+não dependa do relógio. E o teste de um nome único confere **o conteúdo**, não só
+que os nomes diferem: nomes distintos com o conteúdo trocado seria o mesmo
+defeito.
+
+**Arquivos** — `src/historico.rs` (`registrar_em`).
