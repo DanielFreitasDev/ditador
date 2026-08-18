@@ -13,6 +13,14 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.9.0 — 2026-08-18
+
+### Novidades
+
+- Versão portátil para Linux e Windows, com opção de levar o modelo dentro ([`87aa5aa`](https://github.com/DanielFreitasDev/ditador/commit/87aa5aa51a484f238dfa1bacef752cd47e67c53a))
+
+[Todas as mudanças desde a `v0.8.1`](https://github.com/DanielFreitasDev/ditador/compare/v0.8.1...v0.9.0)
+
 ## 0.8.1 — 2026-08-18
 
 ### Correções e ajustes
