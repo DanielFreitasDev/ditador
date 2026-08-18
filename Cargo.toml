@@ -1,6 +1,6 @@
 [package]
 name = "ditador"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2024"
 description = "Ditado por voz offline (speech-to-text) com Whisper, para Ubuntu/GNOME"
 license = "MIT"

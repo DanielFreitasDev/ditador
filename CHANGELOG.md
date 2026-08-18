@@ -13,6 +13,22 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.7.3 — 2026-08-18
+
+### Correções e ajustes
+
+- O baixar-modelo.sh volta a aceitar o modelo que ele mesmo acabou de baixar ([`ef9e58e`](https://github.com/DanielFreitasDev/ditador/commit/ef9e58e2588137fa1ed234b26cd1d6cdeafbc398))
+- Baixar o modelo pelo terminal deixa de ser um beco sem saída quando o arquivo não presta ([`2d95f6e`](https://github.com/DanielFreitasDev/ditador/commit/2d95f6edf8bb9e19f2d74bbcca0f8742198144ad))
+- Um toque na tecla deixa de levar embora o áudio da frase que ainda está no Whisper ([`cb75008`](https://github.com/DanielFreitasDev/ditador/commit/cb75008d84e3601883b1d85dfb6fb0002eb64b5a))
+- Nada que chegue tarde toma mais a janela de quem já está falando ou salvando configurações ([`fcff1f3`](https://github.com/DanielFreitasDev/ditador/commit/fcff1f3794df4f6965b35ef2a37c155c31af340f))
+- A captura de atalho não sobrevive mais à tela que a explica ([`cb90e39`](https://github.com/DanielFreitasDev/ditador/commit/cb90e39fe3f5da61b2c97aee6dc9a39ed2a12288))
+- O "há 5 min" da lista de transcrições volta a andar ([`89e77d4`](https://github.com/DanielFreitasDev/ditador/commit/89e77d4bcd46cc70f7c1dd1abc384537e6f3ce1d))
+- Reinstalar com o Ditador rodando deixa de desligá-lo ([`caf7a4d`](https://github.com/DanielFreitasDev/ditador/commit/caf7a4db16f855709d31248a4a568c5bae131428))
+- O .deb não sai mais com um arquivo gravável pelo grupo ([`bf0177c`](https://github.com/DanielFreitasDev/ditador/commit/bf0177ce980bffac371da9d8470ac030656a6458))
+- Registrar as seis investigações desta rodada de auditoria ([`439bb86`](https://github.com/DanielFreitasDev/ditador/commit/439bb86afae6851ba830442a11124ed4ccc92202))
+
+[Todas as mudanças desde a `v0.7.2`](https://github.com/DanielFreitasDev/ditador/compare/v0.7.2...v0.7.3)
+
 ## 0.7.2 — 2026-08-18
 
 ### Correções e ajustes
