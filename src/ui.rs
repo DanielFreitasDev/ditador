@@ -1589,7 +1589,7 @@ impl App {
                     state.draft.dicionario.termos = texto.split('\n').map(str::to_string).collect();
                 }
 
-                let mut sensibilidade = (state.draft.dicionario.sensibilidade * 100.0) as i64;
+                let mut sensibilidade = por_cento(state.draft.dicionario.sensibilidade);
                 if widgets::deslizante(ui, &mut sensibilidade, 50..=100, "Exigência", |v| {
                     if v >= 100 {
                         "exata".to_string()
@@ -1599,7 +1599,7 @@ impl App {
                 })
                 .changed()
                 {
-                    state.draft.dicionario.sensibilidade = sensibilidade as f32 / 100.0;
+                    state.draft.dicionario.sensibilidade = de_por_cento(sensibilidade);
                 }
                 ui.label(nota(
                     "Mais baixo corrige mais e erra mais. Em \"exata\" só a grafia \
@@ -1672,11 +1672,11 @@ impl App {
             ));
 
             ui.add_enabled_ui(state.draft.sons.ativo, |ui| {
-                let mut volume = (state.draft.sons.volume * 100.0) as i64;
+                let mut volume = por_cento(state.draft.sons.volume);
                 if widgets::deslizante(ui, &mut volume, 0..=100, "Volume", |v| format!("{v}%"))
                     .changed()
                 {
-                    state.draft.sons.volume = volume as f32 / 100.0;
+                    state.draft.sons.volume = de_por_cento(volume);
                 }
                 if widgets::botao(ui, "Ouvir").clicked() {
                     crate::sons::tocar(crate::sons::Som::Inicio, state.draft.sons.volume);
@@ -1961,6 +1961,23 @@ fn altura_util(ui: &egui::Ui, rodape: f32) -> f32 {
     (ui.available_height() - rodape).max(MINIMO)
 }
 
+/// Uma fração de 0 a 1 como a porcentagem inteira que o deslizante mostra.
+///
+/// **Arredonda, e não trunca.** Escrito como `(fracao * 100.0) as i64`, que é o
+/// jeito óbvio, dois valores não voltavam: `0.53f32 * 100.0` dá 52,999998 e
+/// `0.59f32 * 100.0` dá 58,999996, e o `as` corta a parte fracionária. Quem
+/// escolhesse 53 % de volume — ou 53 de exigência do dicionário — reabria as
+/// configurações e via 52, sem nada explicando por quê, e o valor gravado
+/// mudava junto no primeiro Salvar seguinte.
+fn por_cento(fracao: f32) -> i64 {
+    (fracao * 100.0).round() as i64
+}
+
+/// A volta: a porcentagem do deslizante como fração de 0 a 1.
+fn de_por_cento(inteiro: i64) -> f32 {
+    inteiro as f32 / 100.0
+}
+
 /// Faixa invisível no topo que permite arrastar a janela sem decoração.
 fn drag_area(ui: &mut egui::Ui, id: &str) {
     let rect = egui::Rect::from_min_size(
@@ -2000,6 +2017,23 @@ fn cronometro(decorrido: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_porcentagem_dos_deslizantes_vai_e_volta_sem_perder_um_ponto() {
+        // O deslizante de volume e o de exigência do dicionário guardam uma
+        // fração e mostram um inteiro, então a conversão acontece nos dois
+        // sentidos toda vez que a tela abre. Escrita com `as i64`, que trunca,
+        // ela perdia um ponto em dois valores: `0.53f32 * 100.0` dá 52,999998 e
+        // `0.59f32 * 100.0` dá 58,999996. Quem escolhesse 53 % via 52 ao
+        // reabrir, e o valor gravado mudava junto no Salvar seguinte.
+        let errados: Vec<i64> = (0..=100)
+            .filter(|v| por_cento(de_por_cento(*v)) != *v)
+            .collect();
+        assert!(
+            errados.is_empty(),
+            "estes valores não voltam inteiros do deslizante: {errados:?}"
+        );
+    }
 
     #[test]
     fn o_cronometro_conta_para_a_frente_e_so_para_a_frente() {
