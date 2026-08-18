@@ -106,12 +106,23 @@ const FOLGA_DEPOIS_MS: usize = 250;
 
 /// Abaixo deste pico, em dBFS, ninguém falou.
 ///
-/// É o único critério absoluto do módulo, e o único que autoriza jogar a
-/// gravação fora. Fala em microfone próximo pica entre -25 e -6 dBFS; mesmo um
-/// microfone mal ajustado, num sussurro, passa de -45. Cinquenta e cinco abaixo
-/// da escala cheia é a tecla apertada sem querer, o microfone mudo no mixer, o
-/// cabo fora.
-const PICO_MINIMO_DB: f32 = -55.0;
+/// É um dos dois critérios absolutos do módulo, e eles são os únicos que
+/// autorizam jogar a gravação fora. Fala em microfone próximo pica entre -25 e
+/// -6 dBFS; mesmo um microfone mal ajustado, num sussurro, passa de -45.
+///
+/// **Por que -65 e não -55, que seria o corte confortável.** Porque este módulo
+/// não é o único que trata microfone fraco: o `resample::normalize` — ligado por
+/// padrão — multiplica o sinal por até dez justamente para salvar gravação
+/// baixa, e ele aceita trabalhar a partir de -80 dBFS. Cortando em -55, o aparo
+/// jogaria fora, **antes**, gravações que a normalização existe para resgatar, e
+/// a pessoa com o ganho do microfone quase no zero deixaria de conseguir ditar
+/// sem nada na tela ligando uma coisa à outra.
+///
+/// A folga de dez decibéis é o preço de errar para o lado certo: a regra deste
+/// módulo é que aparar fala de quem falou é pior do que transcrever silêncio.
+/// Quem segura o caso do ruído baixo e constante é o `DINAMICA_MINIMA_DB`, que
+/// não depende de nível nenhum — e é ele, não este, que faz o trabalho pesado.
+const PICO_MINIMO_DB: f32 = -65.0;
 
 /// Diferença mínima entre o pico e o piso para haver *alguma coisa* acontecendo.
 ///
@@ -433,6 +444,28 @@ mod tests {
 
         let r = achar_a_fala(&audio, TAXA).expect("sussurro ainda é fala");
         assert!(r.amostras() >= amostras(1200), "aparou fala de verdade");
+    }
+
+    #[test]
+    fn a_gravacao_fraca_que_a_normalizacao_salvaria_nao_e_jogada_fora() {
+        // O `resample::normalize` (ligado por padrão) amplifica em até dez vezes
+        // para resgatar microfone com o ganho quase no zero, e trabalha a partir
+        // de -80 dBFS. Este módulo roda **antes** dele, então um corte generoso
+        // aqui apagaria justamente as gravações que a normalização existe para
+        // salvar — e quem tivesse essa máquina ficaria sem ditar, sem nada na
+        // tela ligando uma coisa à outra.
+        //
+        // Aqui: pico em torno de -58 dBFS, com envelope de fala. Baixo a ponto
+        // de ninguém chamar de gravação boa, e ainda assim fala.
+        let mut audio = chiado(amostras(500), 0.00004);
+        audio.extend(fala(amostras(1200), 0.0013));
+        audio.extend(chiado(amostras(500), 0.00004));
+
+        let r = achar_a_fala(&audio, TAXA).expect("fraca, mas é fala");
+        assert!(
+            r.amostras() >= amostras(1200),
+            "aparou fala de verdade numa gravação fraca"
+        );
     }
 
     #[test]

@@ -775,6 +775,63 @@ quiser justamente o caso que **não** é fala.
 
 **Comandos** — `cargo test --no-default-features --features cpu vad::`
 
+## Vulkan/NVIDIA — soltar o contexto do ggml com o programa vivo é seguro; no encerramento, não
+
+**Contexto** — a funcionalidade de descarregar o modelo por ociosidade libera o
+`WhisperContext` (e com ele os buffers da GPU) enquanto o programa continua de
+pé, com a janela do egui aberta e o contexto gráfico do glow vivo. O `CLAUDE.md`
+tem uma regra antiga que assusta exatamente aqui: **desmontar os buffers do
+ggml/Vulkan dá SIGSEGV no driver da NVIDIA**, e é por isso que o encerramento do
+programa pula os destrutores (`sair_sem_desmontar`, em `src/main.rs`).
+
+**Sintoma** — nenhum, e essa é a informação. A pergunta era se a regra valia
+para os dois casos ou só para um.
+
+**Causa** — a regra vale para o **encerramento**, e o motivo está na segunda
+metade dela: o SIGSEGV acontece quando a thread do Whisper libera buffers da GPU
+*enquanto a thread principal desmonta o contexto gráfico*. São duas threads
+mexendo no driver ao mesmo tempo. Fora do encerramento não há a segunda: a
+thread principal está desenhando normalmente ou parada, e ninguém está
+destruindo contexto nenhum. É o mesmo caminho que a **troca de modelo** já usava
+desde sempre, e que nunca deu problema.
+
+**Solução** — nada a fazer no código; o `Saida::Ocioso` libera o contexto
+normalmente e o `Saida::Fim` continua usando `std::mem::forget`. O que faltava
+era a verificação, e ela foi feita:
+
+- o ensaio `stt::ensaio` inteiro rodando com `--features vulkan` e
+  `use_gpu: GPU_CAPABLE` numa RTX 3060 — carrega, descarrega por ociosidade,
+  recarrega e transcreve, cinco vezes seguidas, sem uma falha;
+- e o aplicativo completo, com janela, bandeja e D-Bus no ar, em modo portátil
+  com prazo de 1 minuto:
+
+```text
+13:31:46  modelo carregado (backend Vulkan, gpu=true)
+13:32:46  modelo descarregado por ociosidade
+13:33:13  modelo de volta (backend Vulkan, gpu=true)
+13:33:17  transcrição 1: 4.3 s de áudio
+```
+
+O processo seguiu vivo e a GPU continuou respondendo.
+
+**Prevenção** — não confunda os dois casos ao ler a regra do `CLAUDE.md`. "Não
+libere buffers da GPU" **no encerramento** é regra; fora dele, liberar é o
+comportamento normal e testado. Mexendo nisso de novo, o portão é o ensaio acima
+com a feature `vulkan`, numa máquina com placa — a CI não tem GPU e nunca vai
+reprovar isto por você.
+
+**Arquivos** — `src/stt.rs` (`Saida::Ocioso` e `Saida::Fim`, `mod ensaio`),
+`src/main.rs` (`sair_sem_desmontar`).
+
+**Ambiente** — NVIDIA + Vulkan. Numa máquina sem GPU o caso não existe.
+
+**Comandos** —
+
+```bash
+DITADOR_AUDIO_DE_TESTE=/tmp/jfk.wav \
+  cargo test --release ensaio -- --ignored --test-threads=1
+```
+
 ## Whisper — o que ele inventa não é silêncio digital, é **ruído de sala**
 
 **Contexto** — ao ligar o aparo de silêncio (`src/vad.rs`), a primeira conferência

@@ -604,7 +604,17 @@ mod ensaio {
         comandos
             .send(SttCmd::Load {
                 model_path: modelo(),
-                use_gpu: false,
+                // A GPU quando o binário a tem, e é o ponto: o descarregamento
+                // por ociosidade **libera o contexto do ggml**, e é do lado da
+                // GPU que isso é perigoso. O `CLAUDE.md` deste projeto registra
+                // que soltar buffers do Vulkan enquanto a thread principal
+                // desmonta o contexto gráfico derruba o driver da NVIDIA; a
+                // aposta aqui é que fora do encerramento — programa vivo, esta
+                // thread parada, ninguém mexendo na GPU — é o mesmo caminho
+                // seguro que a troca de modelo sempre usou. Rodando este ensaio
+                // com `--features vulkan` numa máquina com placa, essa aposta
+                // deixa de ser aposta.
+                use_gpu: GPU_CAPABLE,
             })
             .expect("mandando carregar");
         loop {
@@ -706,7 +716,7 @@ mod ensaio {
         comandos
             .send(SttCmd::Load {
                 model_path: modelo(),
-                use_gpu: false,
+                use_gpu: GPU_CAPABLE,
             })
             .expect("mandando carregar");
 
@@ -836,7 +846,7 @@ mod ensaio {
         comandos
             .send(SttCmd::Load {
                 model_path: modelo(),
-                use_gpu: false,
+                use_gpu: GPU_CAPABLE,
             })
             .expect("trocando de modelo");
         loop {

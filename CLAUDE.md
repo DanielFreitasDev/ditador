@@ -732,6 +732,11 @@ investigação que produziu o conhecimento — sintoma, diagnóstico, o que se t
   sem console que cria um processo *de* console faz o Windows alocar um console para o filho — uma
   janela preta piscando na tela. No download seria feio; na conferência de versão, que acontece sozinha
   uma vez por dia, seria um defeito sem explicação possível para quem visse.
+- **A regra do SIGSEGV do Vulkan é sobre o *encerramento*, e só sobre ele.** Liberar o contexto do
+  Whisper com o programa vivo — a troca de modelo, e agora o descarregamento por ociosidade — é o
+  caminho normal e está verificado numa RTX 3060, aplicativo inteiro no ar (veja `docs/LEARNINGS.md`).
+  O que continua proibido é fazer isso enquanto a thread principal desmonta o contexto gráfico, que é
+  o caso do `sair_sem_desmontar`.
 - **A recarga do modelo por ociosidade é silenciosa, e tem de continuar sendo** (`recarga`, em
   `src/stt.rs`). Ela **não** emite `SttEvent::Loading`: esse evento põe o programa inteiro em
   `ModelState::Loading`, e o `start_recording` recusa gravar nesse estado — o atalho pararia de
