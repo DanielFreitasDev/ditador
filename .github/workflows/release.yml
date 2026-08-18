@@ -339,7 +339,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux
+          name: anexos-linux
           path: artefatos/*
           if-no-files-found: error
 
@@ -371,7 +371,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: extensao
+          name: anexos-extensao
           path: artefatos/*.zip
           if-no-files-found: error
 
@@ -441,7 +441,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-${{ matrix.variante }}
+          name: anexos-windows-${{ matrix.variante }}
           path: artefatos/*
           if-no-files-found: error
 
@@ -456,8 +456,15 @@ jobs:
           ref: ${{ needs.versao.outputs.tag }}
           fetch-depth: 0
 
+      # Só o que tem o prefixo `anexos-`, e não "tudo o que o run criou": o
+      # `ci.yml` chamado pela validação também cria artefato (o `ditador.exe`
+      # que atravessa do estágio 1 para o 2), e sem o filtro ele foi parar na
+      # release da 0.9.0 como um anexo solto, dentro do SHA256SUMS inclusive.
+      # A investigação está em docs/LEARNINGS.md; a regra é: trabalho de
+      # release nomeia o artefato com `anexos-`, e quem publica baixa só isso.
       - uses: actions/download-artifact@v4
         with:
+          pattern: anexos-*
           path: artefatos
           merge-multiple: true
 

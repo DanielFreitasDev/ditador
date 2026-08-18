@@ -317,8 +317,25 @@ corrigir. A variante CPU não depende dele e continua saindo.
 `dpkg-shlibdeps` reclamou em vez de engolir — leia o log do trabalho `Pacotes
 .deb` antes de suspeitar da máquina de quem instalou.
 
+**Um trabalho está parado há mais de 15 minutos num `apt-get`.** É o espelho de
+pacotes do agente com a conexão presa — aconteceu duas vezes na publicação da
+0.9.0, em trabalhos diferentes — e o apt não tem tempo-limite: sozinho, não sai
+dali. O conserto depende de **onde** parou:
+
+- ainda na **validação** (nenhuma tag existe): `gh run cancel <id>`, esperar o
+  run constar como `completed` e `gh run rerun <id>` — recomeça do zero, sem
+  nada a preservar. O `rerun` antes de o cancelamento terminar responde
+  "cannot be rerun; its workflow file may be broken", que assusta e só quer
+  dizer "cedo demais".
+- **depois** do trabalho "Versão e tag": `gh run cancel <id>`, esperar, e
+  `gh run rerun <id> --failed` — refaz **só** os trabalhos cancelados. A tag, o
+  commit da versão e os artefatos dos trabalhos que já terminaram ficam de pé, e
+  os `needs.*.outputs` dos trabalhos preservados continuam valendo nos refeitos.
+
 **A publicação foi cancelada no meio.** A tag pode ter ficado criada e a release
-não. Apague a tag e dispare de novo; nada mais fica pendurado — os artefatos são
+não. Se foi você quem cancelou por causa de um trabalho preso, prefira o
+`gh run rerun --failed` acima, que retoma do ponto. Para recomeçar do zero:
+apague a tag e dispare de novo; nada mais fica pendurado — os artefatos são
 do próprio run e somem com ele.
 
 ---

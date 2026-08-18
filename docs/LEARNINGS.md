@@ -202,6 +202,44 @@ para qualquer gerador de pacote.
 **Arquivos** — `windows-integration/instalador/ditador.iss`, `.github/workflows/ci.yml`.
 **Ambiente** — CI, `windows-latest`.
 
+## CI/Release — um artefato interno do `ci.yml` virou anexo da release (`ditador.exe` solto)
+
+**Contexto** — a versão portátil pôs o `ci.yml` a passar o `ditador.exe` do
+estágio 1 (Rust no Windows) para o estágio 2 (que empacota o portátil) por
+`upload-artifact`/`download-artifact`, com o nome `backend-windows-cpu`. O
+`release.yml` **chama** o `ci.yml` por `workflow_call`, então a validação de uma
+publicação roda dentro do mesmo run que os trabalhos de release.
+
+**Sintoma** — a release v0.9.0 saiu com um anexo `ditador.exe` (19 MB) que
+nenhum trabalho de release produziu, listado também no `SHA256SUMS` e no corpo
+das notas. Um binário cru, sem versão no nome, compilado da validação — não do
+código da tag — e confundível com um instalador.
+
+**Causa** — o trabalho `publicar` baixava **todos** os artefatos do run
+(`download-artifact` sem `name` nem `pattern`, com `merge-multiple`). Enquanto
+os únicos artefatos eram os dos trabalhos de release, "todos" era o filtro
+certo; no instante em que o `ci.yml` chamado criou um artefato para uso interno,
+"todos" passou a incluí-lo. O vazamento não aparece em push de ramo (o `ci.yml`
+sozinho não publica nada) — só na release, que é onde ninguém quer estreia de
+defeito.
+
+**Solução** — na v0.9.0, à mão: `gh release delete-asset`, `SHA256SUMS`
+regravado sem a linha e o corpo das notas editado. No `release.yml`, os
+artefatos de release ganharam o prefixo `anexos-` e o `publicar` baixa
+`pattern: anexos-*` — o que o `ci.yml` criar para si nunca casa com o filtro.
+
+**Prevenção** — artefato de release e artefato de uso interno dividem o mesmo
+espaço de nomes do run quando um workflow chama o outro. Quem publica não pode
+baixar "tudo": baixa um prefixo reservado, e todo trabalho novo de release
+nomeia o artefato com ele. E depois de mexer em artefatos de qualquer um dos
+dois workflows, confira a lista de anexos da release seguinte contra a tabela
+do `docs/CI-E-RELEASES.md`.
+
+**Arquivos** — `.github/workflows/release.yml` (nomes `anexos-*` e o `pattern`
+do `publicar`), `.github/workflows/ci.yml` (o artefato `backend-windows-cpu`).
+**Ambiente** — CI, release.
+**Comandos** — `gh release view vX.Y.Z --json assets --jq '[.assets[].name]'`
+
 ---
 
 # Interface e capturas do README
