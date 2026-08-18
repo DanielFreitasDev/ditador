@@ -166,8 +166,27 @@ impl HotkeyListener {
     }
 
     pub fn cancel_capture(&self) {
-        self.capturing.store(false, Ordering::SeqCst);
+        self.sair_da_captura();
         lock_mut(&self.capture_buf).clear();
+    }
+
+    /// Fecha o modo de captura e põe a marca do cancelamento de volta em dia.
+    ///
+    /// Dentro da captura o `conferir_cancelar` não roda — o Esc pertence a ela,
+    /// e um `Cancelar` saindo dali descartaria um ditado que nem existe. O
+    /// preço disso é que `cancelar_engatado` para de acompanhar o teclado
+    /// enquanto a captura está aberta: a combinação solta lá dentro deixava a
+    /// marca ligada, e como um `Cancelar` só sai na transição de incompleto
+    /// para completo, o primeiro cancelamento de verdade depois disso era
+    /// engolido em silêncio.
+    ///
+    /// A marca volta a valer **o que o teclado diz agora**, e não `false` seco:
+    /// saindo da captura com a combinação ainda embaixo, zerá-la faria o evento
+    /// seguinte parecer um aperto novo e mandar um `Cancelar` que ninguém pediu.
+    fn sair_da_captura(&self) {
+        self.capturing.store(false, Ordering::SeqCst);
+        self.cancelar_engatado
+            .store(self.cancelar_completa(), Ordering::SeqCst);
     }
 
     /// Manda um aviso para quem escuta o atalho. É por aqui que a plataforma
@@ -268,18 +287,22 @@ impl HotkeyListener {
     /// `Repetiu`, que o `evento` já filtra, mas qualquer *outra* tecla apertada
     /// junto reentraria neste caminho.
     fn conferir_cancelar(&self) {
-        let combinacao = lock(&self.cancelar).clone();
-        if combinacao.is_empty() {
-            return;
-        }
-        let completa = {
-            let pressed = lock_mut(&self.pressed);
-            combinacao.iter().all(|k| pressed.contains_key(k))
-        };
+        let completa = self.cancelar_completa();
         let antes = self.cancelar_engatado.swap(completa, Ordering::SeqCst);
         if completa && !antes {
             let _ = self.tx.send(HotkeyEvent::Cancelar);
         }
+    }
+
+    /// A combinação de cancelar está toda embaixo agora? Vazia — que é como o
+    /// recurso se desliga — responde sempre que não.
+    fn cancelar_completa(&self) -> bool {
+        let combinacao = lock(&self.cancelar).clone();
+        if combinacao.is_empty() {
+            return false;
+        }
+        let pressed = lock_mut(&self.pressed);
+        combinacao.iter().all(|k| pressed.contains_key(k))
     }
 
     fn handle_capture(&self, codigo: u16, down: bool) {
@@ -296,7 +319,7 @@ impl HotkeyListener {
         if buf.is_empty() {
             return;
         }
-        self.capturing.store(false, Ordering::SeqCst);
+        self.sair_da_captura();
 
         // Só entram teclas cujo nome volta a ser a mesma tecla. Gravar na
         // configuração um código sem nome próprio produziria um atalho que nunca
@@ -575,6 +598,35 @@ mod tests {
         assert!(
             !matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)),
             "o atalho de cancelar disparou dentro da captura"
+        );
+    }
+
+    #[test]
+    fn a_captura_nao_deixa_o_cancelar_engatado_para_tras() {
+        // A combinação de cancelar pode estar embaixo no instante em que a
+        // captura abre — o Esc é o padrão dela, e quem abre a captura clica um
+        // botão com a outra mão. Solta dentro da captura, ela não passa pelo
+        // `conferir_cancelar`: a marca de "está completa" ficava ligada com a
+        // tecla já solta, e o **próximo** cancelamento de verdade era engolido,
+        // porque ele deixava de ser uma transição de incompleto para completo.
+        let (listener, rx) = ouvinte_com_cancelar(&["KEY_PAUSE"], &["KEY_ESC"]);
+
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        assert!(
+            matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)),
+            "o cancelamento normal parou de sair"
+        );
+
+        // A captura abre com o Esc ainda embaixo, e ele é solto lá dentro.
+        listener.begin_capture();
+        tecla(&listener, "KEY_ESC", Acao::Soltou);
+        listener.cancel_capture();
+        while rx.try_recv().is_ok() {}
+
+        tecla(&listener, "KEY_ESC", Acao::Apertou);
+        assert!(
+            matches!(rx.try_recv(), Ok(HotkeyEvent::Cancelar)),
+            "o cancelamento seguinte foi engolido: a captura deixou a marca ligada"
         );
     }
 

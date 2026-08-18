@@ -806,9 +806,17 @@ impl Controller {
     /// `OpenSettings` e pelo mesmo motivo: ela toca o disco, e segurar o estado
     /// compartilhado durante uma chamada de sistema prende a interface junto.
     fn abrir_historico(&self) {
+        // A captura de atalho não sobrevive à tela que a explica. "Ver as
+        // transcrições" é um botão de dentro das configurações, e a bandeja abre
+        // a mesma lista de qualquer tela: saindo com a captura de pé, o ouvinte
+        // continua esperando uma combinação, o atalho de ditar deixa de ditar, e
+        // o aperto seguinte vira um rascunho que ninguém vai salvar. É a mesma
+        // limpeza que o `CloseSettings` faz.
+        self.hotkey.cancel_capture();
         let entradas = crate::historico::ler_recentes(500);
         let em_disco = crate::historico::tamanho_em_disco();
         let mut state = lock(&self.shared);
+        state.capturando = None;
         state.historico = entradas;
         state.historico_em_disco = em_disco;
         state.view = View::Historico;
@@ -1152,6 +1160,11 @@ mod tests {
         controlador: Controller,
         audio: Receiver<AudioCmd>,
         stt: Receiver<SttCmd>,
+        /// O que o ouvinte de teclas mandou. Guardado — e não descartado, como
+        /// já esteve — porque a captura de atalho é estado dele, e a única
+        /// forma de perguntar de fora se ela continua de pé é ver se uma tecla
+        /// solta ainda vira `Captured`.
+        hotkey: Receiver<HotkeyEvent>,
     }
 
     impl Bancada {
@@ -1182,7 +1195,7 @@ mod tests {
                 Arc::new(std::sync::Mutex::new(Shared::new(config, Vec::new())));
             let (audio_tx, audio_rx) = crossbeam_channel::unbounded();
             let (stt_tx, stt_rx) = crossbeam_channel::unbounded();
-            let (hotkey_tx, _) = crossbeam_channel::unbounded();
+            let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded();
 
             let mut estado = lock(&shared);
             estado.model = ModelState::Ready;
@@ -1205,6 +1218,7 @@ mod tests {
                 ),
                 audio: audio_rx,
                 stt: stt_rx,
+                hotkey: hotkey_rx,
             }
         }
 
@@ -1725,6 +1739,45 @@ mod tests {
             b.estado()
                 .message
                 .starts_with("Copiei, mas não consegui colar")
+        );
+    }
+
+    #[test]
+    fn abrir_o_historico_encerra_a_captura_do_atalho() {
+        // "Ver as transcrições" é um botão de dentro das configurações, e a
+        // bandeja abre a mesma lista de qualquer tela. Saindo com a captura de
+        // pé, o programa fica esperando uma combinação numa tela que não a
+        // explica: o atalho de ditar deixa de ditar, e o aperto seguinte vira
+        // um rascunho que ninguém vai salvar.
+        let b = Bancada::nova();
+        b.controlador.on_ui(UiAction::OpenSettings);
+        b.controlador
+            .on_ui(UiAction::StartHotkeyCapture(QualAtalho::Ditar));
+        b.limpar();
+
+        b.controlador.on_ui(UiAction::AbrirHistorico);
+
+        assert_eq!(
+            b.estado().capturando,
+            None,
+            "a tela saiu do ar e a captura ficou marcada no estado"
+        );
+
+        // E o ouvinte de teclas também precisa ter saído do modo de captura —
+        // é ele, e não o estado, que decide o que fazer com a próxima tecla.
+        let codigo = crate::keys::parse("KEY_F13").expect("KEY_F13 existe nas duas plataformas");
+        let origem = crate::hotkey::Origem(1);
+        b.controlador
+            .hotkey
+            .evento(codigo, crate::hotkey::Acao::Apertou, origem);
+        b.controlador
+            .hotkey
+            .evento(codigo, crate::hotkey::Acao::Soltou, origem);
+        assert!(
+            !b.hotkey
+                .try_iter()
+                .any(|evento| matches!(evento, HotkeyEvent::Captured(_))),
+            "o ouvinte continuou capturando depois de a tela de configurações sair"
         );
     }
 }
