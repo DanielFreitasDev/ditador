@@ -28,7 +28,8 @@
 #
 #   1. validar   o `ci.yml` inteiro: Rust → Windows → GNOME → KDE
 #   2. versao    calcula o número, grava nos arquivos, commita e cria a tag
-#   3. artefatos os dois .deb, os dois instaladores .exe e o ZIP da extensão
+#   3. artefatos os dois .deb, os dois instaladores .exe, os quatro pacotes
+#                portáteis (.tar.gz e .zip) e o ZIP da extensão
 #   4. publicar  somas de verificação, notas e a release no GitHub
 #
 # Nada da etapa 2 acontece se a 1 reprovar: a tag não é criada, o `main` não é
@@ -87,8 +88,9 @@ jobs:
   #
   # Com o disparo automático, todo push no main publicaria — inclusive o que
   # corrige uma vírgula do README. Cada versão custa dois `.deb`, dois
-  # instaladores `.exe` e um ZIP, e chega como novidade a quem instalou; gastar
-  # isso numa correção de texto esvazia o significado de "versão nova".
+  # instaladores `.exe`, quatro pacotes portáteis e um ZIP, e chega como
+  # novidade a quem instalou; gastar isso numa correção de texto esvazia o
+  # significado de "versão nova".
   #
   # A saída é um trailer, como o `Impacto:`, escrito por quem faz o commit:
   #
@@ -305,33 +307,40 @@ jobs:
             libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev \
             dpkg-dev fakeroot binutils
 
-      # O mesmo script que se roda na própria máquina. O agente do GitHub é uma
-      # base mais antiga do que a máquina de quem desenvolve, e isso é uma
+      # Os mesmos scripts que se rodam na própria máquina. O agente do GitHub é
+      # uma base mais antiga do que a máquina de quem desenvolve, e isso é uma
       # vantagem de graça: a glibc contra a qual se compila é o piso do que o
-      # pacote aceita, então o .deb daqui roda em mais distribuições do que um
-      # compilado numa 26.04.
-      - name: Empacotar (GPU e CPU)
+      # pacote aceita, então o .deb — e o portátil, que vai justamente para
+      # máquina desconhecida — rodam em mais distribuições do que um compilado
+      # numa 26.04. O portátil de cada backend vem logo depois do .deb dele
+      # porque os dois compilam com as mesmas features: o segundo `cargo build`
+      # é incremental e não custa nada.
+      - name: Empacotar (GPU e CPU, .deb e portátil)
         run: |
           ./empacotar.sh vulkan
+          ./empacotar-portatil.sh vulkan
           ./empacotar.sh cpu
+          ./empacotar-portatil.sh cpu
 
       # O `empacotar.sh` nomeia à moda Debian (`ditador_0.6.0_amd64.deb`), que é
       # o certo para um pacote. O nome do **anexo da release** é outra coisa: ele
       # precisa dizer, para quem está na página de download, a versão, o sistema,
       # a arquitetura e a variante. Daí a cópia com outro nome, aqui e não no
-      # script.
+      # script. Os portáteis já nascem com esse nome — não há convenção Debian
+      # mandando neles — e só mudam de pasta.
       - name: Nomear os anexos
         run: |
           V="${{ needs.versao.outputs.versao }}"
           mkdir -p artefatos
           cp "target/deb/ditador_${V}_amd64.deb"     "artefatos/ditador-v${V}-linux-amd64-gpu.deb"
           cp "target/deb/ditador-cpu_${V}_amd64.deb" "artefatos/ditador-v${V}-linux-amd64-cpu.deb"
+          cp target/portatil/*.tar.gz artefatos/
           ls -lh artefatos
 
       - uses: actions/upload-artifact@v4
         with:
-          name: deb
-          path: artefatos/*.deb
+          name: linux
+          path: artefatos/*
           if-no-files-found: error
 
   extensao:
@@ -410,15 +419,30 @@ jobs:
           "VULKAN_SDK=C:\VulkanSDK" | Out-File -Append $env:GITHUB_ENV
           "C:\VulkanSDK\Bin" | Out-File -Append $env:GITHUB_PATH
 
-      # O mesmo script que se roda na própria máquina: ele compila o backend em
-      # Rust, o frontend WinUI, junta os dois e chama o Inno Setup.
+      # Os mesmos scripts que se rodam na própria máquina: o primeiro compila o
+      # backend em Rust e o frontend WinUI, junta os dois e chama o Inno Setup;
+      # o segundo reusa o backend (`-SemCompilar`) e publica o frontend
+      # autocontido, que é a compilação que só o portátil usa.
       - name: Compilar e empacotar
-        run: .\windows-integration\scripts\empacotar-exe.ps1 -Backend ${{ matrix.backend }}
+        run: |
+          .\windows-integration\scripts\empacotar-exe.ps1 -Backend ${{ matrix.backend }}
+          .\windows-integration\scripts\empacotar-portatil.ps1 -Backend ${{ matrix.backend }} -SemCompilar
+
+      # Numa pasta só e chatos, para o artefato sair com os arquivos na raiz:
+      # com dois caminhos no upload, o ancestral comum viraria a raiz e o
+      # `merge-multiple` do trabalho `publicar` entregaria subpastas — e o
+      # `sha256sum *` e o `gh release create artefatos/*` de lá não as veriam.
+      - name: Juntar os anexos
+        run: |
+          New-Item -ItemType Directory -Force artefatos | Out-Null
+          Copy-Item target\instalador\*.exe artefatos\
+          Copy-Item target\portatil\*.zip artefatos\
+          Get-ChildItem artefatos
 
       - uses: actions/upload-artifact@v4
         with:
-          name: exe-${{ matrix.variante }}
-          path: target/instalador/*.exe
+          name: windows-${{ matrix.variante }}
+          path: artefatos/*
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────── 4. a publicação

@@ -289,6 +289,74 @@ pub fn qual_e(caminho: &Path) -> Option<&'static Modelo> {
     achar(arquivo.strip_prefix("ggml-")?.strip_suffix(".bin")?)
 }
 
+/// Em modo portátil, reaponta o modelo quando o caminho gravado envelheceu.
+///
+/// A configuração guarda um caminho **absoluto**, e no modo portátil ele
+/// apodrece pelo uso normal do modo: o mesmo pendrive monta em
+/// `/media/<usuário>/…` numa máquina, noutro usuário na seguinte e numa letra
+/// de unidade no Windows — e o caminho gravado na primeira não existe em
+/// nenhuma das outras. Sem isto, a pasta portátil carregava o modelo dentro
+/// dela e a primeira tela pedia para baixá-lo de novo, na máquina que é
+/// justamente a que pode não ter internet.
+///
+/// Só no modo portátil, de propósito: lá a pasta **é** a instalação, e um
+/// modelo dentro dela é do programa. Fora do portátil, um caminho que não
+/// existe é um aviso que a pessoa precisa ver, não um problema para se
+/// resolver em silêncio trocando de modelo.
+pub fn reencontrar_no_portatil(config: &mut crate::config::Config) {
+    if !crate::portatil::ativo() {
+        return;
+    }
+    let sugerido = sugerido(config.use_gpu && crate::stt::GPU_CAPABLE);
+    if let Some(novo) = procurar_na_pasta(&config.model_path, &models_dir(), sugerido) {
+        log::info!(
+            "modo portátil: o modelo configurado não está em {}; usando {}",
+            config.model_path.display(),
+            novo.display()
+        );
+        config.model_path = novo;
+    }
+}
+
+/// O substituto para um caminho de modelo que não existe, se houver um na
+/// pasta. `None` quando o caminho gravado está de pé — aí não há o que fazer.
+///
+/// A ordem é da intenção mais preservada para a menos: primeiro o **mesmo
+/// arquivo** em outro endereço (a escolha da pessoa, que só mudou de lugar),
+/// depois o sugerido para este binário (o que o pacote `--com-modelo` embute),
+/// e por fim o maior modelo válido da pasta — maior porque, entre modelos que
+/// ninguém escolheu, qualidade é o desempate que menos surpreende.
+fn procurar_na_pasta(gravado: &Path, pasta: &Path, sugerido: &str) -> Option<PathBuf> {
+    if gravado.exists() {
+        return None;
+    }
+
+    if let Some(nome) = gravado.file_name() {
+        let mesmo = pasta.join(nome);
+        if parece_um_modelo(&mesmo) {
+            return Some(mesmo);
+        }
+    }
+
+    let do_binario = pasta.join(format!("ggml-{sugerido}.bin"));
+    if parece_um_modelo(&do_binario) {
+        return Some(do_binario);
+    }
+
+    // `parece_um_modelo` custa quatro bytes por arquivo, e é o que separa um
+    // modelo de verdade de um download interrompido com o nome certo.
+    std::fs::read_dir(pasta)
+        .ok()?
+        .filter_map(|entrada| {
+            let caminho = entrada.ok()?.path();
+            let nome = caminho.file_name()?.to_str()?;
+            (nome.starts_with("ggml-") && nome.ends_with(".bin") && parece_um_modelo(&caminho))
+                .then(|| (std::fs::metadata(&caminho).map_or(0, |m| m.len()), caminho))
+        })
+        .max_by_key(|(tamanho, _)| *tamanho)
+        .map(|(_, caminho)| caminho)
+}
+
 /// A soma que este modelo deve ter, se ela for conhecida.
 fn soma_conhecida(modelo: &str) -> Option<&'static str> {
     achar(modelo).map(|m| m.soma)
@@ -1112,6 +1180,138 @@ mod tests {
         assert_eq!(qual_e(&models_dir().join("leiame.txt")), None);
         assert_eq!(qual_e(&models_dir().join("ggml-inventado.bin")), None);
         assert_eq!(qual_e(&models_dir()), None);
+    }
+
+    /// Uma pasta só deste teste, para os candidatos não se misturarem.
+    fn pasta_de_teste(nome: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ditador-modelo-{}-{nome}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("criando a pasta do teste");
+        dir
+    }
+
+    #[test]
+    fn o_modelo_que_so_mudou_de_endereco_e_reencontrado_pelo_nome() {
+        // O caso central do modo portátil: o mesmo pendrive monta em
+        // /media/<usuário>/… numa máquina e noutra letra no Windows, e o
+        // caminho absoluto gravado na primeira não existe na segunda. A escolha
+        // da pessoa é o **arquivo**, então o mesmo nome ganha de qualquer outro
+        // candidato — inclusive de um maior.
+        let pasta = pasta_de_teste("mesmo-nome");
+        std::fs::write(pasta.join("ggml-tiny.bin"), COMECO_DE_UM_MODELO).expect("gravando");
+        let mut maior = COMECO_DE_UM_MODELO.to_vec();
+        maior.extend_from_slice(&[0u8; 64]);
+        std::fs::write(pasta.join("ggml-small.bin"), &maior).expect("gravando");
+
+        let gravado = Path::new("/pendrive/que/ja/foi/Dados/dados/models/ggml-tiny.bin");
+        assert_eq!(
+            procurar_na_pasta(gravado, &pasta, "small-q5_1"),
+            Some(pasta.join("ggml-tiny.bin"))
+        );
+        let _ = std::fs::remove_dir_all(&pasta);
+    }
+
+    #[test]
+    fn sem_o_mesmo_nome_vale_o_sugerido_e_depois_o_maior() {
+        // O pacote portátil `--com-modelo` embute o sugerido do backend, e a
+        // configuração recém-nascida pode apontar para outro nome (o padrão de
+        // GPU num pacote de CPU). O sugerido vem antes do maior porque é o que
+        // este binário transcreve bem.
+        let pasta = pasta_de_teste("sugerido");
+        std::fs::write(pasta.join("ggml-small-q5_1.bin"), COMECO_DE_UM_MODELO).expect("gravando");
+        let mut maior = COMECO_DE_UM_MODELO.to_vec();
+        maior.extend_from_slice(&[0u8; 64]);
+        std::fs::write(pasta.join("ggml-medium.bin"), &maior).expect("gravando");
+
+        let gravado = pasta.join("ggml-large-v3-turbo-q5_0.bin");
+        assert_eq!(
+            procurar_na_pasta(&gravado, &pasta, "small-q5_1"),
+            Some(pasta.join("ggml-small-q5_1.bin"))
+        );
+
+        // Sem o sugerido na pasta, o maior modelo **válido** — o arquivo maior
+        // ainda com assinatura errada é um download interrompido, não um
+        // modelo, e um `leiame.txt` gigante não é candidato nem com boa
+        // vontade.
+        std::fs::remove_file(pasta.join("ggml-small-q5_1.bin")).expect("removendo");
+        std::fs::write(pasta.join("ggml-quebrado.bin"), vec![0u8; 4096]).expect("gravando");
+        std::fs::write(pasta.join("leiame.txt"), vec![0u8; 8192]).expect("gravando");
+        assert_eq!(
+            procurar_na_pasta(&gravado, &pasta, "small-q5_1"),
+            Some(pasta.join("ggml-medium.bin"))
+        );
+        let _ = std::fs::remove_dir_all(&pasta);
+    }
+
+    #[test]
+    fn um_caminho_que_existe_nao_e_tocado_e_uma_pasta_vazia_nao_inventa() {
+        let pasta = pasta_de_teste("de-pe");
+        std::fs::write(pasta.join("ggml-tiny.bin"), COMECO_DE_UM_MODELO).expect("gravando");
+
+        // O caminho gravado está de pé: não há o que reencontrar, mesmo com
+        // candidato na pasta.
+        let existente = pasta.join("ggml-tiny.bin");
+        assert_eq!(procurar_na_pasta(&existente, &pasta, "small-q5_1"), None);
+
+        // E uma pasta sem modelo válido nenhum devolve nada — quem responde ao
+        // caminho quebrado continua sendo a tela de download.
+        let vazia = pasta_de_teste("vazia");
+        std::fs::write(vazia.join("ggml-parece.bin"), b"<!DOCTYPE html>").expect("gravando");
+        assert_eq!(
+            procurar_na_pasta(Path::new("/nao/existe/ggml-x.bin"), &vazia, "small-q5_1"),
+            None
+        );
+        for dir in [pasta, vazia] {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn os_empacotadores_portateis_embutem_os_modelos_do_catalogo() {
+        // O `--com-modelo` dos dois scripts embute o sugerido de cada backend.
+        // Os nomes estão escritos lá dentro, longe deste arquivo — e um modelo
+        // renomeado aqui viraria um pacote portátil oferecendo o download de um
+        // arquivo que não existe, descoberto na máquina que não tem internet.
+        let sh = include_str!("../empacotar-portatil.sh");
+        let ps1 = include_str!("../windows-integration/scripts/empacotar-portatil.ps1");
+        for (script, onde) in [
+            (sh, "empacotar-portatil.sh"),
+            (ps1, "empacotar-portatil.ps1"),
+        ] {
+            for nome in [PADRAO, PADRAO_CPU] {
+                assert!(
+                    script.contains(nome),
+                    "o {onde} não menciona o sugerido {nome} do catálogo"
+                );
+            }
+        }
+
+        // E a assinatura do arquivo é conferida na ordem em que ela está no
+        // disco — a mesma regra, e o mesmo teste, do baixar-modelo.sh: `6c 6d
+        // 67 67`, e não a string "ggml", que reprovaria todo modelo bom.
+        let esperado: String = COMECO_DE_UM_MODELO[..4]
+            .iter()
+            .fold(String::new(), |mut s, b| {
+                use std::fmt::Write as _;
+                let _ = write!(s, "{b:02x}");
+                s
+            });
+        let confere_sh = sh
+            .lines()
+            .find(|linha| linha.contains("head -c 4"))
+            .expect("o empacotar-portatil.sh precisa conferir a assinatura do modelo embutido");
+        assert!(
+            confere_sh.contains(&esperado),
+            "a conferência do empacotar-portatil.sh não usa a ordem do disco ({esperado}): {confere_sh}"
+        );
+        assert!(
+            ps1.contains(&esperado),
+            "o empacotar-portatil.ps1 não confere a assinatura do modelo na ordem do disco ({esperado})"
+        );
     }
 
     #[test]

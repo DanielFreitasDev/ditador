@@ -623,7 +623,14 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Self {
-        Self::ler_de(&config_path())
+        let mut cfg = Self::ler_de(&config_path());
+        // Só em memória, e só no modo portátil: o caminho absoluto do modelo
+        // apodrece quando a pasta portátil muda de endereço (pendrive noutra
+        // máquina, outra letra de unidade), e quem o reencontra é o catálogo.
+        // O arquivo no disco não é reescrito por isso — a regra de que apenas a
+        // ausência dele autoriza gravar por cima continua valendo.
+        crate::modelo::reencontrar_no_portatil(&mut cfg);
+        cfg
     }
 
     pub fn save(&self) -> Result<()> {

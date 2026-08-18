@@ -12,9 +12,21 @@ nomes de arquivo já apontando para a versão certa. Corrigir aqui corrige lá.
 | `ditador-vX.Y.Z-linux-amd64-cpu.deb` | Ubuntu 24.04 ou mais novo, **sem** GPU |
 | `ditador-vX.Y.Z-windows-x64-gpu.exe` | Windows 11 x64, **com** GPU (Vulkan) |
 | `ditador-vX.Y.Z-windows-x64-cpu.exe` | Windows 11 x64, **sem** GPU |
+| `ditador-vX.Y.Z-linux-amd64-gpu-portatil.tar.gz` | Linux **sem instalar nada**: descompacte e rode |
+| `ditador-vX.Y.Z-linux-amd64-cpu-portatil.tar.gz` | o mesmo, para máquina sem GPU |
+| `ditador-vX.Y.Z-windows-x64-gpu-portatil.zip` | Windows **sem instalar nada**: descompacte e rode |
+| `ditador-vX.Y.Z-windows-x64-cpu-portatil.zip` | o mesmo, para máquina sem GPU |
 | `ditador-gnome-extension-vX.Y.Z.zip` | a extensão do GNOME Shell 50, opcional |
 | `SHA256SUMS` | as somas de verificação de todos os acima |
 | `Source code (zip)` / `(tar.gz)` | o código-fonte, gerado pelo GitHub a partir da tag |
+
+**Instalar ou portátil?** O `.deb` e o instalador `.exe` são o caminho normal:
+integram o programa ao sistema (menu, serviço, atualização pelo gerenciador). A
+**versão portátil** é para onde esse caminho não existe — máquina de trabalho
+com instalação bloqueada, conta sem administrador, pendrive: descompactou,
+rodou, e tudo o que o programa grava fica numa pasta `Dados/` dentro da pasta
+dele, sem tocar nas pastas do sistema. As instruções dela estão na seção
+[Versão portátil](#versão-portátil-linux-e-windows), no fim deste documento.
 
 **GPU ou CPU?** A variante GPU usa Vulkan e transcreve em uma fração do tempo;
 a variante CPU não depende de placa nenhuma e funciona em qualquer máquina, mais
@@ -441,6 +453,80 @@ Volte ao passo 1. O .NET e o Windows App Runtime **continuam instalados** — s�
 componentes do sistema, usados por outros programas, e nenhum desinstalador do
 Ditador os remove. Se você quiser mesmo tirá-los, é pelo próprio painel de
 aplicativos do Windows, cientes de que outra coisa pode depender deles.
+
+---
+
+# Versão portátil (Linux e Windows)
+
+Para a máquina onde não se instala nada: descompacte a pasta onde puder
+escrever — Documentos, a Área de Trabalho, um pendrive — e rode. Não pede
+administrador, não toca nas pastas do sistema, e **tudo o que o programa grava**
+(configuração, modelos, histórico, logs) fica na pasta `Dados/`, dentro da
+pasta descompactada. Mover ou copiar a pasta inteira leva tudo junto — pode
+trocar de máquina, de usuário e de sistema de arquivos que o programa reencontra
+o que é dele.
+
+Quem liga esse modo é o arquivo `portatil` que vem dentro da pasta: apague-o e o
+programa volta a usar as pastas do sistema, como uma instalação comum.
+
+## Linux
+
+```bash
+tar -xzf ditador-vX.Y.Z-linux-amd64-gpu-portatil.tar.gz    # ou …-cpu-…
+cd ditador-portatil
+./ditador
+```
+
+O atalho global lê o teclado direto do `/dev/input`, o que exige o usuário no
+grupo `input` (`sudo usermod -aG input $USER`, e relogin). **Sem sudo nessa
+máquina**, o ditado continua funcionando por dois caminhos que não pedem
+permissão nenhuma: o ícone do Ditador na barra (*Ditar agora*), ou um atalho de
+teclado do próprio sistema (GNOME: *Configurações → Teclado → Atalhos
+personalizados*; KDE: *Atalhos personalizados*) chamando
+`/caminho/da/pasta/ditador --alternar` — um aperto começa a gravar, outro para e
+transcreve.
+
+A variante GPU precisa da `libvulkan1` e de um driver com Vulkan, que todo
+desktop com GPU costuma ter; a CPU roda em qualquer máquina (piso: AVX2, todo
+Intel desde 2013 e todo AMD Ryzen).
+
+## Windows
+
+Descompacte o `.zip` e execute `Ditador-Portatil\Ditador.Windows.exe`. Ele põe o
+ícone na área de notificação e sobe o motor sozinho. **Não precisa do .NET nem
+de runtime nenhum**: ao contrário do instalador, o pacote portátil traz tudo
+dentro — é por isso que ele é bem maior. O SmartScreen pode avisar que o editor
+é desconhecido: *Mais informações* → *Executar assim mesmo*. Se o microfone não
+abrir: *Configurações → Privacidade e segurança → Microfone → Permitir que
+aplicativos de área de trabalho acessem seu microfone*.
+
+## O modelo, e a máquina sem internet
+
+O pacote da release não traz o modelo de transcrição — a primeira janela oferece
+baixá-lo, ou rode `./ditador --baixar-modelo` (Linux) /
+`.\ditador.exe --baixar-modelo` (Windows) dentro da pasta. Para uma máquina
+**sem** internet, gere numa máquina que tenha um pacote com o modelo dentro, a
+partir do código-fonte desta versão:
+
+```bash
+./empacotar-portatil.sh vulkan --com-modelo          # Linux; ou: cpu --com-modelo
+```
+
+```powershell
+.\windows-integration\scripts\empacotar-portatil.ps1 -ComModelo   # ou -Backend cpu -ComModelo
+```
+
+Sai um `…-portatil-com-modelo.tar.gz`/`.zip` que funciona offline desde a
+primeira execução.
+
+## Atualizar e remover
+
+**Atualizar**: baixe o pacote da versão nova e descompacte por cima da pasta —
+o programa é substituído e a `Dados/`, que é sua, fica como está.
+
+**Remover**: apague a pasta. É tudo. (No Windows, se você usou as notificações,
+pode sobrar a identidade delas em *Configurações → Sistema → Notificações*; some
+ao apagar a chave `HKCU\Software\Classes\AppUserModelId\DanielFreitasDev.Ditador`.)
 
 ---
 

@@ -111,8 +111,8 @@ validar    o ci.yml inteiro (Rust → Windows → GNOME → KDE)
    ↓       reprovou? acaba aqui. Nada foi gravado, nenhuma tag existe.
 versao     decide o número, grava nos arquivos, atualiza o CHANGELOG.md,
    ↓       commita "Versão X.Y.Z" no main e cria a tag vX.Y.Z
-artefatos  da tag: os dois .deb, os dois instaladores .exe, o ZIP da extensão
-   ↓
+artefatos  da tag: os dois .deb, os dois instaladores .exe, os quatro
+   ↓       pacotes portáteis e o ZIP da extensão
 publicar   SHA256SUMS, notas, e a release no GitHub com tudo anexado
 ```
 
@@ -209,6 +209,8 @@ que roda igual na sua máquina:
 | `ditador-vX.Y.Z-linux-amd64-cpu.deb` | `./empacotar.sh cpu` |
 | `ditador-vX.Y.Z-windows-x64-gpu.exe` | `empacotar-exe.ps1 -Backend vulkan` |
 | `ditador-vX.Y.Z-windows-x64-cpu.exe` | `empacotar-exe.ps1 -Backend cpu` |
+| `ditador-vX.Y.Z-linux-amd64-{gpu,cpu}-portatil.tar.gz` | `./empacotar-portatil.sh vulkan\|cpu` |
+| `ditador-vX.Y.Z-windows-x64-{gpu,cpu}-portatil.zip` | `empacotar-portatil.ps1 -Backend vulkan\|cpu` |
 | `ditador-gnome-extension-vX.Y.Z.zip` | `gnome-extensions pack` |
 | `SHA256SUMS` | `sha256sum` de todos os acima |
 | `Source code (zip)` e `(tar.gz)` | o GitHub, sozinho, a partir da tag |
@@ -227,7 +229,9 @@ O que **não** sai pronto, e por quê:
 - **O `.deb` com CUDA.** Exige o toolkit da NVIDIA para compilar, que não cabe
   num agente. Quem quer, compila (`./instalar.sh cuda`).
 - **O modelo do Whisper.** São 574 MB que não mudam entre versões; o programa o
-  baixa sozinho.
+  baixa sozinho. A regra vale também para os pacotes portáteis da release: a
+  variante `--com-modelo`/`-ComModelo` dos empacotadores portáteis, feita para
+  máquina sem internet, é sempre gerada localmente e nunca publicada como anexo.
 - **O MSIX.** O `empacotar-msix.ps1` continua sendo protótipo local: sem um
   certificado em que o Windows confie, o pacote não instala. O caminho de
   distribuição no Windows é o `.exe`.
@@ -329,3 +333,4 @@ do próprio run e somem com ele.
 | acrescentar um anexo à release | `.github/workflows/release.yml`, no trabalho que o produz |
 | mexer no instalador do Windows | `windows-integration/instalador/ditador.iss` |
 | mudar o que vai no `.deb` | `empacotar.sh` — a CI só o chama |
+| mudar o que vai no pacote portátil | `empacotar-portatil.sh` (Linux) e `windows-integration/scripts/empacotar-portatil.ps1` (Windows) — a CI os roda inteiros a cada push, com teste de fumaça |

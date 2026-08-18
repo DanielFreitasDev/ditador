@@ -197,6 +197,26 @@ segurança do .NET e do WinUI chegariam pelo Windows Update para o sistema e
 versão nova. Para um programa que fica de pé o dia inteiro lendo o teclado, essa
 troca não vale a pena.
 
+### A versão portátil é a exceção, de propósito
+
+O `scripts/empacotar-portatil.ps1` gera o outro formato da release: um `.zip`
+que se descompacta e roda, para a máquina onde nem o instalador sem
+administrador entra. Ali a conta acima inverte — a máquina que não deixa
+instalar o Ditador também não deixa instalar o .NET nem o App Runtime, então o
+pacote publica o frontend **autocontido** (`SelfContained` +
+`WindowsAppSDKSelfContained`, passados na linha de comando do `dotnet publish`,
+sem mexer no `.csproj`). O preço declarado: o pacote é bem maior, e os runtimes
+de dentro só se atualizam quando a pessoa troca o pacote — o LEIA-ME que vai no
+`.zip` diz isso.
+
+O modo portátil em si é do backend (`src/portatil.rs`): o arquivo `portatil` ao
+lado dos executáveis põe configuração, modelos, histórico e logs na pasta
+`Dados\` vizinha. O frontend espelha a mesma regra no `Registro.cs`, senão o log
+dele ficaria para trás, em `%LOCALAPPDATA%` da máquina emprestada. A CI roda o
+script inteiro a cada push (estágio 2), incluindo as duas provas de que o
+publish saiu autocontido de verdade — a presença do `coreclr.dll` e do
+`Microsoft.ui.xaml.dll` no pacote.
+
 ## Compilar
 
 ```powershell

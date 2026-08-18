@@ -59,17 +59,67 @@ internal static class Registro
 
     private static string EscolherArquivo()
     {
+        var pasta = PastaDosLogs();
+        Directory.CreateDirectory(pasta);
+        return Path.Combine(pasta, "Ditador.Windows.log");
+    }
+
+    /// <summary>
+    /// A pasta dos logs: a do modo portátil, quando há marcador; senão, a de
+    /// <c>%LOCALAPPDATA%</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// É o espelho do <c>src/portatil.rs</c> do backend, com as mesmas regras:
+    /// um arquivo <c>portatil</c> (ou <c>portable</c>) ao lado do executável
+    /// põe tudo na pasta <c>Dados\</c> vizinha, e o modo só vale depois de uma
+    /// escrita de verdade dar certo — um marcador esquecido ao lado de um
+    /// executável numa pasta somente-leitura não pode deixar o processo sem
+    /// log. Sem este espelho, a versão portátil gravava o log do frontend em
+    /// <c>%LOCALAPPDATA%</c> da máquina emprestada: rastro onde a proposta é
+    /// não deixar nenhum, e um log que fica para trás quando o pendrive vai
+    /// embora — justamente o arquivo que se quer anexar ao relato de um
+    /// problema.
+    /// </para>
+    /// <para>
+    /// O caminho é <c>Dados\dados\logs</c>, e não <c>Dados\logs</c>, porque é
+    /// onde o backend escreve o dele (o <c>data_dir()</c> portátil é
+    /// <c>Dados\dados</c>): os dois logs lado a lado, como no modo instalado.
+    /// </para>
+    /// </remarks>
+    private static string PastaDosLogs()
+    {
+        var aoLado = AppContext.BaseDirectory;
+        if (File.Exists(Path.Combine(aoLado, "portatil")) ||
+            File.Exists(Path.Combine(aoLado, "portable")))
+        {
+            try
+            {
+                var dados = Path.Combine(aoLado, "Dados", "dados", "logs");
+                Directory.CreateDirectory(dados);
+                var teste = Path.Combine(dados, ".escrita-de-teste");
+                File.WriteAllText(teste, "ditador");
+                File.Delete(teste);
+                return dados;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // A pasta não aceita escrita — o mesmo caso que o backend trata:
+                // segue para o LocalAppData, porque perder o log é pior do que
+                // gravá-lo no lugar de sempre. Quem explica o porquê no log é o
+                // relato do modo portátil do backend, que enxerga o mesmo estado.
+            }
+        }
+
         // `LocalApplicationData`, e não `ApplicationData`: log não acompanha o
         // usuário entre máquinas de um domínio — ele descreve *esta* máquina, e
         // sincronizá-lo pela rede seria trocar utilidade por tráfego. É a mesma
         // divisão que o backend faz entre a configuração (que viaja) e os
         // modelos (que não).
-        var pasta = Path.Combine(
+        return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ditador",
             "logs");
-        Directory.CreateDirectory(pasta);
-        return Path.Combine(pasta, "Ditador.Windows.log");
     }
 
     private static void Escrever(string nivel, string mensagem)

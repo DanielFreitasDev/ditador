@@ -134,6 +134,40 @@ jobs:
       - name: Compilação de release
         run: cargo build --release --no-default-features --features cpu
 
+      # O empacotamento portátil é um shell script, e shell script que nenhum
+      # portão executa é onde os piores defeitos deste projeto já moraram — a
+      # auditoria de 18/08/2026 achou os dois piores exatamente assim. Rodar o
+      # script inteiro custa segundos (o `cargo build` dele é o do passo acima,
+      # incremental), e o teste de fumaça confere o que só se descobriria na
+      # máquina de destino: o pacote descompacta, o binário responde, e o modo
+      # portátil valeu de verdade — os dados apontam para a `Dados/` do pacote,
+      # e não para a home de quem o rodou.
+      - name: Pacote portátil (Linux)
+        if: matrix.sistema == 'Linux'
+        run: |
+          ./empacotar-portatil.sh cpu
+          PACOTE="$(ls target/portatil/ditador-v*-cpu-portatil.tar.gz)"
+          tar -xzf "$PACOTE" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/ditador-portatil"
+          test -f portatil && test -f LEIA-ME.txt && test -f LICENSE
+          ./ditador --versao
+          ./ditador --historico | grep -F "Dados/dados/historico" || {
+            echo "::error::o modo portátil não valeu: os dados não foram para a pasta Dados/"
+            exit 1
+          }
+
+      # O estágio 2 empacota o portátil do Windows e precisa do backend — que
+      # acabou de ser compilado aqui, noutro agente. Um dia de retenção porque o
+      # artefato só existe para atravessar este workflow.
+      - name: Guardar o backend para o estágio 2
+        if: matrix.sistema == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-windows-cpu
+          path: target/release/ditador.exe
+          if-no-files-found: error
+          retention-days: 1
+
       # As duas conferências abaixo são de arquivo, não de código, e por isso
       # rodam num sistema só — repeti-las no outro não descobriria nada novo.
 
@@ -249,6 +283,31 @@ jobs:
           & $iscc /Qp /DSemArquivos /DMyAppVersion=0.0.0 /DBackend=cpu `
               windows-integration\instalador\ditador.iss
           if ($LASTEXITCODE) { throw "o Inno Setup recusou o script (código $LASTEXITCODE)" }
+
+      - name: Baixar o backend do estágio 1
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-windows-cpu
+          path: backend-cpu/release
+
+      # O empacotador portátil do Windows, rodado inteiro — e este é o único
+      # portão que exercita o `dotnet publish` autocontido antes de uma release
+      # depender dele: o publish é outra compilação, com outras respostas do
+      # Windows App SDK, e "o build passou" não diz nada sobre ela. O script já
+      # reprova sozinho um publish que saia dependente de framework (as provas
+      # do coreclr.dll e do Microsoft.ui.xaml.dll); o fumo daqui confere o
+      # resto — o binário empacotado responde e o modo portátil valeu.
+      - name: Pacote portátil (Windows)
+        run: |
+          .\windows-integration\scripts\empacotar-portatil.ps1 -Backend cpu -SemCompilar -PastaDeBuild backend-cpu
+          $estagio = 'target\portatil\Ditador-Portatil'
+          & "$estagio\ditador.exe" --versao
+          if ($LASTEXITCODE) { throw "o ditador.exe empacotado não respondeu (código $LASTEXITCODE)" }
+          $historico = & "$estagio\ditador.exe" --historico | Out-String
+          if ($historico -notmatch [regex]::Escape('Dados\dados\historico')) {
+            throw "o modo portátil não valeu: os dados não foram para a pasta Dados\ — a saída foi: $historico"
+          }
+          if (-not (Get-ChildItem 'target\portatil\*-portatil.zip')) { throw 'o zip portátil não foi produzido' }
 
   # ─────────────────────────────────────────────────────────────── 3. o GNOME
   #

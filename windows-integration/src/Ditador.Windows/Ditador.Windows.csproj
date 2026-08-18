@@ -25,6 +25,12 @@
     aplicativo autocontido ficaria com a cópia congelada do dia do build. O
     `instalar.ps1` confere as duas e instala o que faltar, que é o passo que
     torna essa escolha aceitável para quem só quer usar o programa.
+
+    A exceção deliberada é o pacote portátil: o `empacotar-portatil.ps1` publica
+    autocontido pela linha de comando, sem tocar neste arquivo, porque a
+    premissa dele é a contrária — numa máquina onde não se instala nada, não há
+    quem ponha os dois runtimes lá. O raciocínio inteiro está no cabeçalho
+    daquele script.
   -->
 
   <PropertyGroup>

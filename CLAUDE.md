@@ -157,6 +157,7 @@ cargo build --release --no-default-features --features cpu     # só CPU
 cargo build --release --no-default-features --features cuda     # exige nvcc
 ./instalar.sh [vulkan|cuda|cpu]   # compila, encerra a instância rodando e instala em ~/.local/bin
 ./empacotar.sh [vulkan|cpu|cuda]  # .deb em target/deb/ — o nome do pacote muda por backend
+./empacotar-portatil.sh [vulkan|cpu|cuda] [--com-modelo]  # .tar.gz portátil em target/portatil/
 ```
 
 Deps de sistema: `cmake libasound2-dev libvulkan-dev glslc wl-clipboard` (e `dpkg-deb`, `fakeroot` para empacotar).
@@ -307,6 +308,7 @@ do `ditador --status`, com um comando a mais: `assinar`.
 .\windows-integration\scripts\desinstalar.ps1     # e -ApagarDados
 .\windows-integration\scripts\build.ps1           # os dois lados
 .\windows-integration\scripts\empacotar-exe.ps1   # o instalador .exe que vai na release
+.\windows-integration\scripts\empacotar-portatil.ps1  # o .zip portátil (frontend autocontido)
 .\windows-integration\scripts\empacotar-msix.ps1  # o pacote, para o futuro
 python windows-integration\scripts\gerar-icones.py  # depois de mexer no desenho dos .ico
 ```

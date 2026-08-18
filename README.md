@@ -27,9 +27,11 @@ sudo usermod -aG input $USER                        # para o atalho global ler o
 ```
 
 O `.deb` sai da [página de versões](https://github.com/DanielFreitasDev/ditador/releases/latest),
-onde também estão o instalador `.exe` do Windows e o ZIP da extensão do GNOME —
-cada release traz as instruções completas de instalação, atualização e remoção,
-que também estão em [`docs/INSTALACAO.md`](docs/INSTALACAO.md).
+onde também estão o instalador `.exe` do Windows, as versões **portáteis** dos
+dois sistemas (`.tar.gz`/`.zip` que se descompacta e roda, para máquina onde não
+se instala nada — veja [Modo portátil](#modo-portátil)) e o ZIP da extensão do
+GNOME — cada release traz as instruções completas de instalação, atualização e
+remoção, que também estão em [`docs/INSTALACAO.md`](docs/INSTALACAO.md).
 Se algo não funcionar, `ditador --diagnostico` confere, um a um, tudo de que o
 programa depende e diz o que está faltando.
 
@@ -69,11 +71,13 @@ could be found*.
 ```bash
 ./empacotar.sh                # target/deb/ditador_<versão>_amd64.deb  (Vulkan)
 ./empacotar.sh cpu            # target/deb/ditador-cpu_<versão>_amd64.deb
+./empacotar-portatil.sh       # target/portatil/…-portatil.tar.gz — sem instalação
 ```
 
 O pacote leva o programa, os ícones, o atalho do menu e o serviço de usuário do
 systemd. Não leva o modelo: são centenas de megabytes, e a própria janela o
-baixa na primeira vez.
+baixa na primeira vez. O portátil é para a máquina onde nem o `.deb` entra —
+veja [Modo portátil](#modo-portátil), inclusive para levar o modelo dentro.
 
 <p align="center">
   <img src="assets/capturas/resultado.png" alt="O texto transcrito, pronto para copiar" width="760">
@@ -280,8 +284,34 @@ quem conhece a própria máquina.
 Um arquivo chamado `portatil` (ou `portable`) ao lado do executável faz a
 configuração, os modelos e o histórico morarem numa pasta `Dados/` vizinha a ele,
 em vez de `~/.config` e `~/.local/share`. Serve para pendrive e para máquina onde
-não se instala nada — no Windows combina com o instalador sem administrador que já
-existe. O `ditador --diagnostico` diz em que modo está e onde cada coisa ficou.
+não se instala nada. O `ditador --diagnostico` diz em que modo está e onde cada
+coisa ficou.
+
+**Cada versão sai também empacotada assim**, pronta: um `.tar.gz` (Linux) e um
+`.zip` (Windows) na [página de versões](https://github.com/DanielFreitasDev/ditador/releases/latest),
+já com o marcador dentro — descompactou, rodou. No Windows o pacote portátil é
+**autocontido**: traz o .NET e o WinUI dentro, porque a máquina que não deixa
+instalar o Ditador também não deixa instalar runtime. E, como o caminho do
+modelo gravado na configuração é absoluto, o programa o **reencontra sozinho**
+quando a pasta muda de endereço — o mesmo pendrive montado em outra máquina, em
+outro usuário ou em outra letra de unidade continua achando o modelo que carrega
+dentro de si.
+
+Quem gera os pacotes é o par de scripts do repositório:
+
+```bash
+./empacotar-portatil.sh                          # Linux, Vulkan (ou: cpu | cuda)
+./empacotar-portatil.sh vulkan --com-modelo      # com o modelo dentro, para máquina sem internet
+```
+
+```powershell
+.\windows-integration\scripts\empacotar-portatil.ps1                # Windows (ou -Backend cpu)
+.\windows-integration\scripts\empacotar-portatil.ps1 -ComModelo     # com o modelo dentro
+```
+
+O pacote da release não leva o modelo — mesma regra do `.deb`: a primeira janela
+o baixa. O `--com-modelo` existe para a máquina **sem internet**: gera-se o
+pacote gordo numa máquina que tem, e o pendrive leva tudo.
 
 O marcador não basta: a pasta é criada e testada com uma escrita de verdade antes
 de o modo valer. Falhando — um marcador esquecido ao lado de um binário em
