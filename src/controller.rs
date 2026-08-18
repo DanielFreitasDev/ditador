@@ -234,31 +234,7 @@ impl Controller {
                 sample_rate,
                 duration_ms,
             } => {
-                // O que o histórico precisa e só este evento conhece: a duração
-                // sempre, e as amostras só quando a chave do áudio está ligada —
-                // porque aquela cópia é de megabytes.
-                {
-                    let (ativo, guardar_audio) = {
-                        let state = lock(&self.shared);
-                        (
-                            state.config.historico.ativo,
-                            state.config.historico.guardar_audio,
-                        )
-                    };
-                    if ativo {
-                        *self
-                            .para_o_historico
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner()) = Some(AudioGuardado {
-                            ditado,
-                            duracao_ms: duration_ms,
-                            amostras: guardar_audio.then(|| samples.clone()),
-                            taxa: sample_rate,
-                        });
-                    }
-                }
-
-                let (atual, too_short, options) = {
+                let (atual, too_short, options, historico) = {
                     let mut state = lock(&self.shared);
                     // Só o ditado mais novo manda na tela e no cronômetro. O
                     // áudio de um anterior ainda é transcrito — ele existe e é
@@ -287,6 +263,7 @@ impl Controller {
                             initial_prompt: state.config.initial_prompt.clone(),
                             normalize: state.config.normalize_audio,
                         },
+                        state.config.historico,
                     )
                 };
 
@@ -296,6 +273,30 @@ impl Controller {
                         self.voltar_ao_repouso();
                     }
                     return;
+                }
+
+                // O que o histórico precisa e só este evento conhece: a duração
+                // sempre, e as amostras só quando a chave do áudio está ligada —
+                // porque aquela cópia é de megabytes.
+                //
+                // **Depois** do descarte por duração mínima, e não antes. O
+                // guardado é um só, e quem chega depois toma o lugar de quem
+                // estava lá: um toque na tecla curto demais para valer nunca
+                // chega a ser transcrito, então ele levava embora a duração e o
+                // áudio da frase que ainda estava no Whisper para não usá-los
+                // para nada — e aquela entrada aparecia na lista sem duração e
+                // sem gravação. De quebra, a cópia de megabytes deixa de ser
+                // feita para um áudio que vai direto para o lixo.
+                if historico.ativo {
+                    *self
+                        .para_o_historico
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(AudioGuardado {
+                        ditado,
+                        duracao_ms: duration_ms,
+                        amostras: historico.guardar_audio.then(|| samples.clone()),
+                        taxa: sample_rate,
+                    });
                 }
 
                 self.sinal.mudou();
@@ -1559,5 +1560,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn um_ditado_curto_demais_nao_rouba_o_historico_do_que_ainda_esta_sendo_transcrito() {
+        // Falar de novo enquanto a frase anterior é transcrita é o uso normal
+        // deste programa, e o guardado é um só: quem chega depois toma o lugar
+        // de quem estava lá. Isso é a decisão certa entre dois ditados de
+        // verdade — mas um toque na tecla, curto demais para valer, **nunca
+        // chega a ser transcrito**: ele levava embora a duração e o áudio da
+        // frase que ainda estava no Whisper para não usá-los para nada, e
+        // aquela entrada aparecia na lista sem duração e sem gravação.
+        let b = Bancada::nova();
+        b.estado().config.historico.ativo = true;
+        b.limpar();
+
+        // Ditado 1: uma frase de verdade, já a caminho da transcrição.
+        b.controlador.on_hotkey(HotkeyEvent::Down);
+        let primeiro = b.estado().ditado_atual;
+        b.controlador.on_hotkey(HotkeyEvent::Up);
+        b.controlador.on_audio(AudioEvent::Captured {
+            ditado: primeiro,
+            samples: vec![0.0; 16_000],
+            sample_rate: 16_000,
+            duration_ms: 1_000,
+        });
+
+        // Ditado 2: um toque sem querer, abaixo da duração mínima.
+        b.controlador.on_hotkey(HotkeyEvent::Down);
+        let segundo = b.estado().ditado_atual;
+        b.controlador.on_hotkey(HotkeyEvent::Up);
+        b.controlador.on_audio(AudioEvent::Captured {
+            ditado: segundo,
+            samples: vec![0.0; 160],
+            sample_rate: 16_000,
+            duration_ms: 10,
+        });
+
+        assert_eq!(
+            b.controlador.do_ditado(primeiro).map(|g| g.duracao_ms),
+            Some(1_000),
+            "o ditado descartado levou o histórico de quem ainda estava sendo transcrito"
+        );
     }
 }
