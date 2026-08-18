@@ -256,6 +256,30 @@ chmod 644 "$RAIZ/usr/share/doc/$PACOTE/copyright"
 printf '%s (%s) unstable; urgency=low\n\n  * Versão %s.\n\n -- Daniel Freitas <danielsfreitas97@gmail.com>  %s\n' \
     "$PACOTE" "$VERSAO" "$VERSAO" "$(date -R)" \
     | gzip -9n > "$RAIZ/usr/share/doc/$PACOTE/changelog.Debian.gz"
+# O `chmod` aqui é o mesmo do copyright acima, e pelo mesmo motivo: um `>` do
+# shell cria o arquivo com 666 menos a umask de quem está empacotando. Numa
+# máquina com `umask 002` — que é o padrão do Ubuntu para quem tem grupo próprio
+# — o changelog saía 664 dentro do pacote, gravável pelo grupo, enquanto todo o
+# resto ia 644. O `install -Dm644` protege os outros arquivos; estes dois, não.
+chmod 644 "$RAIZ/usr/share/doc/$PACOTE/changelog.Debian.gz"
+
+# A rede embaixo dos dois `chmod`, e do dia em que alguém acrescentar um terceiro
+# arquivo por redirecionamento e esquecer o dele: nada dentro de um `.deb` pode
+# ser gravável por grupo ou por outros. É a mesma ideia da conferência do
+# `objdump` lá em cima — olhar o resultado pronto, e não confiar em ter feito
+# tudo certo pelo caminho.
+#
+# O `DEBIAN/` fica de fora porque quem manda nele é o `dpkg-deb`: ele normaliza
+# o modo dos arquivos de controle ao empacotar (conferido — um `control` 664 no
+# disco entra 644 no pacote). Os arquivos de dados, não: aqueles vão como estão.
+FROUXOS="$(find "$RAIZ" -path "$RAIZ/DEBIAN" -prune -o -perm /022 -print)"
+if [ -n "$FROUXOS" ]; then
+    echo "Arquivos graváveis por grupo ou por outros dentro do pacote:" >&2
+    printf '%s\n' "$FROUXOS" | sed 's/^/  /' >&2
+    echo "Corrija a permissão antes de empacotar (o esperado é 644, ou 755 para" >&2
+    echo "executáveis e diretórios)." >&2
+    exit 1
+fi
 
 echo "==> Empacotando"
 SAIDA="target/deb/${PACOTE}_${VERSAO}_${ARQ}.deb"
