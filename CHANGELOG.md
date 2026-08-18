@@ -13,6 +13,18 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.7.1 — 2026-08-18
+
+### Correções e ajustes
+
+- Um segundo Ditador deixa de roubar o nome do que já está rodando ([`536fb85`](https://github.com/DanielFreitasDev/ditador/commit/536fb8527023b883b926e2166510851ed7f5bff5))
+- A gravação máxima escolhida nas configurações passa a valer na hora ([`dec9422`](https://github.com/DanielFreitasDev/ditador/commit/dec9422b793efd8fd72f6db40694b1e368e491f6))
+- Duas frases ditadas no mesmo segundo deixam de dividir o mesmo áudio ([`a6e8122`](https://github.com/DanielFreitasDev/ditador/commit/a6e8122d8554f0e6db6bee1e996ddddde1259d3f))
+- O volume escolhido em 53% não vira 52% ao reabrir as configurações ([`303161d`](https://github.com/DanielFreitasDev/ditador/commit/303161d7e9f83cf415e219875239421a3e1aea27))
+- Registrar as quatro investigações desta rodada de auditoria ([`375a89e`](https://github.com/DanielFreitasDev/ditador/commit/375a89e82530c6533523d5113b19fdffae2434fc))
+
+[Todas as mudanças desde a `v0.7.0`](https://github.com/DanielFreitasDev/ditador/compare/v0.7.0...v0.7.1)
+
 ## 0.7.0 — 2026-08-17
 
 ### Novidades
