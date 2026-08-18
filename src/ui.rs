@@ -434,17 +434,10 @@ impl eframe::App for App {
             crate::programas::reler();
         }
 
-        match view {
-            // Animação da gravação e do indicador de trabalho.
-            View::Recording | View::Processing => ctx.request_repaint(),
-            // Mantém o aviso de "copiado" e o tempo limite em dia.
-            View::Result => ctx.request_repaint_after(Duration::from_millis(250)),
-            // A tela de erro também anima: ela desenha o anel girando enquanto
-            // o modelo carrega, e sem repaint contínuo ele ficava parado no
-            // mesmo ângulo pelos vários segundos da carga dos 574 MB — um
-            // indicador de trabalho congelado se lê como aplicativo travado.
-            View::Error if modelo_carregando => ctx.request_repaint(),
-            _ => {}
+        match cadencia_de_repintura(view, modelo_carregando) {
+            Some(intervalo) if intervalo.is_zero() => ctx.request_repaint(),
+            Some(intervalo) => ctx.request_repaint_after(intervalo),
+            None => {}
         }
 
         if let Some(medidor) = &mut self.medidor
@@ -1961,6 +1954,42 @@ fn altura_util(ui: &egui::Ui, rodape: f32) -> f32 {
     (ui.available_height() - rodape).max(MINIMO)
 }
 
+/// De quanto em quanto tempo cada tela precisa se redesenhar sozinha.
+///
+/// `None` é "só quando alguma coisa mudar", que é o estado normal de uma janela
+/// parada — o `Sinal` já pede a repintura a cada mudança de estado.
+/// `Some(Duration::ZERO)` é "todo quadro", para o que está animando.
+///
+/// Mora fora do `logic` porque a resposta errada aqui não derruba nada, não
+/// aparece em nenhum teste de tela e não deixa rastro no log: ela só faz um
+/// número parar de andar. Foi o que aconteceu com a lista de transcrições —
+/// ela mostra "há 5 min" ao lado de cada frase e o mesmo aviso de "na área de
+/// transferência" que a tela de resultado apaga depois de três segundos, e sem
+/// repintura os dois congelavam no instante em que a lista foi aberta, com o
+/// aviso verde de uma cópia velha em cima de um botão que ninguém tinha
+/// clicado.
+fn cadencia_de_repintura(view: View, modelo_carregando: bool) -> Option<Duration> {
+    /// Quatro vezes por segundo: o bastante para nenhum número na tela ficar
+    /// mais de um quarto de segundo desatualizado, e longe de custar alguma
+    /// coisa numa janela que não está animando.
+    const SEM_PRESSA: Duration = Duration::from_millis(250);
+
+    match view {
+        // Animação da gravação e do indicador de trabalho.
+        View::Recording | View::Processing => Some(Duration::ZERO),
+        // A tela de erro também anima, mas só enquanto o modelo carrega: ela
+        // desenha o anel girando, e sem repintura contínua ele ficava parado no
+        // mesmo ângulo pelos vários segundos dos 574 MB — um indicador de
+        // trabalho congelado se lê como aplicativo travado.
+        View::Error if modelo_carregando => Some(Duration::ZERO),
+        // Estas duas contam tempo na tela sem animar nada: o aviso de "copiado"
+        // (três segundos), o fechamento automático do resultado e o "há tanto
+        // tempo" de cada transcrição guardada.
+        View::Result | View::Historico => Some(SEM_PRESSA),
+        View::Hidden | View::Settings | View::Error => None,
+    }
+}
+
 /// Uma fração de 0 a 1 como a porcentagem inteira que o deslizante mostra.
 ///
 /// **Arredonda, e não trunca.** Escrito como `(fracao * 100.0) as i64`, que é o
@@ -2057,6 +2086,36 @@ mod tests {
             );
             anterior = agora;
         }
+    }
+
+    #[test]
+    fn as_telas_que_contam_tempo_se_redesenham_sozinhas() {
+        // A lista de transcrições ficou de fora desta conta por um bom tempo, e
+        // o sintoma era discreto: o "há 5 min" de cada frase e o aviso verde de
+        // "na área de transferência" — que dura três segundos na tela de
+        // resultado — congelavam no instante em que a lista foi aberta.
+        for tela in [View::Result, View::Historico] {
+            assert_eq!(
+                cadencia_de_repintura(tela, false),
+                Some(Duration::from_millis(250)),
+                "{tela:?} conta tempo na tela e precisa se redesenhar sozinha"
+            );
+        }
+
+        // Quem anima repinta todo quadro.
+        for tela in [View::Recording, View::Processing] {
+            assert_eq!(cadencia_de_repintura(tela, false), Some(Duration::ZERO));
+        }
+        assert_eq!(
+            cadencia_de_repintura(View::Error, true),
+            Some(Duration::ZERO),
+            "o anel da carga do modelo precisa girar"
+        );
+
+        // E quem não tem nada andando fica quieto até o estado mudar.
+        assert_eq!(cadencia_de_repintura(View::Error, false), None);
+        assert_eq!(cadencia_de_repintura(View::Settings, false), None);
+        assert_eq!(cadencia_de_repintura(View::Hidden, false), None);
     }
 
     #[test]
