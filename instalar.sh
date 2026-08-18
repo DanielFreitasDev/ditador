@@ -24,6 +24,19 @@ cargo build --release "${FEATURES[@]}"
 
 echo "==> Instalando o binário em $BIN_DIR"
 mkdir -p "$BIN_DIR"
+# O serviço estava de pé? A pergunta tem de ser feita **antes** de o `--encerrar`
+# logo abaixo derrubá-lo.
+#
+# Sem ela, reinstalar com o Ditador rodando o deixava parado: o `--encerrar` sai
+# com código zero e a unidade é `Restart=on-failure`, então o systemd entende
+# que o programa terminou de propósito e não sobe de novo. Para quem instalou, o
+# ícone some da barra, o atalho para de responder e nada volta até o próximo
+# login — com o script anunciando "Instalado" no meio disso. É o mesmo cuidado
+# que o `postinst` do `.deb` já toma, lá com um bilhete em /run.
+ESTAVA_ATIVO=no
+if systemctl --user is-active --quiet ditador 2>/dev/null; then
+    ESTAVA_ATIVO=sim
+fi
 # Para se o programa estiver rodando: não dá para sobrescrever um binário em uso.
 #
 # O caminho absoluto vem primeiro porque o PATH pode ainda não ter o $BIN_DIR —
@@ -61,6 +74,15 @@ echo "==> Instalando o serviço de usuário"
 mkdir -p "$SYSTEMD_DIR"
 install -m 644 assets/ditador.service "$SYSTEMD_DIR/ditador.service"
 systemctl --user daemon-reload
+
+# Religa o que estava rodando, e só isso — quem não tinha o serviço de pé
+# continua sem ele. O `daemon-reload` vem antes de propósito: o arquivo da
+# unidade acabou de ser reescrito.
+if [ "$ESTAVA_ATIVO" = sim ]; then
+    echo "==> Religando o serviço, que estava rodando antes desta instalação"
+    systemctl --user restart ditador || \
+        echo "!! não consegui religar; rode: systemctl --user restart ditador" >&2
+fi
 
 MODELO="${XDG_DATA_HOME:-$HOME/.local/share}/ditador/models/ggml-large-v3-turbo-q5_0.bin"
 if [ ! -f "$MODELO" ]; then
