@@ -13,6 +13,15 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.7.2 — 2026-08-18
+
+### Correções e ajustes
+
+- O barramento do teste do nome se encerra mesmo quando o teste reprova ([`fe52f72`](https://github.com/DanielFreitasDev/ditador/commit/fe52f724a6bdadb784483d782ed389eaf89aa644))
+- O pacote publicado volta a rodar em processador sem AVX-512 ([`b729917`](https://github.com/DanielFreitasDev/ditador/commit/b729917545b9c19aaffdb9218d5f63b9b82e50b5))
+
+[Todas as mudanças desde a `v0.7.1`](https://github.com/DanielFreitasDev/ditador/compare/v0.7.1...v0.7.2)
+
 ## 0.7.1 — 2026-08-18
 
 ### Correções e ajustes
