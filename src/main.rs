@@ -530,9 +530,23 @@ fn baixar_modelo(nome: &str) -> Result<()> {
     use std::io::Write as _;
 
     let destino = modelo::caminho(nome);
+    // `exists()` não basta, e a diferença é o caso em que este comando mais
+    // importa. Um arquivo ruim no destino — a página de um portal cativo, um
+    // download interrompido pelo disco cheio, uma cópia truncada — trancava a
+    // instalação inteira: a janela já oferece "Baixar o modelo de novo" quando o
+    // Whisper recusa o arquivo, mas o terminal, que é o caminho de quem está
+    // numa sessão por SSH, respondia "já está aqui" e não dava saída nenhuma.
+    // Quem estivesse nessa situação tinha de descobrir sozinho que precisava
+    // apagar o arquivo à mão.
     if destino.exists() {
-        println!("O modelo já está aqui: {}", destino.display());
-        return Ok(());
+        if modelo::parece_um_modelo(&destino) {
+            println!("O modelo já está aqui: {}", destino.display());
+            return Ok(());
+        }
+        println!(
+            "O arquivo em {} existe mas não é um modelo do Whisper; baixando de novo por cima.",
+            destino.display()
+        );
     }
 
     println!("Baixando ggml-{nome}.bin para {}", destino.display());

@@ -620,6 +620,45 @@ mod tests {
     }
 
     #[test]
+    fn o_arquivo_que_nao_e_modelo_nao_passa_por_modelo() {
+        // Esta é a pergunta que o `--baixar-modelo` faz antes de responder "já
+        // está aqui". Ela precisava existir: decidindo só por `exists()`, quem
+        // ficasse com um arquivo ruim no destino — um HTML de portal cativo, um
+        // download interrompido pelo disco cheio, uma cópia truncada — não tinha
+        // como refazer o download pelo terminal. A janela já oferecia o botão de
+        // baixar de novo; a linha de comando, que é o caminho de quem está numa
+        // sessão por SSH, respondia "já está aqui" e mandava a pessoa apagar o
+        // arquivo à mão para descobrir isso.
+        let bom = arquivo_de_teste("parece-bom.bin", &COMECO_DE_UM_MODELO);
+        assert!(parece_um_modelo(&bom));
+
+        let pagina = arquivo_de_teste("parece-pagina.html", b"<!DOCTYPE html><html>");
+        assert!(
+            !parece_um_modelo(&pagina),
+            "uma página HTML passou por modelo"
+        );
+
+        let vazio = arquivo_de_teste("parece-vazio.bin", b"");
+        assert!(
+            !parece_um_modelo(&vazio),
+            "um arquivo vazio passou por modelo"
+        );
+
+        // Curto demais para ter a assinatura inteira.
+        let tronco = arquivo_de_teste("parece-tronco.bin", &COMECO_DE_UM_MODELO[..3]);
+        assert!(!parece_um_modelo(&tronco));
+
+        // E o que nem existe.
+        assert!(!parece_um_modelo(std::path::Path::new(
+            "/nao/existe/modelo.bin"
+        )));
+
+        for caminho in [bom, pagina, vazio, tronco] {
+            let _ = std::fs::remove_file(caminho);
+        }
+    }
+
+    #[test]
     fn a_soma_de_verificacao_separa_o_arquivo_bom_do_corrompido() {
         // O caso que só a soma pega: tamanho certo, assinatura certa, bytes
         // trocados no meio. Sem esta conferência ele chegava ao destino, e o
