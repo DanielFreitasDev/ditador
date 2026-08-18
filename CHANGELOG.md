@@ -13,6 +13,14 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.8.1 — 2026-08-18
+
+### Correções e ajustes
+
+- O aparo do silêncio deixa de jogar fora a gravação que a normalização salvaria ([`9ddf12b`](https://github.com/DanielFreitasDev/ditador/commit/9ddf12bc2a6e23051e50c8b132767ef07834a0e8))
+
+[Todas as mudanças desde a `v0.8.0`](https://github.com/DanielFreitasDev/ditador/compare/v0.8.0...v0.8.1)
+
 ## 0.8.0 — 2026-08-18
 
 ### Novidades
