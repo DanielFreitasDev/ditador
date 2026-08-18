@@ -112,6 +112,22 @@ O formato de cada entrada e as regras de organização estão no topo do própri
 
 ## Build e empacotamento
 
+**O `.cargo/config.toml` põe `GGML_NATIVE=OFF`, e essa linha não é enfeite.** Sem
+ela o whisper.cpp compila o ggml com `-march=native` e o binário sai com as
+instruções do processador que o compilou — o que, num projeto que publica
+pacotes, é loteria. O `.deb` da 0.7.1 saiu de um agente do GitHub com AVX-512 e
+morria com `Illegal instruction (core dumped)` num Ryzen 5 4600G no instante em
+que o Whisper carregava o modelo; o da 0.7.0, compilado noutro agente, rodava.
+O piso passa a ser AVX2 (todo Intel desde 2013, todo AMD Zen) e os kernels de
+AVX2/FMA/F16C continuam ligados. O `empacotar.sh` confere o binário pronto com
+`objdump` e recusa fechar o `.deb` se achar `%zmm`. A investigação está em
+`docs/LEARNINGS.md`.
+
+⚠️ Mexeu em variável de ambiente que vá para o CMake do whisper.cpp? O
+`whisper-rs-sys` **não** declara `rerun-if-env-changed`, então o `cargo build`
+seguinte não recompila o C++ e o binário continua o antigo. Confira com
+`cargo clean -p whisper-rs-sys` antes.
+
 Features de GPU são mutuamente exclusivas; `vulkan` é o padrão.
 
 ```

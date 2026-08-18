@@ -1,0 +1,41 @@
+# O binário deste repositório é compilado numa máquina e roda em outras. Este
+# arquivo existe por causa de uma consequência disso.
+
+[env]
+# **O ggml não é compilado para a máquina que compila.**
+#
+# O `GGML_NATIVE` do whisper.cpp vem ligado por padrão, e ligado ele acrescenta
+# `-march=native` à compilação do ggml: o binário sai com as instruções do
+# processador de quem o compilou. Numa máquina só isso é ótimo. Num projeto que
+# publica pacotes é uma loteria — e a 0.7.1 a perdeu.
+#
+# O que aconteceu, medido: o agente do GitHub que compilou a 0.7.1 tinha
+# AVX-512, e o `.deb` publicado saiu com 7 231 usos de registrador `%zmm`. Num
+# Ryzen 5 4600G (Zen 2, com AVX2 e sem AVX-512 — um desktop absolutamente
+# comum) o programa morria com **`Illegal instruction (core dumped)`** no
+# instante em que o Whisper carregava o modelo: o ícone aparecia, o atalho era
+# registrado, e aí o processo sumia. O `.deb` da 0.7.0, compilado semanas antes
+# noutro agente, não tinha um `%zmm` sequer e rodava na mesma máquina.
+#
+# Quer dizer que o pacote funcionar ou não dependia de qual máquina a Azure
+# emprestou naquele dia, e que a mesma versão podia estar boa para uns e
+# quebrada para outros sem nada no repositório ter mudado.
+#
+# Com `GGML_NATIVE=OFF` o `-march=native` sai e as opções de conjunto de
+# instruções passam a valer por si: SSE4.2, AVX, AVX2, BMI2, FMA e F16C ficam
+# **ligadas**, e as AVX-512 ficam desligadas. É o piso certo para um pacote de
+# desktop — AVX2 existe em todo Intel desde 2013 e em todo AMD Zen —, e o que se
+# perde é a autovetorização do código que não é o núcleo do ggml: os kernels que
+# importam continuam sendo os de AVX2 e FMA, escritos à mão e selecionados por
+# essas mesmas opções.
+#
+# Vale para **todas** as compilações deste repositório, e não só para as de
+# empacotamento, de propósito: assim o que a CI testa é o que o pacote leva, e o
+# binário que alguém compila com o `instalar.sh` continua servindo se for copiado
+# para outra máquina. O `empacotar.sh` ainda confere o resultado antes de fechar
+# o `.deb` — a rede embaixo desta linha, para o dia em que ela for removida por
+# engano ou o padrão do whisper.cpp mudar de novo.
+#
+# O whisper-rs-sys repassa ao CMake qualquer variável de ambiente que comece com
+# `GGML_`, `WHISPER_` ou `CMAKE_`; é por essa porta que esta linha entra.
+GGML_NATIVE = "OFF"

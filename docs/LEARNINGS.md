@@ -634,3 +634,87 @@ que os nomes diferem: nomes distintos com o conteúdo trocado seria o mesmo
 defeito.
 
 **Arquivos** — `src/historico.rs` (`registrar_em`).
+
+# Empacotamento e distribuição
+
+## Empacotamento — o `.deb` publicado morre com `Illegal instruction` ao carregar o modelo
+
+**Contexto** — o `.deb` da 0.7.1, recém-publicado pelo workflow, baixado e
+rodado num AMD Ryzen 5 4600G (Zen 2: tem AVX2, não tem AVX-512). O da 0.7.0,
+publicado pelo mesmo workflow semanas antes, rodava na mesma máquina.
+
+**Sintoma** — o programa sobe, registra os teclados, publica o ícone da barra e
+some. O log termina na linha do microfone e **nunca** chega em "modelo
+carregado". Quem o lançou de um terminal vê:
+
+```
+Illegal instruction     (core dumped)
+```
+
+O `--versao`, o `--microfones` e o `--diagnostico` funcionam — nenhum deles
+carrega o modelo, e é por isso que uma conferência rápida diz que está tudo bem.
+
+**Causa** — `-march=native` no ggml. O `GGML_NATIVE` do whisper.cpp vem **ligado
+por padrão** (`GGML_NATIVE_DEFAULT` é ON fora de compilação cruzada), e ligado
+ele acrescenta `-march=native`: o binário sai com as instruções do processador
+que o compilou. Quem compila é um agente do GitHub, e qual máquina a Azure
+empresta muda de execução para execução.
+
+Medido nos dois pacotes, com `objdump -d … | grep -c '%zmm'`:
+
+| | registradores `%zmm` (AVX-512) | roda no Zen 2 |
+|---|---|---|
+| `.deb` da 0.7.0 | 0 | sim |
+| `.deb` da 0.7.1 | 7 231 | **não** |
+
+Nada no repositório tinha mudado entre um e outro. O pacote funcionar ou não era
+sorteio, e a mesma versão podia estar boa para umas máquinas e quebrada para
+outras.
+
+**Solução** — `GGML_NATIVE = "OFF"` no `[env]` do `.cargo/config.toml`, que vale
+para toda compilação feita da raiz do repositório. O whisper-rs-sys repassa ao
+CMake qualquer variável de ambiente que comece com `GGML_`, `WHISPER_` ou
+`CMAKE_`.
+
+Com ele o `-march=native` sai e as opções de conjunto de instruções passam a
+valer por si — no binário recompilado aqui, nenhuma piora onde importa:
+
+```
+%zmm (AVX-512)   0        (era o que matava)
+%ymm (AVX2)      14 493   (os kernels que importam continuam lá)
+vfmadd (FMA)     843
+vcvtph2ps (F16C) 49
+```
+
+O piso passa a ser AVX2, que existe em todo Intel desde 2013 (Haswell) e em todo
+AMD Zen.
+
+**Prevenção** — a variável é a correção; a rede é o `empacotar.sh`, que agora
+**olha o binário pronto** antes de fechar o `.deb` e reprova se achar `%zmm`.
+Ela continua valendo se alguém apagar a linha do `.cargo/config.toml`, se o
+padrão do whisper.cpp mudar de novo ou se o `-march` entrar por um caminho que
+ninguém previu — porque ela não confere a intenção, confere o resultado.
+
+Duas armadilhas de método, que valem mais do que a correção em si:
+
+* **uma variável de ambiente nova não recompila o C++ sozinha.** O
+  `whisper-rs-sys` não declara `cargo:rerun-if-env-changed=GGML_NATIVE`, então o
+  `cargo build` seguinte recompila só o nosso crate e o binário continua o
+  antigo. Para conferir de verdade: `cargo clean -p whisper-rs-sys` antes. Foi
+  o que quase fez esta correção passar por conferida sem estar;
+* **o portão precisa ser exercido nos dois sentidos.** O `empacotar.sh` foi
+  rodado com o binário bom (aprova) e com o binário quebrado da 0.7.1 no lugar
+  (reprova, com código 1). Um portão que só se viu aprovar não é um portão.
+
+**Arquivos** — `.cargo/config.toml`, `empacotar.sh` (o passo "Conferindo se o
+binário roda fora desta máquina"), `.github/workflows/release.yml` (o `binutils`
+das dependências).
+**Ambiente** — vale para os dois sistemas: o instalador `.exe` do Windows sai do
+mesmo `cargo build` e tinha o mesmo padrão. Só o `.deb` foi medido.
+**Comandos** — a pergunta inteira cabe numa linha, e serve para qualquer binário
+baixado de uma release:
+
+```
+objdump -d ./ditador | grep -c '%zmm'    # 0 = roda em qualquer x86-64 com AVX2
+```
+

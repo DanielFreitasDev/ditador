@@ -297,11 +297,13 @@ jobs:
         run: |
           sudo apt-get update
           # `libvulkan-dev` e `glslc` para a variante GPU; `dpkg-dev` e `fakeroot`
-          # para o empacotamento em si.
+          # para o empacotamento em si; `binutils` pelo `objdump`, com que o
+          # `empacotar.sh` confere que o binário não saiu com instruções que só
+          # existem no processador deste agente (veja o `.cargo/config.toml`).
           sudo apt-get install -y --no-install-recommends \
             cmake libasound2-dev pkg-config libvulkan-dev glslc \
             libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev \
-            dpkg-dev fakeroot
+            dpkg-dev fakeroot binutils
 
       # O mesmo script que se roda na própria máquina. O agente do GitHub é uma
       # base mais antiga do que a máquina de quem desenvolve, e isso é uma

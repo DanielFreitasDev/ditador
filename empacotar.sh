@@ -39,9 +39,9 @@ case "$BACKEND" in
     *) echo "Backend inválido: $BACKEND (use vulkan, cpu ou cuda)" >&2; exit 2 ;;
 esac
 
-for ferramenta in dpkg-deb fakeroot cargo; do
+for ferramenta in dpkg-deb fakeroot cargo objdump; do
     command -v "$ferramenta" >/dev/null || {
-        echo "Falta o $ferramenta. sudo apt install dpkg-dev fakeroot" >&2; exit 1; }
+        echo "Falta o $ferramenta. sudo apt install dpkg-dev fakeroot binutils" >&2; exit 1; }
 done
 
 VERSAO="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
@@ -50,6 +50,37 @@ RAIZ="target/deb/$PACOTE"
 
 echo "==> Compilando (backend: $BACKEND)"
 cargo build --release "${FEATURES[@]}"
+
+# O pacote vai para máquinas que não são esta. Um binário compilado com
+# `-march=native` sai com as instruções do processador de quem o compilou, e o
+# preço disso já foi pago: o `.deb` da 0.7.1 saiu de um agente do GitHub com
+# AVX-512 e morria com `Illegal instruction (core dumped)` num Ryzen 5 4600G, no
+# instante em que o Whisper carregava o modelo. O `.deb` da versão anterior,
+# compilado noutro agente, rodava — quer dizer que a mesma régua aprovava os
+# dois, e que funcionar dependia de qual máquina a Azure emprestou naquele dia.
+#
+# Quem tira o `-march=native` é o `GGML_NATIVE=OFF` do `.cargo/config.toml`, e
+# lá está o raciocínio inteiro. Esta conferência é a rede embaixo dele: ela
+# olha o binário pronto, e não a variável, então continua valendo se alguém
+# apagar aquela linha, se o padrão do whisper.cpp mudar de novo ou se o
+# `-march` entrar por um caminho que ninguém previu.
+#
+# O piso é AVX2, que existe em todo Intel desde 2013 e em todo AMD Zen. O que
+# se procura são os registradores `%zmm`, de 512 bits: eles não têm como
+# aparecer sem AVX-512, e não há AVX-512 sem eles.
+echo "==> Conferindo se o binário roda fora desta máquina"
+ACIMA_DO_PISO="$(objdump -d target/release/ditador | grep -c '%zmm' || true)"
+if [ "$ACIMA_DO_PISO" -gt 0 ]; then
+    cat >&2 <<AVISO
+O binário saiu com $ACIMA_DO_PISO instruções AVX-512 (registradores %zmm) e não
+vai rodar em processador sem AVX-512 — ele morre com "Illegal instruction" ao
+carregar o modelo. Quase sempre isto quer dizer que o -march=native voltou:
+confira o GGML_NATIVE=OFF do .cargo/config.toml e se o cargo está sendo chamado
+da raiz do repositório, que é de onde ele lê esse arquivo.
+AVISO
+    exit 1
+fi
+echo "ok  sem instruções acima do piso de AVX2."
 
 echo "==> Montando a árvore do pacote"
 rm -rf "$RAIZ"
