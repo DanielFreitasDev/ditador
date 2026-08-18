@@ -315,6 +315,89 @@ várias versões sem aparecer.
 **Comandos** — `DITADOR_DEMO=1 DITADOR_CAPTURA=/tmp/x RUST_BACKTRACE=1
 target/debug/ditador`
 
+## Interface — a quarta e a quinta vez em que uma resposta atrasada tomou a janela de quem já estava noutra coisa
+
+**Contexto** — o padrão de defeito mais repetido deste projeto, encontrado agora
+em mais dois lugares. Todo caminho que **chega tarde** — porque esperou o
+Whisper, porque dormiu antes de colar, porque o microfone só falhou depois —
+volta a mexer na janela num instante em que ela já pode pertencer a outra coisa:
+a um ditado novo em andamento, ou à tela de configurações com um rascunho
+digitado dentro.
+
+**Sintoma** — dois casos novos, os dois com a janela sempre-no-topo aparecendo
+por cima de quem estava falando:
+
+* **a colagem que falha** (`colar_depois`, um quarto de segundo depois de o texto
+  ficar pronto): a tela de resultado subia com "Copiei, mas não consegui colar"
+  e o campo de texto **vazio** — porque o `start_recording` do ditado novo já
+  tinha limpado o `text`. Uma janela de erro sem o erro dentro;
+* **o microfone que falha** (`AudioEvent::Failed`): trocava a tela de
+  configurações pela de erro, e o rascunho digitado se perdia ao reabrir. O
+  comentário do `SttEvent::Failed`, logo ao lado, afirmava em tantas palavras
+  que "o mesmo critério do áudio" já valia — e não valia: o braço do áudio
+  conferia só o número do ditado.
+
+**Causa** — a guarda existe e tem nome (`resultado_pode_aparecer`, `ocupada`),
+mas ela mora dentro do `on_transcription`. Quem não passa por ali não a herda, e
+os dois caminhos acima não passam.
+
+**Solução** — a mesma pergunta nos dois: `state.gravando() || state.view ==
+View::Settings`. Ocupada a janela, sobra a linha do journal, que já existia.
+
+**Prevenção** — a regra, que vale para o próximo caminho tardio que alguém
+escrever: **antes de escrever em `state.view`, pergunte de quem é a janela
+agora.** E desconfie de comentário que afirma que outro braço do `match` já faz
+alguma coisa — dois dos defeitos desta rodada estavam exatamente aí, num
+comentário que descrevia um comportamento que o código não tinha.
+
+Vale a mesma desconfiança para o **estado de captura de atalho**: sair da tela de
+configurações pelo botão "Ver as transcrições" deixava `capturando` de pé e o
+ouvinte de teclas em modo de captura fora da tela que o explica — o atalho de
+ditar parava de ditar, e o aperto seguinte virava um rascunho que ninguém ia
+salvar. Toda saída da tela de configurações precisa desfazer a captura, e não só
+o "Cancelar" dela.
+
+**Arquivos** — `src/controller.rs` (`contar_a_falha_na_colagem`, `on_audio`,
+`abrir_historico`), `src/hotkey.rs` (`sair_da_captura`).
+
+## Interface — na lista de transcrições o "há 5 min" congelava e o aviso de cópia não saía mais
+
+**Contexto** — a tela de transcrições (`View::Historico`), aberta pelo ícone da
+barra, pelo botão das configurações ou por `ditador --historico --janela`.
+
+**Sintoma** — dois, e os dois passam despercebidos numa conferência rápida:
+
+* o tempo relativo ao lado de cada frase ("agora", "há 5 min", "ontem") ficava
+  parado no valor que tinha no instante em que a lista foi aberta. Com a janela
+  meia hora aberta, uma frase ditada naquele momento continuava dizendo "agora";
+* o aviso verde "na área de transferência", que a tela de resultado apaga depois
+  de três segundos, **ficava na tela para sempre** depois de um clique em
+  "Copiar" — inclusive por cima de uma cópia que já não era a última.
+
+**Causa** — o `logic()` da interface decidia a cadência de repintura num `match`
+sobre a tela, e o histórico caía no braço `_ => {}`. Quer dizer: a janela só era
+redesenhada quando o `Sinal` avisava que o estado tinha mudado — e nem o relógio
+de parede nem o `copied_at` de três segundos são estado que mude.
+
+A tela de resultado, que mostra exatamente o mesmo aviso de três segundos, já
+tinha `request_repaint_after(250 ms)` por este motivo. O histórico nasceu depois
+e não entrou na conta.
+
+**Solução** — a decisão saiu de dentro do `logic()` para uma função própria,
+`cadencia_de_repintura(view, modelo_carregando)`, com o histórico ao lado do
+resultado. `None` é "só quando o estado mudar", `Some(Duration::ZERO)` é "todo
+quadro" (gravação, transcrição, o anel da carga do modelo) e
+`Some(250 ms)` é "isto conta tempo mas não anima".
+
+**Prevenção** — a função existe separada justamente porque **a resposta errada
+aqui não derruba nada, não aparece em teste de tela nenhum e não deixa rastro no
+log**: ela só faz um número parar de andar. Separada, ela cabe num teste de
+unidade — e há um (`as_telas_que_contam_tempo_se_redesenham_sozinhas`), que
+percorre as telas uma a uma. Tela nova que mostre tempo decorrido, prazo ou
+aviso que expira entra lá.
+
+**Arquivos** — `src/ui.rs` (`cadencia_de_repintura`, `logic`).
+
 ## Interface — o deslizante de porcentagem perdia um ponto em 53 e em 59
 
 **Contexto** — o volume dos avisos sonoros e a exigência do dicionário são
@@ -635,7 +718,214 @@ defeito.
 
 **Arquivos** — `src/historico.rs` (`registrar_em`).
 
+## Histórico — a entrada ficava sem duração e sem áudio quando um toque na tecla vinha logo depois
+
+**Contexto** — falar de novo enquanto a frase anterior é transcrita, que é o uso
+normal deste programa. Aqui com um detalhe a mais: o segundo "ditado" é um toque
+sem querer, curto demais para valer.
+
+**Sintoma** — a frase de verdade aparecia na lista com `"duracao_ms": 0` e sem o
+campo `audio`, mesmo com "Guardar também o áudio" ligado. Nada no log dizia por
+quê, e repetindo o ditado sozinho tudo funcionava.
+
+**Causa** — o controlador guarda **um** ditado por vez em `para_o_historico`, à
+espera de a transcrição terminar: quem chega depois toma o lugar de quem estava
+lá. Entre dois ditados de verdade essa é a decisão certa, e está documentada — a
+alternativa seria uma fila de buffers de megabytes sem teto.
+
+O que estava errado era **a ordem**: o `AudioEvent::Captured` guardava antes de
+conferir a duração mínima. Um ditado descartado por ser curto demais nunca chega
+a ser transcrito, então ele tomava a vaga e não a usava para nada — e ainda
+pagava a cópia das amostras, de megabytes, para um áudio que ia direto para o
+lixo.
+
+**Solução** — guardar **depois** do descarte por duração mínima, no mesmo
+`Captured`. Duas linhas trocadas de lugar.
+
+**Prevenção** — a regra geral: um recurso que guarda "o último X" tem de guardar
+depois de saber que aquele X vai existir, e não no instante em que ele aparece.
+Há teste
+(`um_ditado_curto_demais_nao_rouba_o_historico_do_que_ainda_esta_sendo_transcrito`).
+
+**Ambiente** — com o microfone sempre aberto (o padrão desde a 0.7) e a duração
+mínima nos 300 ms de fábrica isto quase não acontece: os 300 ms de pré-gravação
+entram na conta da duração e praticamente nenhum toque fica abaixo do piso. Para
+reproduzir, suba a "Gravação mínima" nas configurações.
+
+**Arquivos** — `src/controller.rs` (`on_audio`, braço `Captured`).
+
 # Empacotamento e distribuição
+
+## Modelo — o `./baixar-modelo.sh` reprovava **todo** download bem-sucedido, e apagava o arquivo
+
+**Contexto** — `./baixar-modelo.sh`, o caminho que o README manda usar para
+baixar o modelo sem sessão gráfica (por SSH, num servidor, numa instalação
+scriptada).
+
+**Sintoma** — o download anda até o fim, os 574 MB chegam, e então:
+
+```
+Erro: o arquivo baixado não é um modelo do Whisper.
+      A rede pode ter devolvido uma página no lugar dele.
+```
+
+O `trap … EXIT` do script apaga o `.parcial` em seguida, então não sobra nem o
+arquivo para conferir. Baixando o mesmo endereço à mão com `curl`, o arquivo é
+perfeito e o Ditador o carrega sem reclamar — o que joga a suspeita na rede, que
+é justamente o que a mensagem sugere e o lugar errado de procurar.
+
+**Causa** — a conferência da assinatura comparava com a **string** `"ggml"`:
+
+```sh
+if [ "$(head -c 4 "$PARCIAL")" != "ggml" ]; then
+```
+
+O whisper.cpp grava a assinatura como o **inteiro** `0x67676d6c`, na ordem
+nativa da máquina. Em x86 e ARM isso é little-endian, então no disco os quatro
+bytes saem invertidos — `6c 6d 67 67` —, que lidos como texto dão `lmgg`. A
+comparação nunca podia dar certo: o script reprovava cem por cento dos downloads
+bons e aprovava zero.
+
+E o mais instrutivo: **este erro já tinha sido encontrado e corrigido**, do lado
+Rust, em `src/modelo.rs` — o comentário lá conta a história inteira, inclusive
+que ele passou despercebido por tanto tempo porque só roda no fim de um download
+e quem programa já tem o modelo no disco. A correção não atravessou para o
+script, que tem a mesma conferência escrita à mão e ninguém releu.
+
+**Solução** — comparar em hexadecimal, que não depende de a assinatura ser texto
+imprimível nem do locale de quem roda:
+
+```sh
+if [ "$(head -c 4 "$PARCIAL" | od -An -tx1 | tr -d ' \n')" != "6c6d6767" ]; then
+```
+
+**Prevenção** — duas, e a segunda é a que importa:
+
+* a ordem certa está escrita numa constante de teste
+  (`COMECO_DE_UM_MODELO`, em `src/modelo.rs`), conferida contra o próprio
+  servidor da Hugging Face com `Range: 0-15` e **não** deduzida da constante do
+  código, que é onde o erro morava;
+* há um teste em Rust que **lê a linha do script** e a compara com essa
+  constante (`o_script_confere_a_assinatura_na_ordem_em_que_ela_esta_no_disco`).
+  O projeto já fazia isso para a lista de modelos do script; agora faz para a
+  assinatura também. Foi o único jeito de os dois lados pararem de se separar em
+  silêncio — o `cargo test` não sabia que aquele arquivo existia.
+
+A regra geral: **conferência duplicada em duas linguagens precisa de um teste
+que leia as duas.** Comentário dizendo "igual ao do outro lado" não é conferência.
+
+**Comandos** — a pergunta, para qualquer modelo no disco:
+
+```
+head -c 4 modelo.bin | od -An -tx1     # 6c 6d 67 67
+```
+
+**Arquivos** — `baixar-modelo.sh`, `src/modelo.rs` (`parece_um_modelo`).
+
+## Modelo — `ditador --baixar-modelo` respondia "já está aqui" para um arquivo que não presta
+
+**Contexto** — o modelo no destino existe mas está quebrado: a página de um
+portal cativo gravada com status 200, um download interrompido pelo disco cheio,
+uma cópia truncada de outra máquina.
+
+**Sintoma** — o Whisper recusa carregar, a janela mostra "Não consegui carregar
+o modelo", e no terminal:
+
+```
+$ ditador --baixar-modelo
+O modelo já está aqui: ~/.local/share/ditador/models/ggml-large-v3-turbo-q5_0.bin
+```
+
+Sem saída nenhuma pela linha de comando. A pessoa precisa descobrir sozinha que
+tem de apagar o arquivo à mão.
+
+**Causa** — a decisão era `destino.exists()`, e só. A janela já tinha o conserto
+para isto — o `oferta_de_download` reconhece o "arquivo ruim" (modelo em
+`Failed` + arquivo presente) e oferece "Baixar o modelo de novo" —, mas o
+terminal ficou com a conferência velha. Quem está numa sessão por SSH, que é
+justamente quem usa este comando, ficava sem saída.
+
+**Solução** — `modelo::parece_um_modelo(&destino)`: quatro bytes lidos do começo
+do arquivo, a mesma assinatura que o `conferir` do fim do download já
+verificava, agora numa função pública e com uma cópia só. Não passando, o
+comando avisa e baixa por cima (o `rename` do fim substitui o destino).
+
+**Prevenção** — a conferência é de quatro bytes de propósito: ela roda em todo
+`--baixar-modelo`, e ler os 574 MB para somar SHA-256 a cada execução seria
+pagar caro por um caso raro. O arquivo trocado no meio continua sendo pego pela
+soma, no fim do download, e pelo botão da janela.
+
+**Arquivos** — `src/main.rs` (`baixar_modelo`), `src/modelo.rs`
+(`parece_um_modelo`).
+
+## Instalação — `./instalar.sh` deixava o Ditador **parado** em quem já o usava
+
+**Contexto** — reinstalar (`./instalar.sh`) com o serviço de usuário rodando, que
+é o que qualquer pessoa faz ao atualizar uma cópia compilada à mão.
+
+**Sintoma** — o script termina dizendo "Instalado.", e a partir dali o ícone some
+da barra, o atalho global não faz mais nada e `ditador --status` responde
+"parado". Nada volta até `systemctl --user start ditador` ou o próximo login. O
+`journalctl` não tem erro nenhum: a unidade simplesmente está inativa.
+
+**Causa** — o script chama `ditador --encerrar` antes de sobrescrever o binário
+(não dá para trocar um executável em uso). O encerramento pelo canal de controle
+é uma saída **limpa**, código zero — e a unidade é `Restart=on-failure`. Para o
+systemd o programa terminou de propósito, então ele não sobe de novo. Quem
+parou tem de religar.
+
+Este mesmo mecanismo já estava resolvido no `.deb`: o `prerm` deixa um bilhete em
+`/run/ditador.estava-ativo` e o `postinst` religa. O `instalar.sh` tinha o mesmo
+problema e nenhuma das duas metades.
+
+**Solução** — perguntar `systemctl --user is-active --quiet ditador` **antes** do
+`--encerrar`, guardar a resposta, e dar `restart` no fim (depois do
+`daemon-reload`, porque o arquivo da unidade acabou de ser reescrito). Quem não
+tinha o serviço de pé continua sem ele.
+
+**Prevenção** — todo caminho que encerra o Ditador para mexer nos arquivos dele
+precisa lembrar de religá-lo. `Restart=on-failure` não cobre saída limpa, e é
+assim de propósito: `Restart=always` faria o `--encerrar` do usuário não valer
+nada.
+
+**Arquivos** — `instalar.sh`, `assets/ditador.service`, `empacotar.sh` (o
+`prerm`/`postinst`, para comparar).
+
+## Empacotamento — o `.deb` saía com um arquivo gravável pelo grupo, conforme a umask de quem empacotou
+
+**Contexto** — `./empacotar.sh` rodado numa máquina com `umask 002`, que é o
+padrão do Ubuntu para contas com grupo próprio.
+
+**Sintoma** — dentro do pacote, `usr/share/doc/<pacote>/changelog.Debian.gz` com
+permissão `664` enquanto todo o resto ia `644`. Não quebra a instalação; é o tipo
+de coisa que o `lintian` acusa (`non-standard-file-perm`) e que muda conforme a
+máquina — num agente do GitHub, com `umask 022`, o mesmo script produz `644` e o
+problema não existe.
+
+**Causa** — quase todos os arquivos entram na árvore por `install -Dm644`, que
+grava o modo explicitamente. O changelog não: ele é gerado por um `printf … |
+gzip > arquivo`, e um `>` do shell cria o arquivo com `666` menos a umask. O
+`copyright`, que nasce do mesmo jeito, já tinha um `chmod 644` logo abaixo — a
+linha existia por este exato motivo e não foi repetida para o vizinho.
+
+**Solução** — o `chmod 644` que faltava, mais uma **conferência do resultado**
+antes do `dpkg-deb`: nada dentro da árvore pode ser gravável por grupo ou por
+outros (`find "$RAIZ" -perm /022`). É a mesma ideia da conferência do `objdump`
+que já existia ali — olhar o pacote pronto, e não confiar em ter feito tudo
+certo pelo caminho.
+
+**Prevenção** — modo de arquivo que sai de um redirecionamento do shell depende
+da umask de quem roda; modo que sai de `install -m` não. Numa árvore que vira
+pacote, tudo o que nasce por `>` precisa de `chmod` explícito — e a rede que
+confere o conjunto é mais barata do que lembrar disso.
+
+**Comandos** — a pergunta, para qualquer `.deb`:
+
+```
+dpkg-deb -c pacote.deb | grep -E '^.{2}.{3}w|^.{2}.{6}w'
+```
+
+**Arquivos** — `empacotar.sh`.
 
 ## Empacotamento — o `.deb` publicado morre com `Illegal instruction` ao carregar o modelo
 

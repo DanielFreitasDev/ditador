@@ -672,6 +672,35 @@ investigação que produziu o conhecimento — sintoma, diagnóstico, o que se t
 - **O SHA-256 de um modelo da Hugging Face é o `x-linked-etag`, não o `etag`.** O primeiro vem no
   redirecionamento e é o `lfs.oid`; o segundo vem na resposta final do CDN e é o hash do Xet. Conferir
   contra o `etag` reprova **todo** download bom. Detalhes em `docs/LEARNINGS.md`.
+- **Antes de escrever em `state.view`, pergunte de quem é a janela agora** — `state.gravando()` ou
+  `view == View::Settings` quer dizer que ela é de outra coisa. A regra já existe em
+  `resultado_pode_aparecer`, mas ela mora dentro do `on_transcription`: quem chega por outro caminho
+  não a herda. Já foi furada cinco vezes, as duas últimas pela colagem que falha (que subia a tela de
+  resultado com o campo **vazio**, porque o `start_recording` do ditado novo já tinha limpado o
+  `text`) e pela falha do microfone (que trocava as configurações por uma tela de erro e levava o
+  rascunho junto). Ocupada a janela, sobra a linha do journal — e ela basta.
+- **Toda saída da tela de configurações encerra a captura de atalho**, e não só o botão "Cancelar"
+  dela. O "Ver as transcrições" deixava `capturando` de pé e o ouvinte em modo de captura numa tela
+  que não o explica: o atalho de ditar parava de ditar e o aperto seguinte virava um rascunho que
+  ninguém ia salvar. Pelo mesmo motivo, `hotkey::sair_da_captura` repõe o `cancelar_engatado` a
+  partir do teclado de agora — dentro da captura o `conferir_cancelar` não roda, e a marca sai de lá
+  desencontrada da realidade.
+- **Tela que mostra tempo decorrido, prazo ou aviso que expira precisa entrar em
+  `ui::cadencia_de_repintura`.** A janela só é redesenhada quando o `Sinal` avisa, e nem o relógio de
+  parede nem o `copied_at` de três segundos são estado que mude. A lista de transcrições ficou de
+  fora e congelava o "há 5 min" de cada frase, com o aviso verde de uma cópia velha na tela para
+  sempre. A função é separada e tem teste porque a resposta errada aqui não derruba nada, não
+  aparece em teste de tela nenhum e não deixa rastro no log.
+- **A assinatura de um modelo GGML no disco é `6c 6d 67 67` — lida como texto, `lmgg`.** O
+  whisper.cpp grava o inteiro `0x67676d6c` na ordem nativa da máquina, e comparar com a string
+  `"ggml"` **reprova todo download bom**. O erro já foi cometido duas vezes: uma no `src/modelo.rs`
+  e outra, que sobreviveu à primeira correção, no `baixar-modelo.sh`. Hoje há um teste em Rust que
+  lê a linha do script — conferência duplicada em duas linguagens precisa de um teste que leia as
+  duas.
+- **Quem encerra o Ditador para mexer nos arquivos dele precisa religá-lo.** `ditador --encerrar` sai
+  com código zero e a unidade é `Restart=on-failure`: para o systemd o programa terminou de
+  propósito, e ele fica parado até o próximo login. O `postinst` do `.deb` resolve isso com um
+  bilhete em `/run`; o `instalar.sh` pergunta `is-active` antes e dá `restart` no fim.
 - **Nenhum argumento de uma chamada que trave o estado pode vir de `lock(&shared)`.** O `MutexGuard`
   temporário vive até o fim da expressão, então `on_stt(Evento { ditado: b.estado().ditado_atual, .. })`
   trava o teste para sempre — sem falhar e sem mensagem. Tire o valor antes da chamada.
