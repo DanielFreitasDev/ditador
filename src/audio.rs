@@ -35,7 +35,7 @@ use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -71,9 +71,12 @@ pub struct AudioSettings {
 impl AudioSettings {
     /// Mudanças que obrigam a reabrir o dispositivo.
     ///
-    /// `max_secs` não entra: ele só dimensiona o buffer e é lido a cada
-    /// gravação. Reabrir por causa dele fecharia o microfone de quem mexeu num
-    /// deslizante que não tem nada a ver com o aparelho.
+    /// `max_secs` não entra: reabrir por causa dele fecharia o microfone de quem
+    /// mexeu num deslizante que não tem nada a ver com o aparelho. Quem paga
+    /// esse preço é o `Captura::ajustar_o_teto`, que troca o teto com o stream
+    /// de pé — e ele existe porque esta linha já disse, por um tempo, que o teto
+    /// "é lido a cada gravação". Não era: ele era lido uma vez, no `abrir`, e no
+    /// modo sempre aberto isso significava um `abrir` por execução do programa.
     fn pede_reabertura(&self, outra: &AudioSettings) -> bool {
         self.device != outra.device || self.canal != outra.canal
     }
@@ -247,7 +250,16 @@ struct Captura {
     /// Quantas amostras o anel guarda.
     pre_maximo: usize,
     /// Teto de amostras de uma gravação.
-    max_samples: usize,
+    ///
+    /// Atômico porque ele muda **sem** o dispositivo ser reaberto. No modo
+    /// sempre aberto — o padrão desde a 0.7 — o stream fica de pé entre os
+    /// ditados, e o teto era lido uma vez só, na abertura: quem mexesse no
+    /// "Gravação máxima" das configurações continuava sendo cortado no valor
+    /// antigo até reiniciar o programa, sem nada dizendo por quê. O
+    /// `pede_reabertura` não o inclui de propósito (reabrir por causa de um
+    /// deslizante fecharia o microfone de quem só arrastou um controle), e a
+    /// contrapartida disso é ele ser ajustável de fora.
+    max_samples: AtomicUsize,
     /// O dispositivo sumiu.
     ///
     /// Marcada pelo callback de erro do cpal e lida pela ronda de `run`. É por
@@ -270,7 +282,7 @@ impl Captura {
             buffer: Mutex::new(Vec::with_capacity(max_samples)),
             pre: Mutex::new(VecDeque::with_capacity(pre_maximo)),
             pre_maximo,
-            max_samples,
+            max_samples: AtomicUsize::new(max_samples),
             perdido: AtomicBool::new(false),
         }
     }
@@ -281,7 +293,7 @@ impl Captura {
             let mut buf = lock(&self.buffer);
             // Teto batido: para de acumular e deixa a ronda de `run` encerrar a
             // gravação, o que acontece na volta seguinte dela.
-            if buf.len() < self.max_samples {
+            if buf.len() < self.teto() {
                 buf.push(valor);
             }
             return;
@@ -296,10 +308,35 @@ impl Captura {
         pre.push_back(valor);
     }
 
+    /// O teto de amostras que vale agora.
+    fn teto(&self) -> usize {
+        self.max_samples.load(Ordering::Relaxed)
+    }
+
+    /// Troca o teto de duração sem fechar o microfone.
+    ///
+    /// Chamada pela thread de comandos ao receber um `Configure`, e nunca de
+    /// dentro do callback de áudio — a reserva do buffer aloca, e alocar em
+    /// tempo real é justamente o que ela existe para evitar.
+    fn ajustar_o_teto(&self, max_samples: usize) {
+        if self.teto() == max_samples {
+            return;
+        }
+        self.max_samples.store(max_samples, Ordering::Relaxed);
+        lock(&self.buffer).reserve(max_samples);
+    }
+
     /// Começa a guardar, levando junto o que já estava no anel.
     fn comecar(&self) {
         let mut buf = lock(&self.buffer);
         buf.clear();
+        // O `terminar` leva a alocação embora junto com as amostras — é o que
+        // evita copiar megabytes para entregá-las —, então do segundo ditado em
+        // diante o buffer voltava a nascer vazio e crescia dentro do callback de
+        // áudio, que é o que o `with_capacity` do `nova` existia para impedir.
+        // Reservar aqui repõe a promessa a cada gravação, e nesta thread, que
+        // pode esperar o alocador.
+        buf.reserve(self.teto());
         // A ordem importa: o anel é despejado **antes** de a bandeira subir,
         // senão as amostras que chegarem no meio do despejo entrariam no buffer
         // à frente das que já estavam no anel — e o ditado começaria com um
@@ -326,12 +363,21 @@ impl Captura {
     }
 
     fn cheia(&self) -> bool {
-        self.quantas() >= self.max_samples
+        self.quantas() >= self.teto()
     }
 
     fn perdeu_o_dispositivo(&self) -> bool {
         self.perdido.load(Ordering::Relaxed)
     }
+}
+
+/// Quantas amostras cabem no teto de duração, nesta taxa de amostragem.
+///
+/// Mora fora do `abrir` porque a conta é feita em dois momentos — ao abrir o
+/// dispositivo e a cada `Configure` que mude o teto com ele já aberto —, e duas
+/// cópias dela é o começo de os dois discordarem.
+fn teto_em_amostras(max_secs: u64, sample_rate: u32) -> usize {
+    (max_secs.max(1) as usize) * sample_rate as usize
 }
 
 /// O microfone aberto: o stream do cpal mais o que ele alimenta.
@@ -437,6 +483,17 @@ fn run(
                 if reabrir || modo_mudou || !settings.sempre_aberto {
                     estado.aberto = None;
                     estado.reabrir_em = None;
+                }
+                // O teto de duração não pede reabertura — reabrir por causa de
+                // um deslizante fecharia o microfone de quem só arrastou um
+                // controle —, e por isso ele precisa ser aplicado à mão no
+                // dispositivo que ficou aberto. Sem esta linha, no modo sempre
+                // aberto (o padrão) o "Gravação máxima" das configurações não
+                // valia até o programa ser reiniciado.
+                if let Some(aberto) = &estado.aberto {
+                    aberto
+                        .captura
+                        .ajustar_o_teto(teto_em_amostras(settings.max_secs, aberto.sample_rate));
                 }
                 if settings.sempre_aberto && estado.aberto.is_none() {
                     abrir_ou_agendar(
@@ -653,7 +710,7 @@ fn abrir(settings: &AudioSettings, levels: &Levels) -> Result<Aberto> {
     let (config, sample_format) = pick_config(&device)?;
     let sample_rate = config.sample_rate;
     let channels = config.channels as usize;
-    let max_samples = (settings.max_secs.max(1) as usize) * sample_rate as usize;
+    let max_samples = teto_em_amostras(settings.max_secs, sample_rate);
     let pre_maximo = if settings.sempre_aberto {
         (PRE_GRAVACAO_MS as usize * sample_rate as usize) / 1000
     } else {
@@ -962,6 +1019,78 @@ mod tests {
 
         c.comecar();
         assert_eq!(c.terminar(), Vec::<f32>::new(), "o cancelado voltou depois");
+    }
+
+    #[test]
+    fn o_teto_novo_vale_sem_o_microfone_ser_reaberto() {
+        // O defeito: no modo sempre aberto — o padrão desde a 0.7 — o
+        // dispositivo fica de pé entre os ditados, e o teto de duração era lido
+        // uma vez só, na abertura. Quem arrastasse o "Gravação máxima" das
+        // configurações continuava sendo cortado no valor antigo até reiniciar o
+        // programa, e nada na tela dizia isso. O `pede_reabertura` não inclui o
+        // teto de propósito, então a única saída é ajustá-lo com o microfone
+        // aberto.
+        let c = captura(0, 3);
+        c.comecar();
+        for v in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            c.amostra(v);
+        }
+        assert_eq!(c.terminar(), vec![1.0, 2.0, 3.0]);
+
+        c.ajustar_o_teto(5);
+        c.comecar();
+        for v in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            c.amostra(v);
+        }
+        assert!(
+            c.cheia(),
+            "a ronda não vai encerrar a gravação no teto novo"
+        );
+        assert_eq!(
+            c.terminar(),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            "o teto novo não valeu: o áudio foi cortado no antigo"
+        );
+
+        // E para baixo também, que é o caso de quem reduz o limite.
+        c.ajustar_o_teto(2);
+        c.comecar();
+        for v in [1.0, 2.0, 3.0] {
+            c.amostra(v);
+        }
+        assert_eq!(c.terminar(), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn o_teto_em_amostras_e_a_mesma_conta_nos_dois_lugares() {
+        // Ela é feita ao abrir o dispositivo e a cada `Configure`; duas cópias
+        // dela é o começo de os dois discordarem.
+        assert_eq!(teto_em_amostras(120, 16_000), 1_920_000);
+        assert_eq!(teto_em_amostras(1, 48_000), 48_000);
+        // Zero segundos vem de um `config.json` editado à mão. Um teto de zero
+        // amostras faria toda gravação nascer cheia e ser encerrada na primeira
+        // ronda — um segundo é o piso.
+        assert_eq!(teto_em_amostras(0, 16_000), 16_000);
+    }
+
+    #[test]
+    fn o_buffer_de_cada_ditado_nasce_com_espaco_para_o_teto_inteiro() {
+        // O `terminar` leva a alocação embora junto com as amostras, que é o
+        // que evita copiar megabytes para entregá-las. Do segundo ditado em
+        // diante o buffer voltava a nascer com capacidade zero e crescia dentro
+        // do callback de áudio — um `realloc` com cópia de tudo em tempo real,
+        // que é exatamente o que o `with_capacity` do `nova` existia para
+        // impedir e que ninguém percebia porque o primeiro ditado ia bem.
+        let c = captura(0, 1_000);
+        c.comecar();
+        c.amostra(1.0);
+        let _ = c.terminar();
+
+        c.comecar();
+        assert!(
+            lock(&c.buffer).capacity() >= 1_000,
+            "o buffer do segundo ditado vai crescer dentro do callback de áudio"
+        );
     }
 
     #[test]
