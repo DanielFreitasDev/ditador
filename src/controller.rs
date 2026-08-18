@@ -213,10 +213,22 @@ impl Controller {
                 if ditado != state.ditado_atual {
                     return;
                 }
+                // O microfone fechou, e isso vale mesmo quando a tela pertence a
+                // outra coisa: é o `recording_since` que responde por "estamos
+                // ouvindo", e deixá-lo de pé prenderia o programa numa gravação
+                // que já não existe.
                 state.recording_since = None;
-                state.message = format!("Não consegui acessar o microfone: {message}");
-                state.erro_e_so_espera = false;
-                state.view = View::Error;
+                // A tela de configurações é intocável, pelo mesmo motivo que já
+                // vale para a falha da transcrição e para o fim da gravação:
+                // reabri-la refaz o rascunho, então uma tela de erro por cima
+                // dela apaga o que a pessoa estava digitando. O relato não se
+                // perde — ele está no journal, na linha acima, e o aviso sonoro
+                // abaixo continua tocando.
+                if state.view != View::Settings {
+                    state.message = format!("Não consegui acessar o microfone: {message}");
+                    state.erro_e_so_espera = false;
+                    state.view = View::Error;
+                }
                 let aviso = state.config.sons;
                 drop(state);
                 // O aviso sonoro importa mais aqui do que em qualquer outro
@@ -560,21 +572,7 @@ impl Controller {
             .spawn(move || {
                 std::thread::sleep(Self::ESPERA_ANTES_DE_COLAR);
                 if let Err(e) = clipboard::paste(metodo, &texto) {
-                    log::warn!("a colagem falhou: {e:#}");
-                    let mut state = lock(&shared);
-                    // A frase muda com o método: dizer "copiei, mas não
-                    // consegui colar" depois de uma digitação seria mentira —
-                    // ali nada foi copiado, e mandar a pessoa apertar Ctrl+V
-                    // colaria o que ela tinha copiado antes.
-                    state.message = if metodo.usa_a_area_de_transferencia() {
-                        format!("Copiei, mas não consegui colar: {e:#}")
-                    } else {
-                        format!("Não consegui digitar o texto: {e:#}")
-                    };
-                    state.erro_e_so_espera = false;
-                    state.view = View::Result;
-                    drop(state);
-                    sinal.mudou();
+                    Self::contar_a_falha_na_colagem(&shared, &sinal, metodo, &format!("{e:#}"));
                     return;
                 }
 
@@ -591,6 +589,47 @@ impl Controller {
                     log::warn!("colei, mas não consegui apertar a tecla de envio: {e:#}");
                 }
             });
+    }
+
+    /// Conta na tela que a entrega do texto não deu certo.
+    ///
+    /// A tela só é tomada quando ela está livre, e "livre" é o mesmo de sempre:
+    /// ninguém gravando e ninguém nas configurações. A colagem acontece um
+    /// quarto de segundo **depois** de o texto ficar pronto, e nesse intervalo
+    /// cabe um ditado novo inteiro — tomando a janela assim mesmo, o que
+    /// aparecia por cima de quem está falando (sempre-no-topo, como todas as
+    /// nossas) era um campo de texto **vazio**, porque o `start_recording` já
+    /// tinha limpado o `text`. Nas configurações o preço é outro e igualmente
+    /// ruim: o rascunho digitado se perde ao reabrir.
+    ///
+    /// Ocupada a janela, o relato não se perde — ele está no journal, na linha
+    /// que esta função escreve antes de tocar em qualquer coisa. É o mesmo
+    /// desfecho que o `SttEvent::Failed` já escolhia.
+    fn contar_a_falha_na_colagem(
+        shared: &SharedState,
+        sinal: &Sinal,
+        metodo: MetodoDeColagem,
+        erro: &str,
+    ) {
+        log::warn!("a colagem falhou: {erro}");
+        {
+            let mut state = lock(shared);
+            if state.gravando() || state.view == View::Settings {
+                return;
+            }
+            // A frase muda com o método: dizer "copiei, mas não consegui colar"
+            // depois de uma digitação seria mentira — ali nada foi copiado, e
+            // mandar a pessoa apertar Ctrl+V colaria o que ela tinha copiado
+            // antes.
+            state.message = if metodo.usa_a_area_de_transferencia() {
+                format!("Copiei, mas não consegui colar: {erro}")
+            } else {
+                format!("Não consegui digitar o texto: {erro}")
+            };
+            state.erro_e_so_espera = false;
+            state.view = View::Result;
+        }
+        sinal.mudou();
     }
 
     fn on_ui(&self, action: UiAction) {
@@ -1601,6 +1640,91 @@ mod tests {
             b.controlador.do_ditado(primeiro).map(|g| g.duracao_ms),
             Some(1_000),
             "o ditado descartado levou o histórico de quem ainda estava sendo transcrito"
+        );
+    }
+
+    #[test]
+    fn a_falha_do_microfone_nao_atropela_a_tela_de_configuracoes() {
+        // Mesmo critério que o `SttEvent::Failed` já aplica, e que o comentário
+        // de lá dizia — erradamente — que o áudio também aplicava: quem está
+        // mexendo nas configurações é dono da janela. Trocando-a por uma tela de
+        // erro, o rascunho digitado se perde ao reabrir, e o relato do microfone
+        // não vale isso: ele está no journal, na linha que o controlador escreve
+        // antes de tocar no estado.
+        let b = Bancada::nova();
+        b.controlador.on_hotkey(HotkeyEvent::Down);
+        let ditado = b.estado().ditado_atual;
+        b.controlador.on_ui(UiAction::OpenSettings);
+        b.limpar();
+        b.estado().draft.initial_prompt = "o que a pessoa estava digitando".to_string();
+
+        b.controlador.on_audio(AudioEvent::Failed {
+            ditado,
+            message: "o microfone sumiu".to_string(),
+        });
+
+        assert_eq!(
+            b.estado().view,
+            View::Settings,
+            "a tela de erro do microfone tomou as configurações"
+        );
+        assert_eq!(
+            b.estado().draft.initial_prompt,
+            "o que a pessoa estava digitando",
+            "o rascunho se perdeu"
+        );
+
+        // Sem ninguém nas configurações, a mesma falha aparece como sempre.
+        b.controlador.on_ui(UiAction::CloseSettings);
+        b.controlador.on_hotkey(HotkeyEvent::Down);
+        let ditado = b.estado().ditado_atual;
+        b.controlador.on_audio(AudioEvent::Failed {
+            ditado,
+            message: "o microfone sumiu".to_string(),
+        });
+        assert_eq!(b.estado().view, View::Error);
+    }
+
+    #[test]
+    fn a_falha_da_colagem_nao_toma_a_tela_de_quem_fala_agora() {
+        // A colagem acontece um quarto de segundo depois de o texto ficar
+        // pronto, e nesse intervalo cabe um ditado novo inteiro. A janela de
+        // resultado é sempre-no-topo, e a essa altura o `start_recording` já
+        // limpou o `text`: o que apareceria por cima de quem está falando é um
+        // campo vazio com uma mensagem de erro.
+        let b = Bancada::nova();
+        b.controlador.on_hotkey(HotkeyEvent::Down);
+        b.limpar();
+
+        Controller::contar_a_falha_na_colagem(
+            &b.controlador.shared,
+            &b.controlador.sinal,
+            MetodoDeColagem::CtrlV,
+            "o ydotool não respondeu",
+        );
+
+        assert_eq!(
+            b.estado().view,
+            View::Recording,
+            "a janela de erro da colagem apareceu por cima de um ditado em andamento"
+        );
+
+        // Parado, ela aparece — é a única forma de a pessoa saber que o texto
+        // ficou só na área de transferência.
+        b.controlador.on_hotkey(HotkeyEvent::Up);
+        b.estado().recording_since = None;
+        b.estado().view = View::Hidden;
+        Controller::contar_a_falha_na_colagem(
+            &b.controlador.shared,
+            &b.controlador.sinal,
+            MetodoDeColagem::CtrlV,
+            "o ydotool não respondeu",
+        );
+        assert_eq!(b.estado().view, View::Result);
+        assert!(
+            b.estado()
+                .message
+                .starts_with("Copiei, mas não consegui colar")
         );
     }
 }
