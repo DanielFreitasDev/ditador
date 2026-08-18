@@ -369,6 +369,32 @@ no mesmo passo em que grava a versão — não há mais como publicar sem ela. A
 sem tag de propósito: uma tag inventada meses depois aponta para um commit que nunca foi empacotado nem
 publicado, e mentir sobre isso é pior do que a lacuna.
 
+### Terminar dizendo como atualizar esta máquina
+
+**Toda tarefa que publica uma versão termina com os comandos de atualizar** — curtos, prontos para
+colar, na ordem certa. Publicar não é terminar: a versão nova fica no GitHub e a máquina de quem
+pediu continua rodando a velha, sem nada avisando. Já aconteceu de o aplicativo aqui ficar três
+versões atrás da que estava publicada, e da extensão do GNOME ficar cinco.
+
+**Confira como está instalado antes de escrever os comandos**, porque os caminhos não se misturam e
+o errado não faz nada:
+
+```
+which ditador                                     # ~/.local/bin = manual · /usr/bin = .deb
+dpkg -l ditador ditador-cpu ditador-cuda 2>/dev/null | grep ^ii
+gnome-extensions info ditador@danielfreitasdev.github.io
+kpackagetool6 --type Plasma/Applet --list | grep ditador
+```
+
+| Instalado por | Atualizar com |
+|---|---|
+| `./instalar.sh` (`~/.local/bin`) | `git pull && ./instalar.sh [vulkan\|cpu\|cuda]` — desde a 0.7.3 ele religa o serviço sozinho |
+| `.deb` (`/usr/bin`) | baixar o `.deb` da release e `sudo apt install ./ditador-*.deb` |
+| extensão do GNOME | `./gnome-extension/instalar.sh` e **sair da sessão e entrar** — atualizar o código de uma extensão já conhecida pede login novo |
+| widget do Plasma | `./kde-plasma/instalar.sh` e `systemctl --user restart plasma-plasmashell` |
+
+E a linha que confirma que deu certo: `ditador --versao`.
+
 ## Commits
 
 Assunto em português, sentence case, sem prefixo e sem conventional commits — descreve o efeito, não o arquivo
