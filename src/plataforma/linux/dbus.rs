@@ -51,6 +51,42 @@ pub const NOME: &str = "io.github.danielfreitasdev.Ditador";
 /// Onde o objeto mora.
 pub const CAMINHO: &str = "/io/github/danielfreitasdev/Ditador";
 
+/// Outra conexão pode nos tomar o nome? **Não.**
+///
+/// Este e o [`SUBSTITUIMOS_QUEM_JA_TEM`] existem porque o padrão do zbus é o
+/// contrário dos dois, e o preço disso foi medido numa máquina de verdade.
+/// `BitFlags::<RequestNameFlags>::default()` — que é o que o `Builder` usa
+/// quando ninguém diz nada — vale
+/// `AllowReplacement | ReplaceExisting | DoNotQueue`. Quer dizer que todo
+/// Ditador pedia o nome oferecendo-o de bandeja a quem viesse depois, e ao
+/// mesmo tempo tomando-o de quem já estava lá.
+///
+/// O estrago é silencioso e não tem volta. Um segundo Ditador que suba por
+/// qualquer motivo — a instância única só barra quem consegue tomar o socket de
+/// controle, e o caminho `SemSocket` existe justamente para quando ele não dá —
+/// **rouba** o nome do que está rodando, e os dois escrevem no journal a mesma
+/// linha dizendo que a interface subiu. Quando o intruso morre, o nome fica sem
+/// dono nenhum: `DoNotQueue` impede o legítimo de voltar para a fila, e ele
+/// segue de pé sem barramento, sem uma linha de log a respeito e sem nada que o
+/// faça tentar de novo.
+///
+/// Para quem usa, o sintoma é este: a extensão do GNOME (ou o widget do Plasma)
+/// passa a dizer "Indisponível", **e o ícone da bandeja não volta** — o nome da
+/// extensão continua no barramento, então `Integracoes::gnome` continua
+/// verdadeiro e o `tray.rs` continua achando que alguém já mostra o Ditador na
+/// barra. Fica-se sem ícone, sem OSD e sem a janela de gravação, com o programa
+/// ditando normalmente. Foi exatamente assim que este defeito foi encontrado.
+///
+/// Com os dois em `false` o barramento faz o que se espera de um programa de
+/// instância única: quem chegou primeiro fica com o nome, e o segundo recebe
+/// `NameTaken` e segue sem interface D-Bus — que é o degrau abaixo certo, e o
+/// que a linha de log ao lado do `build` já dizia.
+const PODE_SER_SUBSTITUIDO: bool = false;
+
+/// E nós tomamos o nome de quem chegou antes? **Também não.** Veja
+/// [`PODE_SER_SUBSTITUIDO`].
+const SUBSTITUIMOS_QUEM_JA_TEM: bool = false;
+
 /// O nome que a extensão do GNOME segura enquanto está habilitada.
 ///
 /// É a única coisa que ela precisa publicar, e é o que faz o ícone da bandeja
@@ -180,6 +216,21 @@ impl Servico {
     ) -> zbus::Result<()>;
 }
 
+/// Pede o nome bem-conhecido, com as duas ressalvas que o padrão do zbus não
+/// tem — veja [`PODE_SER_SUBSTITUIDO`].
+///
+/// É uma função, e não duas linhas soltas dentro do `start`, para que o teste
+/// que prova o roubo peça o nome exatamente como o programa pede. Copiadas lá,
+/// o teste passaria a conferir a si mesmo.
+fn pedir_o_nome(
+    builder: zbus::blocking::connection::Builder<'_>,
+) -> zbus::Result<zbus::blocking::connection::Builder<'_>> {
+    builder
+        .allow_name_replacements(PODE_SER_SUBSTITUIDO)
+        .replace_existing_names(SUBSTITUIMOS_QUEM_JA_TEM)
+        .name(NOME)
+}
+
 /// Publica a interface e a mantém em dia. Como a bandeja, não devolve erro:
 /// ficar sem D-Bus custa as integrações de desktop, não o ditado.
 pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>, niveis: Levels) {
@@ -187,7 +238,7 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>, n
     let retrato = Retrato::tirar(&shared, None);
 
     let conexao = match zbus::blocking::connection::Builder::session()
-        .and_then(|b| b.name(NOME))
+        .and_then(pedir_o_nome)
         .and_then(|b| {
             b.serve_at(
                 CAMINHO,
@@ -215,13 +266,29 @@ pub fn start(shared: SharedState, sinal: &Sinal, comandos: Sender<IpcCommand>, n
         .name("dbus".into())
         .spawn(move || {
             let mut atual = retrato;
+            // Uma publicação que falha é quase sempre a conexão que caiu, e daí
+            // em diante *todas* falham. A primeira sai como aviso, porque uma
+            // integração que parou de receber estado é coisa que se quer ler no
+            // journal; as seguintes voltam a ser depuração, senão cada ditado
+            // encheria o log com a mesma linha.
+            let mut ja_avisei = false;
             while mudancas.recv().is_ok() {
                 let novo = Retrato::tirar(&shared, Some(&atual));
                 if novo == atual {
                     continue;
                 }
-                if let Err(e) = publicar(&conexao, &atual, &novo) {
-                    log::debug!("não consegui publicar a mudança de estado: {e}");
+                match publicar(&conexao, &atual, &novo) {
+                    Ok(()) => ja_avisei = false,
+                    Err(e) if ja_avisei => {
+                        log::debug!("não consegui publicar a mudança de estado: {e}");
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "não consegui publicar a mudança de estado no barramento ({e}); \
+                             as integrações do desktop param de acompanhar o Ditador"
+                        );
+                        ja_avisei = true;
+                    }
                 }
                 atual = novo;
             }
@@ -475,8 +542,29 @@ fn vigiar(
                 let Ok(args) = aviso.args() else { continue };
                 anotar(&shared, &sinal, qual, args.new_owner().is_some());
             }
+            desistir_de_vigiar(&shared, &sinal, qual);
         })
         .expect("spawn thread de vigília");
+}
+
+/// O fluxo de avisos acabou: a conexão com o barramento morreu, e daqui em
+/// diante esta vigília não sabe mais de nada.
+///
+/// A resposta certa é "não há integração nenhuma", e não o silêncio. Parando com
+/// a última anotação de pé, o `tray.rs` continuaria achando que alguém já mostra
+/// o Ditador na barra e não republicaria o ícone, e o `tela_visivel` continuaria
+/// escondendo a tela de gravação por causa de um OSD que ninguém mais desenha —
+/// o programa seguiria ditando sem nada na tela dizendo isso, que é o pior
+/// desfecho possível para uma conexão que caiu.
+///
+/// Assumir que a integração saiu erra no lado barato: se ela ainda estiver lá,
+/// aparecem dois ícones. Errando para o outro lado, não aparece nenhum.
+fn desistir_de_vigiar(shared: &SharedState, sinal: &Sinal, qual: Qual) {
+    log::warn!(
+        "perdi o barramento de sessão; deixo de vigiar a {} e assumo que ela saiu",
+        qual.como_se_chama()
+    );
+    anotar(shared, sinal, qual, false);
 }
 
 fn anotar(shared: &SharedState, sinal: &Sinal, qual: Qual, presente: bool) {
@@ -655,5 +743,137 @@ mod tests {
         assert_eq!(EstadoPublico::Gravando.nome(), "gravando");
         assert_eq!(EstadoPublico::Transcrevendo.nome(), "transcrevendo");
         assert_eq!(EstadoPublico::Erro.nome(), "erro");
+    }
+
+    #[test]
+    fn o_barramento_que_cai_devolve_o_icone_e_a_tela_de_gravacao() {
+        use crate::state::View;
+
+        // A outra metade do mesmo defeito. A vigília das integrações vive de um
+        // fluxo de avisos do barramento, e esse fluxo acaba quando a conexão
+        // morre. Antes, a thread simplesmente terminava — e a última anotação
+        // ficava valendo para sempre: com a extensão do GNOME marcada como
+        // presente, o `tray.rs` não republicava o ícone e o `tela_visivel`
+        // continuava escondendo a gravação por causa de um OSD que ninguém mais
+        // desenhava. O Ditador seguia ditando sem ícone, sem aviso e sem janela.
+        let shared = bancada();
+        let sinal = Sinal::default();
+
+        anotar(&shared, &sinal, Qual::Gnome, true);
+        anotar(&shared, &sinal, Qual::Plasma, true);
+        {
+            let mut estado = lock(&shared);
+            estado.view = View::Recording;
+            assert!(estado.integracoes.mostram_o_icone());
+            assert_eq!(estado.tela_visivel(), View::Hidden);
+        }
+
+        desistir_de_vigiar(&shared, &sinal, Qual::Gnome);
+        desistir_de_vigiar(&shared, &sinal, Qual::Plasma);
+
+        let estado = lock(&shared);
+        assert!(
+            !estado.integracoes.mostram_o_icone(),
+            "o ícone da bandeja não voltou depois de o barramento cair"
+        );
+        assert_eq!(
+            estado.tela_visivel(),
+            View::Recording,
+            "ninguém mais avisa que o microfone está aberto, e a nossa tela \
+             continuou escondida"
+        );
+    }
+
+    /// Sobe um barramento só deste teste e devolve o endereço dele, junto com o
+    /// processo para ser encerrado no fim.
+    ///
+    /// Um barramento próprio, e não o da sessão: o teste pede um nome
+    /// bem-conhecido e mede quem fica com ele, e fazer isso no barramento de
+    /// quem roda `cargo test` derrubaria a interface D-Bus do Ditador que essa
+    /// pessoa tem aberto — que é, palavra por palavra, o defeito que este teste
+    /// existe para impedir.
+    fn barramento_de_teste() -> Option<(String, std::process::Child)> {
+        use std::io::BufRead as _;
+
+        // A mesma pergunta que o `--diagnostico` faz sobre o curl: é uma
+        // ferramenta do sistema, e não estar lá é um fato sobre a máquina.
+        let programa = crate::programas::primeiro(&["dbus-daemon"])?;
+        let mut bus = std::process::Command::new(programa)
+            .args(["--session", "--print-address", "--nofork", "--nopidfile"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+
+        let mut endereco = String::new();
+        let saida = bus.stdout.take().expect("pedimos o stdout por cano");
+        if std::io::BufReader::new(saida)
+            .read_line(&mut endereco)
+            .is_err()
+            || endereco.is_empty()
+        {
+            let _ = bus.kill();
+            let _ = bus.wait();
+            return None;
+        }
+        Some((endereco.trim().to_string(), bus))
+    }
+
+    /// Pede o nome como o programa pede, num barramento qualquer.
+    fn conectar(endereco: &str) -> zbus::Result<zbus::blocking::Connection> {
+        zbus::blocking::connection::Builder::address(endereco)
+            .and_then(pedir_o_nome)
+            .and_then(|b| b.build())
+    }
+
+    #[test]
+    fn uma_segunda_instancia_nao_rouba_o_nome_da_que_ja_esta_no_ar() {
+        // O defeito, medido numa máquina de verdade: o padrão do zbus para as
+        // bandeiras do `RequestName` é
+        // `AllowReplacement | ReplaceExisting | DoNotQueue`, e com ele o segundo
+        // Ditador tomava o nome do primeiro. Os dois escreviam no journal a
+        // mesma linha dizendo que a interface tinha subido; quando o segundo
+        // saía, o nome ficava **sem dono nenhum**, e o primeiro seguia de pé,
+        // vivo e ditando, sem barramento e sem ícone na barra.
+        //
+        // É um teste de ponta a ponta porque o que se quer provar é o que o
+        // barramento faz, e não o que o nosso código acha que pediu.
+        let Some((endereco, mut bus)) = barramento_de_teste() else {
+            eprintln!(
+                "AVISO: `uma_segunda_instancia_nao_rouba_o_nome_da_que_ja_esta_no_ar` \
+                 não conferiu nada — o dbus-daemon não está nesta máquina."
+            );
+            return;
+        };
+
+        let primeira = conectar(&endereco).expect("a primeira precisa ficar com o nome");
+        let dona = primeira
+            .inner()
+            .unique_name()
+            .expect("conexão de barramento tem nome único")
+            .to_string();
+
+        let segunda = conectar(&endereco);
+        assert!(
+            segunda.is_err(),
+            "a segunda instância ficou com o nome do barramento — ela roubou o \
+             da primeira, que continua rodando"
+        );
+
+        // E a primeira continua dona: não basta a segunda ter recebido um erro,
+        // o que importa é de quem o barramento diz que o nome é.
+        let proxy = zbus::blocking::fdo::DBusProxy::new(&primeira).expect("proxy do barramento");
+        let agora = proxy
+            .get_name_owner(NOME.try_into().expect("nome válido"))
+            .expect("o nome precisa continuar tendo dono");
+        assert_eq!(
+            agora.as_str(),
+            dona,
+            "o nome mudou de dono com a primeira instância ainda de pé"
+        );
+
+        drop(primeira);
+        let _ = bus.kill();
+        let _ = bus.wait();
     }
 }
