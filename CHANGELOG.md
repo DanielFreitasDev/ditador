@@ -13,6 +13,18 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.8.0 — 2026-08-18
+
+### Novidades
+
+- Aparar o silêncio, soltar o modelo parado, avisar de versão nova e escolher modelo por lista ([`a4eae9d`](https://github.com/DanielFreitasDev/ditador/commit/a4eae9d80714e6626dd52a90d468b0af4838323c))
+
+### Correções e ajustes
+
+- Publicar uma versão passa a terminar com os comandos de atualizar a máquina ([`dde889e`](https://github.com/DanielFreitasDev/ditador/commit/dde889eca907add111b81c7583681c4aab53588b))
+
+[Todas as mudanças desde a `v0.7.3`](https://github.com/DanielFreitasDev/ditador/compare/v0.7.3...v0.8.0)
+
 ## 0.7.3 — 2026-08-18
 
 ### Correções e ajustes
