@@ -784,46 +784,66 @@ mod tests {
         );
     }
 
-    /// Sobe um barramento só deste teste e devolve o endereço dele, junto com o
-    /// processo para ser encerrado no fim.
+    /// Um barramento de sessão que existe só enquanto este teste roda.
     ///
     /// Um barramento próprio, e não o da sessão: o teste pede um nome
     /// bem-conhecido e mede quem fica com ele, e fazer isso no barramento de
     /// quem roda `cargo test` derrubaria a interface D-Bus do Ditador que essa
     /// pessoa tem aberto — que é, palavra por palavra, o defeito que este teste
     /// existe para impedir.
-    fn barramento_de_teste() -> Option<(String, std::process::Child)> {
-        use std::io::BufRead as _;
-
-        // A mesma pergunta que o `--diagnostico` faz sobre o curl: é uma
-        // ferramenta do sistema, e não estar lá é um fato sobre a máquina.
-        let programa = crate::programas::primeiro(&["dbus-daemon"])?;
-        let mut bus = std::process::Command::new(programa)
-            .args(["--session", "--print-address", "--nofork", "--nopidfile"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
-
-        let mut endereco = String::new();
-        let saida = bus.stdout.take().expect("pedimos o stdout por cano");
-        if std::io::BufReader::new(saida)
-            .read_line(&mut endereco)
-            .is_err()
-            || endereco.is_empty()
-        {
-            let _ = bus.kill();
-            let _ = bus.wait();
-            return None;
-        }
-        Some((endereco.trim().to_string(), bus))
+    ///
+    /// Ele se encerra no `Drop`, e não no fim do teste: um `assert!` que falha
+    /// desenrola a pilha sem chegar à última linha, e o `Drop` de um
+    /// `std::process::Child` não mata o processo. Sem isto, cada reprovação
+    /// deixaria um `dbus-daemon` vivo na máquina de quem estivesse investigando
+    /// — justamente quando ele mais atrapalha.
+    struct BarramentoDeTeste {
+        endereco: String,
+        processo: std::process::Child,
     }
 
-    /// Pede o nome como o programa pede, num barramento qualquer.
-    fn conectar(endereco: &str) -> zbus::Result<zbus::blocking::Connection> {
-        zbus::blocking::connection::Builder::address(endereco)
-            .and_then(pedir_o_nome)
-            .and_then(|b| b.build())
+    impl BarramentoDeTeste {
+        /// `None` quando não há `dbus-daemon` nesta máquina — a mesma pergunta
+        /// que o `--diagnostico` faz sobre o curl: é ferramenta do sistema, e
+        /// não estar lá é um fato sobre a máquina, não um defeito nosso.
+        fn subir() -> Option<Self> {
+            use std::io::BufRead as _;
+
+            let programa = crate::programas::primeiro(&["dbus-daemon"])?;
+            let mut processo = std::process::Command::new(programa)
+                .args(["--session", "--print-address", "--nofork", "--nopidfile"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+
+            let mut endereco = String::new();
+            let saida = processo.stdout.take().expect("pedimos o stdout por cano");
+            let leu = std::io::BufReader::new(saida).read_line(&mut endereco);
+            let barramento = Self {
+                endereco: endereco.trim().to_string(),
+                processo,
+            };
+            if leu.is_err() || barramento.endereco.is_empty() {
+                // O `Drop` encerra o processo; aqui só se desiste.
+                return None;
+            }
+            Some(barramento)
+        }
+
+        /// Pede o nome como o programa pede, neste barramento.
+        fn conectar(&self) -> zbus::Result<zbus::blocking::Connection> {
+            zbus::blocking::connection::Builder::address(self.endereco.as_str())
+                .and_then(pedir_o_nome)
+                .and_then(|b| b.build())
+        }
+    }
+
+    impl Drop for BarramentoDeTeste {
+        fn drop(&mut self) {
+            let _ = self.processo.kill();
+            let _ = self.processo.wait();
+        }
     }
 
     #[test]
@@ -838,7 +858,7 @@ mod tests {
         //
         // É um teste de ponta a ponta porque o que se quer provar é o que o
         // barramento faz, e não o que o nosso código acha que pediu.
-        let Some((endereco, mut bus)) = barramento_de_teste() else {
+        let Some(barramento) = BarramentoDeTeste::subir() else {
             eprintln!(
                 "AVISO: `uma_segunda_instancia_nao_rouba_o_nome_da_que_ja_esta_no_ar` \
                  não conferiu nada — o dbus-daemon não está nesta máquina."
@@ -846,14 +866,16 @@ mod tests {
             return;
         };
 
-        let primeira = conectar(&endereco).expect("a primeira precisa ficar com o nome");
+        let primeira = barramento
+            .conectar()
+            .expect("a primeira precisa ficar com o nome");
         let dona = primeira
             .inner()
             .unique_name()
             .expect("conexão de barramento tem nome único")
             .to_string();
 
-        let segunda = conectar(&endereco);
+        let segunda = barramento.conectar();
         assert!(
             segunda.is_err(),
             "a segunda instância ficou com o nome do barramento — ela roubou o \
@@ -871,9 +893,5 @@ mod tests {
             dona,
             "o nome mudou de dono com a primeira instância ainda de pé"
         );
-
-        drop(primeira);
-        let _ = bus.kill();
-        let _ = bus.wait();
     }
 }

@@ -538,6 +538,13 @@ resposta certa é sempre "quem chegou primeiro fica"; `ReplaceExisting` só faz
 sentido para quem substitui um serviço de propósito, e `AllowReplacement` só para
 quem quer ser substituído.
 
+E o padrão **muda de biblioteca para biblioteca**, o que é o que torna a
+armadilha traiçoeira: as outras duas integrações deste mesmo projeto acertam sem
+pedir nada. O `Gio.bus_own_name` da extensão do GNOME usa
+`BusNameOwnerFlags.NONE`, e o `registerService()` do widget do Plasma usa
+`DontAllowReplacement | DontQueueService`. Só o zbus traz as duas bandeiras
+perigosas no `Default`, e foi por isso que o defeito existiu só do lado Rust.
+
 E, do lado do diagnóstico: uma conexão de barramento que morre **não avisa
 ninguém**. Todo caminho que dependa dela precisa dizer no log quando falha —
 o `publicar` reprovado era um `log::debug!`, invisível no filtro padrão.
