@@ -148,13 +148,27 @@ fn registrar_em(
 
     let quando = agora();
 
-    // O nome do arquivo de áudio carrega o instante e o número do processo: dois
-    // ditados no mesmo segundo acontecem (falar de novo enquanto a frase
-    // anterior é transcrita é o uso normal deste programa), e dois Ditadores na
-    // mesma máquina também — um instalado e um compilado à mão, por exemplo.
+    // O nome do arquivo de áudio carrega o instante, o número do processo e um
+    // contador. Os três são necessários e cada um responde por um caso:
+    //
+    //  * o **instante** ordena os arquivos e diz de quando eles são;
+    //  * o **processo** separa dois Ditadores na mesma máquina — um instalado e
+    //    um compilado à mão, por exemplo;
+    //  * o **contador** separa dois ditados do *mesmo* processo no mesmo
+    //    segundo, que é o caso que faltava. Falar de novo enquanto a frase
+    //    anterior é transcrita é o uso normal deste programa, e o instante tem
+    //    resolução de segundo: as duas entradas ficavam com o mesmo nome, a
+    //    segunda gravava por cima da primeira, e quem fosse ouvir a primeira
+    //    ouvia a segunda.
+    //
+    // É a mesma receita do temporário do `config.rs`, e pelo mesmo motivo: um
+    // nome que precisa ser único entre threads de um processo que pode ter
+    // gêmeos na máquina.
+    static SEQUENCIA: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nome_do_audio = match (config.guardar_audio, audio) {
         (true, Some((amostras, taxa))) => {
-            let nome = format!("{quando}-{}.wav", std::process::id());
+            let n = SEQUENCIA.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let nome = format!("{quando}-{}-{n}.wav", std::process::id());
             let destino = pasta.join("audio");
             std::fs::create_dir_all(&destino)?;
             match gravar_wav(&destino.join(&nome), amostras, taxa) {
@@ -479,10 +493,10 @@ mod tests {
                 Some((&amostras, 16_000)),
             )
             .expect("gravando");
-            // O nome do arquivo carrega o instante, e cinco gravações no mesmo
-            // segundo produziriam o mesmo nome. Aqui isso é aceitável: o teste
-            // confere que não sobra órfão, e o mesmo nome reescrito é o caso
-            // mais desfavorável para essa conferência.
+            // Cinco nomes diferentes, mesmo tudo acontecendo no mesmo
+            // segundo: quem separa os ditados de um mesmo processo é o
+            // contador do nome. O que este teste confere é a outra ponta —
+            // que os três que saíram do teto não deixaram WAV para trás.
         }
 
         let lidas = ler_de(&dir.join("historico.jsonl"));
@@ -501,6 +515,64 @@ mod tests {
                 "sobrou um áudio órfão no disco: {nome}"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// As amostras de um WAV gravado por nós, para conferir de quem é o áudio.
+    fn amostras_do_wav(caminho: &Path) -> Vec<i16> {
+        let bytes = std::fs::read(caminho).expect("lendo o wav");
+        bytes[44..]
+            .chunks_exact(2)
+            .map(|par| i16::from_le_bytes([par[0], par[1]]))
+            .collect()
+    }
+
+    #[test]
+    fn dois_ditados_no_mesmo_segundo_nao_dividem_o_arquivo_de_audio() {
+        // Falar de novo enquanto a frase anterior é transcrita é o uso normal
+        // deste programa — o `controller.rs` diz isso em quatro lugares —, e
+        // duas transcrições podem terminar no mesmo segundo. O nome do arquivo
+        // carregava só o instante e o número do processo, e o número do processo
+        // é o mesmo nas duas: a segunda gravava por cima da primeira, e as duas
+        // entradas ficavam apontando para o áudio da segunda. Quem fosse
+        // conferir "o modelo entendeu errado ou eu falei errado?" — a única
+        // pergunta que o áudio existe para responder — ouviria outra frase.
+        let dir = pasta_de_teste("mesmo-segundo");
+        let com_audio = Historico {
+            ativo: true,
+            limite: 10,
+            guardar_audio: true,
+        };
+        // Dois áudios reconhecíveis: silêncio e fundo de escala.
+        let silencio = vec![0.0f32; 400];
+        let cheio = vec![1.0f32; 400];
+        registrar_em(&dir, &com_audio, "primeira", 100, Some((&silencio, 16_000))).expect("1ª");
+        registrar_em(&dir, &com_audio, "segunda", 100, Some((&cheio, 16_000))).expect("2ª");
+
+        let lidas = ler_de(&dir.join("historico.jsonl"));
+        assert_eq!(lidas.len(), 2);
+        let primeira = lidas[0].audio.as_deref().expect("a 1ª ficou sem áudio");
+        let segunda = lidas[1].audio.as_deref().expect("a 2ª ficou sem áudio");
+        assert_ne!(
+            primeira, segunda,
+            "as duas entradas apontam para o mesmo arquivo de áudio"
+        );
+
+        // E cada uma ficou com o áudio dela, que é o que importa de verdade:
+        // nomes diferentes com o conteúdo trocado seria o mesmo defeito.
+        let audio = dir.join("audio");
+        assert!(
+            amostras_do_wav(&audio.join(primeira))
+                .iter()
+                .all(|a| *a == 0),
+            "a primeira entrada ficou com o áudio da segunda"
+        );
+        assert!(
+            amostras_do_wav(&audio.join(segunda))
+                .iter()
+                .all(|a| *a == i16::MAX),
+            "a segunda entrada ficou com o áudio da primeira"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
