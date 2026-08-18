@@ -55,7 +55,20 @@ fi
 # Confere antes de dar o arquivo por bom. Um modelo truncado, ou a página de
 # erro de um proxy, trancava a instalação inteira: a partir daí tudo respondia
 # "já existe" e o único caminho de volta era apagar o arquivo à mão.
-if [ "$(head -c 4 "$PARCIAL")" != "ggml" ]; then
+#
+# **A assinatura no disco é `6c 6d 67 67`, e não os caracteres "ggml".** O
+# whisper.cpp grava o inteiro 0x67676d6c na ordem nativa da máquina, que em x86 e
+# ARM é little-endian: lido como texto, o começo do arquivo dá "lmgg". Esta linha
+# já esteve escrita como `!= "ggml"`, e nessa forma ela **reprovava todo download
+# bem-sucedido** — o script baixava os 574 MB, acusava a rede de ter devolvido
+# uma página e apagava o arquivo pelo `trap` da linha acima. O mesmo erro esteve
+# no `src/modelo.rs`, onde foi corrigido primeiro; aqui ficou. Hoje há um teste
+# (`o_script_confere_a_assinatura_na_ordem_em_que_ela_esta_no_disco`) lendo esta
+# linha, para que os dois lados não se separem de novo.
+#
+# A comparação é em hexadecimal, e não com os bytes crus: assim ela não depende
+# de a assinatura ser texto imprimível nem do locale de quem roda o script.
+if [ "$(head -c 4 "$PARCIAL" | od -An -tx1 | tr -d ' \n')" != "6c6d6767" ]; then
     echo "Erro: o arquivo baixado não é um modelo do Whisper." >&2
     echo "      A rede pode ter devolvido uma página no lugar dele." >&2
     exit 1

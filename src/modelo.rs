@@ -346,6 +346,44 @@ fn executar(
     Ok(destino.to_path_buf())
 }
 
+/// Este arquivo tem cara de modelo do Whisper?
+///
+/// Só o começo dele: todo modelo do whisper.cpp abre com a assinatura GGML, o
+/// inteiro `0x67676d6c`. Pega o caso em que um proxy ou portal cativo entregou
+/// uma página HTML com o status 200 que o `--fail` do curl não recusa, e o do
+/// arquivo que ficou vazio.
+///
+/// **A leitura é como inteiro little-endian, e não como os quatro caracteres
+/// "ggml".** O whisper.cpp grava o número na ordem nativa da máquina, que em x86
+/// e ARM é little-endian: no disco os bytes saem invertidos, `6c 6d 67 67`, que
+/// lidos como texto dão "lmgg".
+///
+/// Esta conferência já esteve escrita como `assinatura != b"ggml"` e **nunca
+/// podia passar** — nem no Linux. Ninguém percebeu porque ela só rodava no fim
+/// de um download, e quem programou já tinha o modelo no disco. O erro apareceu
+/// na primeira máquina que baixou o modelo do zero, que por acaso foi a do
+/// Windows — e a mensagem acusava a rede de ter devolvido uma página depois de
+/// 573 MB baixados corretamente.
+///
+/// É barato de propósito: são quatro bytes, e por isso ela também serve para
+/// quem já tem um arquivo no destino e precisa saber se vale a pena refazer o
+/// download (veja o `--baixar-modelo`, em `main.rs`). Um arquivo trocado no
+/// meio passa por aqui — quem pega aquele é a soma de verificação, e ela lê os
+/// 574 MB inteiros.
+pub fn parece_um_modelo(caminho: &Path) -> bool {
+    use std::io::Read as _;
+
+    const ASSINATURA_GGML: u32 = 0x6767_6d6c;
+
+    let Ok(mut arquivo) = std::fs::File::open(caminho) else {
+        return false;
+    };
+    let mut assinatura = [0u8; 4];
+    // `read_exact` recusa o arquivo curto demais para ter a assinatura inteira,
+    // inclusive o vazio.
+    arquivo.read_exact(&mut assinatura).is_ok() && u32::from_le_bytes(assinatura) == ASSINATURA_GGML
+}
+
 /// O arquivo baixado é mesmo um modelo GGML inteiro?
 ///
 /// Sem esta conferência, qualquer arquivo ruim que chegasse ao destino trancava
@@ -354,8 +392,6 @@ fn executar(
 /// "já existe"; e o único botão restante recarregava eternamente o mesmo
 /// arquivo, enquanto a tela de configurações dizia "Arquivo encontrado".
 fn conferir(parcial: &Path, total: Option<u64>, soma: Option<&str>) -> anyhow::Result<()> {
-    use std::io::Read as _;
-
     let tamanho_real = std::fs::metadata(parcial)?.len();
     if let Some(total) = total
         && total != tamanho_real
@@ -367,27 +403,7 @@ fn conferir(parcial: &Path, total: Option<u64>, soma: Option<&str>) -> anyhow::R
         );
     }
 
-    // Todo modelo do whisper.cpp começa com a assinatura GGML, o inteiro
-    // 0x67676d6c. Pega o caso em que um proxy ou portal cativo entregou uma
-    // página HTML com o status 200 que o `--fail` do curl não recusa.
-    //
-    // **A leitura é como inteiro little-endian, e não como os quatro caracteres
-    // "ggml".** O whisper.cpp grava o número na ordem nativa da máquina, que em
-    // x86 e ARM é little-endian: no disco os bytes saem invertidos, `6c 6d 67
-    // 67`, que lidos como texto dão "lmgg".
-    //
-    // Esta conferência já esteve escrita como `assinatura != b"ggml"` e **nunca
-    // podia passar** — nem no Linux. Ninguém percebeu porque ela só roda no fim
-    // de um download, e quem programou já tinha o modelo no disco: o
-    // `--baixar-modelo` responde "já está aqui" antes de chegar até aqui. O erro
-    // apareceu na primeira máquina que baixou o modelo do zero, que por acaso
-    // foi a do Windows — e a mensagem acusava a rede de ter devolvido uma página
-    // depois de 573 MB baixados corretamente.
-    const ASSINATURA_GGML: u32 = 0x6767_6d6c;
-
-    let mut assinatura = [0u8; 4];
-    std::fs::File::open(parcial)?.read_exact(&mut assinatura)?;
-    if u32::from_le_bytes(assinatura) != ASSINATURA_GGML {
+    if !parece_um_modelo(parcial) {
         anyhow::bail!(
             "o arquivo baixado não é um modelo do Whisper — \
              a rede pode ter devolvido uma página no lugar dele"
@@ -720,6 +736,45 @@ mod tests {
             "o modelo padrão ({PADRAO}) ficou sem soma de verificação"
         );
         assert!(soma_conhecida("um-modelo-que-ninguem-tem").is_none());
+    }
+
+    #[test]
+    fn o_script_confere_a_assinatura_na_ordem_em_que_ela_esta_no_disco() {
+        // O mesmo erro que o `parece_um_modelo` documenta, do outro lado da
+        // casa: o `baixar-modelo.sh` conferia `head -c 4` contra a **string**
+        // "ggml", e no disco os bytes estão em little-endian — `6c 6d 67 67`,
+        // que lido como texto dá "lmgg". Nessa forma o script **reprovava todo
+        // download bem-sucedido**: baixava os 574 MB, acusava a rede de ter
+        // devolvido uma página e apagava o arquivo pelo `trap`. O lado Rust foi
+        // corrigido; o script ficou para trás, e ele é o caminho que o README
+        // manda usar quando não há sessão gráfica.
+        //
+        // O teste mora aqui, e não num arquivo de teste do shell, porque é aqui
+        // que está escrito qual é a ordem certa — e é esta constante que a linha
+        // do script precisa continuar acompanhando.
+        let script = include_str!("../baixar-modelo.sh");
+        let esperado: String = COMECO_DE_UM_MODELO[..4]
+            .iter()
+            .fold(String::new(), |mut s, b| {
+                use std::fmt::Write as _;
+                let _ = write!(s, "{b:02x}");
+                s
+            });
+
+        let confere = script
+            .lines()
+            .find(|linha| linha.contains("head -c 4"))
+            .expect("o baixar-modelo.sh precisa conferir a assinatura do arquivo baixado");
+        assert!(
+            confere.contains(&esperado),
+            "a conferência do baixar-modelo.sh não usa a ordem em que a assinatura \
+             está no disco ({esperado}); a linha é: {confere}"
+        );
+        assert!(
+            !confere.contains("\"ggml\""),
+            "o baixar-modelo.sh voltou a comparar com a string \"ggml\", que é a \
+             ordem contrária à do disco e reprova todo download bom"
+        );
     }
 
     #[test]
