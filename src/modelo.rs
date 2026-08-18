@@ -30,7 +30,7 @@
 //!
 //! ### De onde vem a soma esperada
 //!
-//! De dois lugares, nesta ordem. A tabela [`SOMAS`] é a fonte forte: são as
+//! De dois lugares, nesta ordem. O [`CATALOGO`] é a fonte forte: são as
 //! somas dos modelos que este programa oferece, escritas aqui e conferidas
 //! contra o `lfs.oid` que a API da Hugging Face publica. A reserva é o
 //! cabeçalho **`x-linked-etag`** da própria resposta, que para um arquivo LFS
@@ -51,72 +51,247 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Modelo sugerido: rápido o bastante para ditado e preciso em português.
+/// Modelo sugerido a quem tem GPU: rápido o bastante para ditado e preciso em
+/// português.
 pub const PADRAO: &str = "large-v3-turbo-q5_0";
 
-/// As somas SHA-256 dos modelos que este programa oferece.
+/// Modelo sugerido a quem vai transcrever na CPU.
 ///
-/// Tiradas do `lfs.oid` da API da Hugging Face
+/// ## Por que não o `PADRAO`, medido
+///
+/// Num Ryzen 5 4600G (12 threads, binário `--features cpu`), transcrevendo os
+/// mesmos 11,0 s de fala pelo teste `stt::medicao::mede_o_backend`, três
+/// passadas cada:
+///
+/// ```text
+///     large-v3-turbo-q5_0    18,1 s     0,6× o tempo real
+///     small-q5_1              3,5 s     3,2× o tempo real
+/// ```
+///
+/// A conta que interessa não é o "5,2 vezes mais rápido" — é de que lado do 1×
+/// cada um cai. Com o turbo, uma frase de dez segundos leva dezoito para virar
+/// texto: **ditar fica mais lento do que digitar**, e o programa deixa de ter
+/// razão de existir naquela máquina. Com o small, os mesmos dez segundos viram
+/// texto em três, e o ditado volta a ser ditado.
+///
+/// O preço é qualidade: 244 M de parâmetros contra 809 M. Ele erra mais em nome
+/// próprio e em jargão — que é justamente o que os *Termos próprios*
+/// (`src/dicionario.rs`) consertam depois — e acerta o português do dia a dia.
+pub const PADRAO_CPU: &str = "small-q5_1";
+
+/// A quem o modelo serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Porte {
+    /// Pede placa de vídeo para transcrever mais rápido do que se fala.
+    Gpu,
+    /// Roda em CPU.
+    Cpu,
+}
+
+/// Um modelo oferecido pelo programa.
+///
+/// Isto já foi uma tabela de duas colunas — nome e soma de verificação — e o
+/// resto morava espalhado: o tamanho, no `baixar-modelo.sh`; a recomendação, no
+/// README; e a escolha, num campo de texto onde a pessoa digitava um caminho de
+/// arquivo. Quem não tem GPU não tinha como descobrir, dentro do programa, que
+/// existe um modelo para ela — e o programa não tinha como oferecer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Modelo {
+    /// O nome que compõe o arquivo e a URL (`ggml-<nome>.bin`).
+    pub nome: &'static str,
+    /// Como ele aparece na tela.
+    pub rotulo: &'static str,
+    /// Tamanho exato do arquivo, em bytes.
+    ///
+    /// Exato, e não arredondado, porque a tela promete um número antes de a
+    /// pessoa gastar a franquia da internet com ele. Todos vieram da API da
+    /// Hugging Face, pelo mesmo `paths-info` que publica as somas.
+    pub tamanho: u64,
+    /// Quantos parâmetros a rede tem, como a OpenAI os publica.
+    ///
+    /// É o que aproxima o custo de transcrever: entre dois modelos da mesma
+    /// família, o dobro de parâmetros é aproximadamente o dobro de contas por
+    /// segundo de áudio. Aproximadamente, e não exatamente — o `turbo` tem
+    /// quatro camadas de decodificador em vez de trinta e duas, e por isso
+    /// rende bem mais do que os 809 M dele sugerem.
+    pub parametros: &'static str,
+    /// A soma SHA-256 do arquivo.
+    pub soma: &'static str,
+    /// Uma linha dizendo para quem ele é.
+    pub nota: &'static str,
+    pub porte: Porte,
+}
+
+impl Modelo {
+    /// O arquivo dele já está no disco?
+    pub fn baixado(&self) -> bool {
+        caminho(self.nome).exists()
+    }
+}
+
+/// Os modelos que este programa oferece.
+///
+/// As somas saem do `lfs.oid` da API da Hugging Face
 /// (`POST /api/models/ggerganov/whisper.cpp/paths-info/main`), que é onde ela
 /// publica o hash de cada arquivo do Git LFS. Para conferir ou acrescentar um:
 ///
 /// ```text
 /// curl -s -X POST https://huggingface.co/api/models/ggerganov/whisper.cpp/paths-info/main \
 ///   -H 'Content-Type: application/json' \
-///   -d '{"paths":["ggml-medium-q5_0.bin"]}' | jq -r '.[].lfs.oid'
+///   -d '{"paths":["ggml-medium-q5_0.bin"]}' | jq -r '.[] | .path, .size, .lfs.oid'
 /// ```
 ///
-/// Os nomes são os mesmos que o `baixar-modelo.sh --lista` mostra, e há um
-/// teste que confere que os dois lados não se separaram.
-const SOMAS: &[(&str, &str)] = &[
-    (
-        "large-v3-turbo-q5_0",
-        "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
-    ),
-    (
-        "large-v3-turbo",
-        "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
-    ),
-    (
-        "large-v3-q5_0",
-        "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
-    ),
-    (
-        "large-v3",
-        "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
-    ),
-    (
-        "medium-q5_0",
-        "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
-    ),
-    (
-        "medium",
-        "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
-    ),
-    (
-        "small-q5_1",
-        "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
-    ),
-    (
-        "small",
-        "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
-    ),
-    (
-        "base",
-        "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
-    ),
-    (
-        "tiny",
-        "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
-    ),
+/// O `-q5_0` e o `-q5_1` no nome são a quantização: os pesos guardados em cinco
+/// bits em vez de dezesseis. O arquivo encolhe umas três vezes, a qualidade cai
+/// pouco o bastante para não se notar num ditado, e é por isso que **os dois
+/// modelos sugeridos aqui são quantizados**. As versões inteiras ficam na lista
+/// para quem tem memória sobrando e quer conferir a diferença por conta própria.
+///
+/// A ordem é a da tela: do mais capaz ao mais leve, que é como quem escolhe lê
+/// uma lista destas. Os nomes são os mesmos que o `baixar-modelo.sh --lista`
+/// mostra, e há um teste que confere que as duas listas não se separaram.
+pub const CATALOGO: &[Modelo] = &[
+    Modelo {
+        nome: "large-v3",
+        rotulo: "Large v3",
+        tamanho: 3_095_033_483,
+        parametros: "1,55 B",
+        soma: "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
+        nota: "Máxima qualidade, e bem mais lento. Pede GPU com folga.",
+        porte: Porte::Gpu,
+    },
+    Modelo {
+        nome: "large-v3-q5_0",
+        rotulo: "Large v3 (quantizado)",
+        tamanho: 1_081_140_203,
+        parametros: "1,55 B",
+        soma: "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
+        nota: "O mais preciso que ainda cabe numa GPU comum.",
+        porte: Porte::Gpu,
+    },
+    Modelo {
+        nome: "large-v3-turbo",
+        rotulo: "Large v3 Turbo",
+        tamanho: 1_624_555_275,
+        parametros: "809 M",
+        soma: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+        nota: "O turbo sem quantização, para comparar com o padrão.",
+        porte: Porte::Gpu,
+    },
+    Modelo {
+        nome: "large-v3-turbo-q5_0",
+        rotulo: "Large v3 Turbo (quantizado)",
+        tamanho: 574_041_195,
+        parametros: "809 M",
+        soma: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        nota: "O melhor equilíbrio para ditar com GPU. É o padrão.",
+        porte: Porte::Gpu,
+    },
+    Modelo {
+        nome: "medium",
+        rotulo: "Medium",
+        tamanho: 1_533_763_059,
+        parametros: "769 M",
+        soma: "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+        nota: "A geração anterior do porte grande.",
+        porte: Porte::Gpu,
+    },
+    Modelo {
+        nome: "medium-q5_0",
+        rotulo: "Medium (quantizado)",
+        tamanho: 539_212_467,
+        parametros: "769 M",
+        soma: "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+        nota: "Do tamanho do padrão, e mais lento — este não é turbo.",
+        porte: Porte::Gpu,
+    },
+    Modelo {
+        nome: "small",
+        rotulo: "Small",
+        tamanho: 487_601_967,
+        parametros: "244 M",
+        soma: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        nota: "O small sem quantização, para quem tem memória sobrando.",
+        porte: Porte::Cpu,
+    },
+    Modelo {
+        nome: "small-q5_1",
+        rotulo: "Small (quantizado)",
+        tamanho: 190_085_487,
+        parametros: "244 M",
+        soma: "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+        nota: "O sugerido para transcrever na CPU: 3,2× o tempo real num Ryzen 5.",
+        porte: Porte::Cpu,
+    },
+    Modelo {
+        nome: "base",
+        rotulo: "Base",
+        tamanho: 147_951_465,
+        parametros: "74 M",
+        soma: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        nota: "Rápido em qualquer máquina; erra nome próprio e jargão.",
+        porte: Porte::Cpu,
+    },
+    Modelo {
+        nome: "base-q5_1",
+        rotulo: "Base (quantizado)",
+        tamanho: 59_707_625,
+        parametros: "74 M",
+        soma: "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+        nota: "Para máquina fraca ou conexão limitada.",
+        porte: Porte::Cpu,
+    },
+    Modelo {
+        nome: "tiny",
+        rotulo: "Tiny",
+        tamanho: 77_691_713,
+        parametros: "39 M",
+        soma: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        nota: "Último recurso. Em português, erra bastante.",
+        porte: Porte::Cpu,
+    },
+    Modelo {
+        nome: "tiny-q5_1",
+        rotulo: "Tiny (quantizado)",
+        tamanho: 32_152_673,
+        parametros: "39 M",
+        soma: "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7",
+        nota: "O menor de todos. Serve para testar se o resto funciona.",
+        porte: Porte::Cpu,
+    },
 ];
+
+/// O modelo do catálogo com este nome, se ele estiver lá.
+pub fn achar(nome: &str) -> Option<&'static Modelo> {
+    CATALOGO.iter().find(|m| m.nome == nome)
+}
+
+/// Qual dos dois sugerir, dado o que esta máquina vai usar para transcrever.
+pub fn sugerido(com_gpu: bool) -> &'static str {
+    if com_gpu { PADRAO } else { PADRAO_CPU }
+}
+
+/// O modelo do catálogo a que este caminho corresponde, se for algum.
+///
+/// A configuração guarda um **caminho**, e não um nome — foi assim desde o
+/// começo e continua sendo, porque apontar para um modelo afinado por conta
+/// própria é caso de uso legítimo. Esta função é a ponte: dado o caminho
+/// gravado, diz qual entrada do catálogo a tela deve marcar como escolhida, ou
+/// `None` quando o arquivo é de fora.
+pub fn qual_e(caminho: &Path) -> Option<&'static Modelo> {
+    // Só vale se o arquivo estiver na pasta dos modelos: um `ggml-tiny.bin` que
+    // a pessoa deixou na Área de Trabalho não é o `tiny` do catálogo, e marcar
+    // aquela linha faria a tela dizer "já baixado" apontando para outro arquivo.
+    if caminho.parent() != Some(models_dir().as_path()) {
+        return None;
+    }
+    let arquivo = caminho.file_name()?.to_str()?;
+    achar(arquivo.strip_prefix("ggml-")?.strip_suffix(".bin")?)
+}
 
 /// A soma que este modelo deve ter, se ela for conhecida.
 fn soma_conhecida(modelo: &str) -> Option<&'static str> {
-    SOMAS
-        .iter()
-        .find(|(nome, _)| *nome == modelo)
-        .map(|(_, soma)| *soma)
+    achar(modelo).map(|m| m.soma)
 }
 
 fn url(modelo: &str) -> String {
@@ -258,7 +433,7 @@ fn executar(
         // bytes deixa a barra congelada até o keepalive do kernel desistir —
         // dez minutos ou mais —, e nesse meio-tempo o programa recusa começar
         // outro download porque este ainda está "andando".
-        "curl" => Command::new("curl")
+        "curl" => crate::programas::sem_janela(&mut Command::new("curl"))
             .args([
                 "-L",
                 "--fail",
@@ -279,7 +454,7 @@ fn executar(
             .arg(endereco)
             .stderr(Stdio::piped())
             .spawn()?,
-        _ => Command::new("wget")
+        _ => crate::programas::sem_janela(&mut Command::new("wget"))
             .args([
                 "--quiet",
                 "--timeout=20",
@@ -472,7 +647,7 @@ const DESCARTE: &str = "/dev/null";
 /// declara. Sem nenhum dos dois o download ainda funciona.
 fn cabecalhos(prog: &str, endereco: &str) -> (Option<u64>, Option<String>) {
     let saida = match prog {
-        "curl" => Command::new("curl")
+        "curl" => crate::programas::sem_janela(&mut Command::new("curl"))
             .args([
                 "-sIL",
                 "-o",
@@ -486,7 +661,7 @@ fn cabecalhos(prog: &str, endereco: &str) -> (Option<u64>, Option<String>) {
             ])
             .arg(endereco)
             .output(),
-        _ => Command::new("wget")
+        _ => crate::programas::sem_janela(&mut Command::new("wget"))
             .args(["--spider", "--server-response", "-q"])
             .arg(endereco)
             .output(),
@@ -750,7 +925,7 @@ mod tests {
         // Um caractere a mais, um a menos ou um "g" copiado errado da API só
         // apareceria no fim de um download de 574 MB — e como uma acusação de
         // corrupção contra um arquivo perfeito.
-        for (nome, soma) in SOMAS {
+        for Modelo { nome, soma, .. } in CATALOGO {
             assert_eq!(soma.len(), 64, "a soma de {nome} não tem 64 caracteres");
             assert!(
                 soma.chars()
@@ -759,7 +934,7 @@ mod tests {
             );
         }
         // E nenhum nome repetido, que faria a segunda entrada nunca ser usada.
-        let mut nomes: Vec<&str> = SOMAS.iter().map(|(n, _)| *n).collect();
+        let mut nomes: Vec<&str> = CATALOGO.iter().map(|m| m.nome).collect();
         nomes.sort_unstable();
         let antes = nomes.len();
         nomes.dedup();
@@ -817,22 +992,29 @@ mod tests {
     }
 
     #[test]
-    fn os_modelos_do_script_estao_todos_na_tabela() {
-        // O `baixar-modelo.sh --lista` é a lista que o README manda consultar.
-        // Um modelo oferecido lá e ausente daqui baixaria sem conferência de
-        // soma, em silêncio.
+    fn o_script_e_o_catalogo_oferecem_os_mesmos_modelos() {
+        // O `baixar-modelo.sh --lista` é a lista que o README manda consultar de
+        // quem não tem sessão gráfica, e o `CATALOGO` é a que a tela mostra. As
+        // duas separadas dão os dois defeitos: um modelo só no script baixa sem
+        // conferência de soma, em silêncio; um modelo só no catálogo aparece na
+        // tela e não existe para quem instala pelo terminal.
+        //
+        // A conferência é nos dois sentidos desde que existe um sugerido para
+        // CPU: a lista do script passou a ter marca (`*`) na frente dos
+        // sugeridos, e a versão anterior deste teste — que só olhava linhas
+        // começadas por dois espaços — teria deixado justamente esses dois de
+        // fora da comparação.
         let script = include_str!("../baixar-modelo.sh");
         let oferecidos: Vec<&str> = script
             .lines()
-            // As linhas da lista têm o nome recuado e o tamanho em seguida:
-            // `  large-v3-turbo-q5_0   ~574 MB   …`
+            // As linhas da lista têm o nome recuado (ou marcado com `*`) e o
+            // tamanho em seguida: `  large-v3-turbo-q5_0   ~574 MB   …`
             .filter_map(|linha| {
-                let recuado = linha.strip_prefix("  ")?;
+                let recuado = linha
+                    .strip_prefix("  ")
+                    .or_else(|| linha.strip_prefix("* "))?;
                 let nome = recuado.split_whitespace().next()?;
-                recuado
-                    .contains("MB")
-                    .then_some(nome)
-                    .or_else(|| recuado.contains("GB").then_some(nome))
+                (recuado.contains("MB") || recuado.contains("GB")).then_some(nome)
             })
             .collect();
         assert!(
@@ -840,13 +1022,96 @@ mod tests {
             "não achei a lista de modelos no baixar-modelo.sh; \
              o formato dela mudou e este teste precisa acompanhar"
         );
-        for nome in oferecidos {
+
+        for nome in &oferecidos {
             assert!(
-                soma_conhecida(nome).is_some(),
-                "o modelo {nome} é oferecido pelo baixar-modelo.sh e não tem \
-                 soma de verificação na tabela SOMAS de src/modelo.rs"
+                achar(nome).is_some(),
+                "o modelo {nome} é oferecido pelo baixar-modelo.sh e não está no \
+                 CATALOGO de src/modelo.rs — ele baixaria sem conferência de soma"
             );
         }
+        for modelo in CATALOGO {
+            assert!(
+                oferecidos.contains(&modelo.nome),
+                "o modelo {} está no CATALOGO e não aparece no baixar-modelo.sh \
+                 --lista, que é o caminho de quem instala pelo terminal",
+                modelo.nome
+            );
+        }
+    }
+
+    #[test]
+    fn os_dois_sugeridos_estao_no_catalogo_e_sao_quantizados() {
+        // O sugerido é o que a tela marca com uma estrela e o que a tela de erro
+        // oferece baixar. Um nome com erro de digitação aqui só apareceria como
+        // um `expect` estourando na cara de quem abre as configurações.
+        for nome in [PADRAO, PADRAO_CPU] {
+            let modelo = achar(nome).unwrap_or_else(|| panic!("{nome} não está no catálogo"));
+            assert!(
+                modelo.nome.contains("q5"),
+                "o sugerido {nome} não é quantizado; o catálogo promete que os \
+                 dois sugeridos são"
+            );
+            assert!(
+                modelo.tamanho > 0 && !modelo.nota.is_empty(),
+                "o sugerido {nome} está com a ficha incompleta"
+            );
+        }
+        // E cada porte tem o seu, que é o que o `sugerido` promete responder.
+        assert_eq!(sugerido(true), PADRAO);
+        assert_eq!(sugerido(false), PADRAO_CPU);
+        assert_eq!(achar(PADRAO).map(|m| m.porte), Some(Porte::Gpu));
+        assert_eq!(achar(PADRAO_CPU).map(|m| m.porte), Some(Porte::Cpu));
+    }
+
+    #[test]
+    fn o_catalogo_tem_tamanho_e_parametros_em_toda_entrada() {
+        for modelo in CATALOGO {
+            assert!(
+                modelo.tamanho > 1_000_000,
+                "o tamanho de {} não parece o de um modelo: {}",
+                modelo.nome,
+                modelo.tamanho
+            );
+            assert!(!modelo.rotulo.is_empty(), "{} está sem rótulo", modelo.nome);
+            assert!(!modelo.nota.is_empty(), "{} está sem nota", modelo.nome);
+            assert!(
+                !modelo.parametros.is_empty(),
+                "{} está sem a contagem de parâmetros",
+                modelo.nome
+            );
+        }
+    }
+
+    #[test]
+    fn o_caminho_gravado_na_config_volta_a_ser_o_modelo_do_catalogo() {
+        // A ponte entre a configuração (que guarda um caminho) e a tela (que
+        // mostra uma lista de nomes). Sem ela, escolher um modelo e reabrir as
+        // configurações mostraria "Outro arquivo" para o que acabou de ser
+        // escolhido.
+        for modelo in CATALOGO {
+            let de_volta = qual_e(&caminho(modelo.nome));
+            assert_eq!(
+                de_volta.map(|m| m.nome),
+                Some(modelo.nome),
+                "o caminho de {} não voltou a ser ele mesmo",
+                modelo.nome
+            );
+        }
+    }
+
+    #[test]
+    fn um_modelo_de_fora_da_pasta_nao_e_confundido_com_o_do_catalogo() {
+        // Um `ggml-tiny.bin` na Área de Trabalho tem o nome de um modelo do
+        // catálogo e não é ele: a tela marcaria a linha do `tiny` como escolhida
+        // e o botão de baixar escreveria noutro lugar, deixando a pessoa com dois
+        // arquivos e a impressão de que o download não fez nada.
+        let de_fora = std::path::Path::new("/tmp/ggml-tiny.bin");
+        assert_eq!(qual_e(de_fora), None);
+        // E o que não tem a forma de um modelo também não é.
+        assert_eq!(qual_e(&models_dir().join("leiame.txt")), None);
+        assert_eq!(qual_e(&models_dir().join("ggml-inventado.bin")), None);
+        assert_eq!(qual_e(&models_dir()), None);
     }
 
     #[test]

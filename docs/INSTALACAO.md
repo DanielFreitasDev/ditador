@@ -24,11 +24,15 @@ NVIDIA e prefere CUDA compila do código-fonte (`./instalar.sh cuda`) — o CUDA
 sai pronto porque exige o toolkit da NVIDIA para compilar, e ele não cabe numa
 release.
 
-**O modelo de transcrição não vem junto.** São ~574 MB que não mudam entre
-versões. O programa oferece baixá-lo na primeira tela, com barra de progresso, e
-o `ditador --baixar-modelo` faz o mesmo pelo terminal. Ele fica fora da área da
-instalação de propósito: atualizar ou reinstalar o Ditador nunca o apaga nem o
-baixa de novo.
+**O modelo de transcrição não vem junto.** O programa oferece baixá-lo na
+primeira tela, com barra de progresso, e o `ditador --baixar-modelo` faz o mesmo
+pelo terminal. Qual modelo depende da máquina: **~574 MB** do
+`large-v3-turbo-q5_0` para quem tem GPU, **~190 MB** do `small-q5_1` para quem
+vai transcrever na CPU, que é a escolha certa lá (o grande, sem GPU, transcreve
+mais devagar do que se fala). `ditador --baixar-modelo --lista` mostra os doze
+que o programa conhece, com tamanho e para quem cada um serve. O modelo fica fora
+da área da instalação de propósito: atualizar ou reinstalar o Ditador nunca o
+apaga nem o baixa de novo.
 
 **Conferir o que você baixou** (opcional, mas é para isso que o `SHA256SUMS`
 existe):
@@ -67,7 +71,8 @@ Depois:
 
 ```bash
 ditador --diagnostico              # confere teclado, modelo, microfone, área de transferência
-ditador --baixar-modelo            # ~574 MB (ou baixe pela primeira tela do programa)
+ditador --baixar-modelo            # o sugerido para esta máquina (ou baixe pela primeira tela)
+ditador --baixar-modelo --lista    # todos os modelos, com tamanho e para quem servem
 systemctl --user enable --now ditador   # subir junto com a sessão
 ```
 

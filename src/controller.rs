@@ -274,6 +274,7 @@ impl Controller {
                             threads: state.config.threads,
                             initial_prompt: state.config.initial_prompt.clone(),
                             normalize: state.config.normalize_audio,
+                            aparar_silencio: state.config.aparar_silencio,
                         },
                         state.config.historico,
                     )
@@ -343,6 +344,18 @@ impl Controller {
                     state.message.clear();
                 }
                 state.erro_e_so_espera = false;
+                drop(state);
+                self.sinal.mudou();
+            }
+
+            SttEvent::Descarregado => {
+                // Não mexe no `model`: para quem usa o programa nada mudou —
+                // o atalho continua valendo e a bandeja continua dizendo
+                // "pronto". Pôr `ModelState::Loading` aqui faria o
+                // `start_recording` recusar gravar, que é o contrário do que
+                // este recurso promete.
+                let mut state = lock(&self.shared);
+                state.status = "Modelo descarregado para liberar memória".to_string();
                 drop(state);
                 self.sinal.mudou();
             }
@@ -708,6 +721,32 @@ impl Controller {
 
             UiAction::FecharHistorico => self.voltar_ao_repouso(),
 
+            UiAction::CopiarOEnderecoDaVersao => {
+                // A cópia acontece aqui, e não na interface, pelo mesmo motivo
+                // que o `CopiarDoHistorico`: no Linux ela chama o `wl-copy`, que
+                // é um processo, e um processo dentro do desenho da tela é um
+                // quadro perdido — no meio de uma janela que a pessoa está
+                // usando. Aqui é a thread do controlador, que não desenha nada.
+                let endereco = lock(&self.shared)
+                    .versao_nova
+                    .as_ref()
+                    .map(|n| n.endereco.clone());
+                let Some(endereco) = endereco else { return };
+                let mut state = lock(&self.shared);
+                match clipboard::copy(&endereco) {
+                    Ok(()) => {
+                        state.copied_at = Some(Instant::now());
+                        state.message.clear();
+                    }
+                    Err(e) => {
+                        log::warn!("não consegui copiar o endereço da versão: {e:#}");
+                        state.message = format!("Não consegui copiar: {e:#}");
+                    }
+                }
+                drop(state);
+                self.sinal.mudou();
+            }
+
             UiAction::CopiarDoHistorico(indice) => {
                 let texto = lock(&self.shared)
                     .historico
@@ -755,7 +794,7 @@ impl Controller {
 
             UiAction::ReloadModel => self.load_model(),
 
-            UiAction::DownloadModel => self.download_model(),
+            UiAction::DownloadModel(nome) => self.download_model(&nome),
 
             UiAction::CancelDownload => {
                 let state = lock(&self.shared);
@@ -881,6 +920,13 @@ impl Controller {
                 state.config.sons.volume,
             )
         };
+        // "Vou precisar do modelo" — mandado aqui, no começo da gravação, e não
+        // no fim dela. Com o descarregamento por ociosidade ligado, é isto que
+        // transforma a espera pela recarga em tempo que a pessoa passa falando:
+        // o modelo volta para a memória enquanto a frase é dita, e não depois.
+        // Com o modelo já carregado, só adia o próximo descarregamento — o que
+        // é o certo, porque quem está gravando vai transcrever em seguida.
+        let _ = self.stt.send(SttCmd::Aquecer);
         self.audio.send(AudioCmd::Start { ditado });
         // O aviso de início é o par do de fim (que toca quando o texto fica
         // pronto): juntos, eles cercam o intervalo em que falar adianta. É a
@@ -1016,6 +1062,9 @@ impl Controller {
         }
         let reload_model =
             draft.model_path != previous.model_path || draft.use_gpu != previous.use_gpu;
+        // Lido antes de o `draft` ser movido para dentro do estado, e por isso
+        // fora do `if` que o usa lá embaixo.
+        let ligou_o_aviso_de_versao = draft.aviso_de_versao && !previous.aviso_de_versao;
 
         {
             let mut state = lock(&self.shared);
@@ -1027,6 +1076,15 @@ impl Controller {
         }
         self.hotkey.cancel_capture();
         self.apply_audio_settings();
+
+        // Ligar o aviso de versão com o programa aberto passa a valer agora, e
+        // não no próximo arranque. A vigília não existe enquanto a opção está
+        // desligada — é o que o `src/versao.rs` promete —, então religá-la é
+        // criar a thread de novo; a trava de lá garante que não nasça uma
+        // segunda quando ela ainda estiver viva.
+        if ligou_o_aviso_de_versao {
+            crate::versao::vigiar(self.shared.clone(), self.sinal.clone());
+        }
 
         if reload_model {
             self.load_model();
@@ -1042,6 +1100,13 @@ impl Controller {
             sempre_aberto: config.microfone_sempre_aberto,
             canal: config.canal_do_microfone,
         }));
+        // A ociosidade viaja junto porque é aplicada pelo mesmo caminho: quem
+        // muda uma configuração muda todas de uma vez, e a thread do Whisper
+        // precisa saber do novo prazo tanto quanto a do áudio precisa saber do
+        // novo microfone.
+        let _ = self
+            .stt
+            .send(SttCmd::Ociosidade(config.descarregar_o_modelo.prazo()));
     }
 
     fn load_model(&self) {
@@ -1060,7 +1125,7 @@ impl Controller {
     /// Baixa o modelo sugerido e, quando ele chegar, passa a usá-lo — inclusive
     /// gravando o caminho na configuração, porque quem clicou no botão não
     /// deveria precisar apontar o arquivo depois.
-    fn download_model(&self) {
+    fn download_model(&self, nome: &str) {
         {
             let mut state = lock(&self.shared);
             if state
@@ -1075,7 +1140,7 @@ impl Controller {
                 .to_string();
         }
 
-        let (andamento, pronto) = crate::modelo::baixar(crate::modelo::PADRAO, self.sinal.clone());
+        let (andamento, pronto) = crate::modelo::baixar(nome, self.sinal.clone());
         lock(&self.shared).download = Some(andamento);
         self.sinal.mudou();
 
@@ -1231,6 +1296,140 @@ mod tests {
             while self.audio.try_recv().is_ok() {}
             while self.stt.try_recv().is_ok() {}
         }
+    }
+
+    #[test]
+    fn nenhum_teste_daqui_grava_a_configuracao_de_quem_roda_os_testes() {
+        // Esta trava custou as configurações de uma máquina para existir.
+        //
+        // Um teste chamou `apply_draft` para conferir que a tela de Salvar
+        // levava uma opção nova até a thread do Whisper. O `apply_draft` grava a
+        // configuração em disco — e, num teste, o disco é o `~/.config/ditador`
+        // de quem rodou `cargo test`. O que ficou gravado lá foi a configuração
+        // da `Bancada`: cópia automática desligada, sons desligados, histórico
+        // desligado. Escolhas de verdade, de uma pessoa de verdade, substituídas
+        // pelos ajustes de um teste — e sem cópia de onde voltar, porque o
+        // `salvar_em` grava de forma atômica justamente para não deixar arquivo
+        // pela metade.
+        //
+        // O que se perdeu não apareceu em nenhuma reprovação: os 200 testes
+        // continuaram verdes. Apareceu numa captura de tela, por acaso. Daí esta
+        // conferência ser sobre o **texto do arquivo** — é o único jeito de
+        // reprovar antes do estrago.
+        //
+        // Precisando testar o caminho do Salvar, use `apply_audio_settings`, que
+        // é a parte que manda as configurações às threads sem tocar no disco.
+        let arquivo = include_str!("controller.rs");
+        let (_, testes) = arquivo
+            .split_once("mod tests {")
+            .expect("o módulo de testes deste arquivo mudou de forma");
+
+        // Os nomes são montados em pedaços de propósito: escritos por extenso,
+        // este próprio comentário e a linha do `assert` casariam com a busca, e a
+        // trava reprovaria a si mesma.
+        for proibido in [format!("apply_{}(", "draft"), format!("Apply{}", "Draft")] {
+            assert!(
+                !testes.contains(&proibido),
+                "um teste deste arquivo chama `{proibido}`, que grava o \
+                 config.json de quem estiver rodando os testes. Use \
+                 `apply_audio_settings`, que aplica sem gravar."
+            );
+        }
+    }
+
+    #[test]
+    fn a_gravacao_pede_o_modelo_de_volta_antes_de_abrir_o_microfone() {
+        // O que torna o descarregamento por ociosidade suportável: o modelo
+        // volta para a memória **enquanto** a pessoa fala. Mandando o `Aquecer`
+        // só no fim da gravação, a espera pela recarga apareceria inteira depois
+        // de a pessoa soltar a tecla — que é exatamente o momento em que ela
+        // está esperando o texto.
+        //
+        // O `Aquecer` sai sempre, e não só com a opção ligada: com o modelo já
+        // carregado ele não faz nada além de adiar o próximo descarregamento, e
+        // um `if` aqui seria a configuração da thread do Whisper duplicada do
+        // lado de cá.
+        let b = Bancada::nova();
+        b.limpar();
+
+        b.controlador.start_recording();
+
+        assert!(
+            matches!(b.stt.try_recv(), Ok(SttCmd::Aquecer)),
+            "a gravação começou sem pedir o modelo de volta"
+        );
+        assert!(
+            matches!(b.audio.try_recv(), Ok(AudioCmd::Start { .. })),
+            "o microfone não foi aberto"
+        );
+    }
+
+    #[test]
+    fn as_configuracoes_aplicadas_levam_a_ociosidade_ate_a_thread_do_whisper() {
+        // A opção mora na configuração e quem a executa é a thread do Whisper.
+        // Sem esta mensagem, ligar o descarregamento na tela não fazia nada até
+        // o programa ser reiniciado — e desligá-lo, menos ainda.
+        //
+        // Por `apply_audio_settings` e **não** por `apply_draft`: o segundo
+        // grava a configuração em disco, e num teste isso é o `config.json` de
+        // quem rodou `cargo test`. A primeira versão deste teste fazia isso, e o
+        // preço apareceu numa captura de tela: as configurações da máquina
+        // tinham virado as da bancada — cópia automática desligada, sons
+        // desligados, histórico desligado. A `Bancada` já tem o cuidado de não
+        // encostar na área de transferência, no áudio e no histórico de quem
+        // roda os testes; gravar por cima da configuração dele é o mesmo erro,
+        // e é o mais caro dos três, porque apaga escolhas que ninguém tem como
+        // recuperar depois.
+        let b = Bancada::nova();
+        b.limpar();
+
+        {
+            let mut estado = b.estado();
+            estado.config.descarregar_o_modelo = crate::config::Ociosidade {
+                ativo: true,
+                minutos: 5,
+            };
+        }
+        b.controlador.apply_audio_settings();
+
+        let mut chegou = None;
+        while let Ok(cmd) = b.stt.try_recv() {
+            if let SttCmd::Ociosidade(prazo) = cmd {
+                chegou = Some(prazo);
+            }
+        }
+        assert_eq!(
+            chegou,
+            Some(Some(Duration::from_secs(300))),
+            "o prazo escolhido na tela não chegou à thread da transcrição"
+        );
+    }
+
+    #[test]
+    fn o_modelo_descarregado_nao_tira_o_programa_do_ar() {
+        // A armadilha desta funcionalidade: tratar "modelo fora da memória" como
+        // "modelo carregando" faria o `start_recording` recusar gravar, e o
+        // atalho pararia de funcionar sozinho depois de dez minutos de pausa —
+        // sem nada na tela explicando por quê.
+        let b = Bancada::nova();
+        b.limpar();
+
+        b.controlador.on_stt(SttEvent::Descarregado);
+
+        assert_eq!(
+            b.estado().model,
+            ModelState::Ready,
+            "o descarregamento mexeu no estado do modelo"
+        );
+        assert_eq!(
+            b.estado().estado_publico(),
+            crate::state::EstadoPublico::Pronto,
+            "a bandeja e a extensão do GNOME passariam a dizer outra coisa"
+        );
+
+        // E gravar continua funcionando.
+        b.controlador.start_recording();
+        assert!(b.estado().gravando(), "o atalho parou de gravar");
     }
 
     #[test]

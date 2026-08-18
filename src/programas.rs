@@ -11,9 +11,37 @@
 //! e a interface chama isso a cada troca de tela.
 
 use std::collections::BTreeMap;
+use std::process::Command;
 use std::sync::Mutex;
 
 static MEMORIA: Mutex<BTreeMap<&'static str, bool>> = Mutex::new(BTreeMap::new());
+
+/// Prepara um comando de terminal para rodar sem piscar janela nenhuma.
+///
+/// **Só faz alguma coisa no Windows, e lá ela é obrigatória.** O `ditador.exe` é
+/// um programa de console iniciado pelo `Ditador.Windows` com `CreateNoWindow`,
+/// ou seja, sem console nenhum. Quando um processo sem console cria outro
+/// processo de console — o `curl`, que é como este programa baixa modelo e
+/// pergunta por versão nova —, o Windows **aloca um console para o filho**, e
+/// isso é uma janela preta piscando na cara de quem estiver usando a máquina.
+///
+/// No download isso seria feio; na conferência de versão seria um defeito, porque
+/// ela acontece sozinha, uma vez por dia, sem ninguém ter pedido nada. A janela
+/// apareceria no meio de outra coisa qualquer, sem explicação.
+///
+/// `CREATE_NO_WINDOW` desliga isso sem mexer no resto: a saída continua sendo
+/// capturada pelos canos que o `Command` já cria, que é o que o `output()` lê.
+///
+/// No Linux não há o que fazer — nem console para alocar — e a função devolve o
+/// comando como recebeu.
+pub fn sem_janela(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    cmd
+}
 
 /// O programa está no PATH?
 pub fn existe(programa: &'static str) -> bool {

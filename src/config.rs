@@ -208,6 +208,23 @@ pub struct Config {
     pub dicionario: Dicionario,
     /// Registro das transcrições.
     pub historico: Historico,
+    /// Aparar o silêncio das pontas antes de mandar o áudio ao Whisper.
+    ///
+    /// Nasce ligado, e essa é a escolha certa apesar de mudar o comportamento de
+    /// quem já usa: o que ele tira é justamente o que faz o modelo inventar
+    /// frase (ver `src/vad.rs`), e o módulo é conservador por construção —
+    /// não achando fala com segurança, ele devolve o áudio inteiro em vez de
+    /// arriscar comer uma palavra.
+    pub aparar_silencio: bool,
+    /// Soltar o modelo da memória depois de um tempo sem ditar.
+    pub descarregar_o_modelo: Ociosidade,
+    /// Conferir uma vez por dia se saiu uma versão nova (ver `src/versao.rs`).
+    ///
+    /// É a única coisa neste programa que fala com a rede sem alguém ter pedido
+    /// na hora, e por isso está escrito aqui também: o que sai é um `GET` em
+    /// `api.github.com`, sem nada sobre a máquina, e desligar aqui não cria nem
+    /// a thread que perguntaria.
+    pub aviso_de_versao: bool,
 }
 
 /// Como o texto chega à janela em foco quando a colagem automática está ligada.
@@ -419,6 +436,69 @@ impl Default for Historico {
     }
 }
 
+/// Quando soltar o modelo da memória por falta de uso.
+///
+/// O modelo padrão ocupa 574 MB de RAM — e, com a GPU ligada, outro tanto de
+/// memória de vídeo — do instante em que o programa sobe até o instante em que
+/// ele morre. Num programa que fica de pé o dia inteiro sob o serviço de
+/// usuário e trabalha alguns minutos por dia, isso é a maior parte do custo de
+/// tê-lo instalado.
+///
+/// **Nasce desligado, e não é timidez.** Descarregar troca memória por espera:
+/// o ditado seguinte precisa esperar o modelo voltar. Essa espera é quase toda
+/// escondida — quem religa o modelo é o começo da gravação, e não o fim dela
+/// (ver `Controller::start_recording`), de modo que ele carrega *enquanto* a
+/// pessoa fala —, mas "quase" não é "toda": num ditado de uma palavra em máquina
+/// com disco lento, dá para sentir. Trocar memória por latência é uma decisão de
+/// quem usa a máquina, e o padrão fica com o comportamento que sempre houve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ociosidade {
+    pub ativo: bool,
+    /// Minutos parado até soltar o modelo.
+    pub minutos: u64,
+}
+
+impl Ociosidade {
+    /// Dez minutos: mais do que qualquer pausa entre duas frases de uma mesma
+    /// tarefa, e menos do que o intervalo entre duas tarefas do dia.
+    pub const PADRAO: Self = Self {
+        ativo: false,
+        minutos: 10,
+    };
+
+    /// As opções oferecidas na tela.
+    pub const MINUTOS: [u64; 5] = [1, 5, 10, 30, 60];
+
+    pub fn sanear(&mut self) {
+        // Zero descarregaria o modelo no instante seguinte ao de terminar de
+        // carregá-lo, e o programa passaria a vida recarregando. O teto de um
+        // dia é o mesmo que dizer "nunca", e quem quer nunca desliga a chave.
+        self.minutos = self.minutos.clamp(1, 24 * 60);
+    }
+
+    /// Quanto tempo parado, se o descarregamento estiver ligado.
+    ///
+    /// "Parado" é medido pela thread da transcrição, e o que reinicia a contagem
+    /// é qualquer comando que chegue a ela. Um efeito aceito de propósito: uma
+    /// gravação mais longa que o prazo — possível com 1 minuto escolhido aqui e
+    /// uma gravação de dois — descarrega o modelo **durante** a fala, e a
+    /// transcrição logo em seguida o traz de volta. O resultado sai certo; o que
+    /// se perde é o tempo de uma recarga que não precisava ter acontecido.
+    /// Consertar isso exigiria a thread do Whisper saber que o microfone está
+    /// aberto, que é estado do controlador e não dela.
+    pub fn prazo(self) -> Option<std::time::Duration> {
+        self.ativo
+            .then(|| std::time::Duration::from_secs(self.minutos.max(1) * 60))
+    }
+}
+
+impl Default for Ociosidade {
+    fn default() -> Self {
+        Self::PADRAO
+    }
+}
+
 /// Aparência da janela.
 ///
 /// É curta de propósito. O visual é sólido e tem só duas versões — clara e
@@ -534,6 +614,9 @@ impl Default for Config {
             sons: Sons::PADRAO,
             dicionario: Dicionario::default(),
             historico: Historico::PADRAO,
+            aparar_silencio: true,
+            descarregar_o_modelo: Ociosidade::PADRAO,
+            aviso_de_versao: true,
         }
     }
 }
@@ -641,6 +724,7 @@ impl Config {
         self.sons.sanear();
         self.dicionario.sanear();
         self.historico.sanear();
+        self.descarregar_o_modelo.sanear();
         self.threads = self.threads.clamp(1, 32);
         self.min_recording_ms = self.min_recording_ms.min(5_000);
         self.max_recording_secs = self.max_recording_secs.clamp(1, 3_600);
@@ -799,9 +883,58 @@ mod tests {
         assert_eq!(cfg.sons, Sons::PADRAO);
         assert_eq!(cfg.dicionario, Dicionario::default());
         assert_eq!(cfg.historico, Historico::PADRAO);
+        // E os da 0.8, que chegaram depois deste teste existir.
+        assert!(cfg.aparar_silencio, "o aparo do silêncio nasce ligado");
+        assert_eq!(cfg.descarregar_o_modelo, Ociosidade::PADRAO);
+        assert!(
+            !cfg.descarregar_o_modelo.ativo,
+            "descarregar o modelo nasce desligado: ele troca memória por espera, \
+             e essa troca é decisão de quem usa a máquina"
+        );
+        assert!(cfg.aviso_de_versao, "o aviso de versão nova nasce ligado");
         // E o que estava no arquivo continua valendo.
         assert_eq!(cfg.language, "pt");
         assert_eq!(cfg.appearance.theme, Tema::Escuro);
+    }
+
+    #[test]
+    fn o_prazo_da_ociosidade_so_existe_quando_ela_esta_ligada() {
+        let mut o = Ociosidade::PADRAO;
+        assert_eq!(o.prazo(), None, "desligada, não há prazo nenhum");
+
+        o.ativo = true;
+        assert_eq!(o.prazo(), Some(std::time::Duration::from_secs(600)));
+
+        // Um arquivo editado à mão não pode pedir zero: o modelo sairia da
+        // memória no instante seguinte ao de terminar de carregar, e o programa
+        // passaria a vida recarregando.
+        o.minutos = 0;
+        o.sanear();
+        assert_eq!(o.minutos, 1);
+        assert_eq!(o.prazo(), Some(std::time::Duration::from_secs(60)));
+
+        // Nem um prazo absurdo, que é o mesmo que desligar por outro caminho.
+        o.minutos = 999_999;
+        o.sanear();
+        assert_eq!(o.minutos, 24 * 60);
+    }
+
+    #[test]
+    fn as_opcoes_de_prazo_da_tela_sobrevivem_ao_saneamento() {
+        // A lista suspensa oferece estes valores; um deles fora da faixa do
+        // `sanear` viraria outro número assim que a configuração fosse relida,
+        // e a tela mostraria uma escolha que a pessoa não fez.
+        for minutos in Ociosidade::MINUTOS {
+            let mut o = Ociosidade {
+                ativo: true,
+                minutos,
+            };
+            o.sanear();
+            assert_eq!(
+                o.minutos, minutos,
+                "o prazo de {minutos} min não sobreviveu"
+            );
+        }
     }
 
     #[test]
@@ -823,6 +956,9 @@ mod tests {
             r#""metodo_de_colagem":"ctrl_shift_v""#,
             r#""tecla_de_envio":"ctrl_enter""#,
             r#""espaco_no_fim":false"#,
+            r#""aparar_silencio":true"#,
+            r#""aviso_de_versao":true"#,
+            r#""descarregar_o_modelo":{"ativo":false,"minutos":10}"#,
             r#""atalho_de_cancelar":["KEY_ESC"]"#,
         ] {
             assert!(raw.contains(esperado), "não achei {esperado} em {raw}");

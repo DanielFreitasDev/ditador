@@ -9,14 +9,23 @@ URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${MODELO}.bi
 
 if [ "$MODELO" = "--lista" ] || [ "$MODELO" = "-l" ]; then
     cat <<'FIM'
-Modelos úteis (nome para passar como argumento):
+Modelos (nome para passar como argumento). Os dois sugeridos vêm marcados:
 
-  large-v3-turbo-q5_0   ~574 MB   padrão: rápido e preciso, ideal para ditado
-  large-v3-turbo        ~1.6 GB   turbo sem quantização
-  large-v3-q5_0         ~1.1 GB   large-v3 quantizado
   large-v3              ~3.1 GB   máxima qualidade, bem mais lento
-  medium-q5_0           ~539 MB   alternativa mais leve
-  small-q5_1            ~190 MB   para máquinas fracas
+  large-v3-turbo        ~1.6 GB   turbo sem quantização
+  medium                ~1.5 GB   a geração anterior do porte grande
+  large-v3-q5_0         ~1.1 GB   o mais preciso que cabe numa GPU comum
+* large-v3-turbo-q5_0   ~574 MB   padrão para quem tem GPU
+  medium-q5_0           ~539 MB   do tamanho do padrão, e mais lento
+  small                 ~488 MB   o small sem quantização
+* small-q5_1            ~190 MB   sugerido para transcrever na CPU
+  base                  ~148 MB   rápido em qualquer máquina; erra mais
+  tiny                  ~78 MB    último recurso; em português, erra bastante
+  base-q5_1             ~60 MB    para máquina fraca ou conexão limitada
+  tiny-q5_1             ~32 MB    o menor de todos; serve para testar
+
+A lista é a mesma do CATALOGO de src/modelo.rs, e há um teste conferindo que as
+duas não se separaram.
 
 Uso: ./baixar-modelo.sh [nome-do-modelo]
 FIM

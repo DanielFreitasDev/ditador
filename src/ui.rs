@@ -113,7 +113,11 @@ impl Medidor {
 struct Oferta {
     /// Há `curl` ou `wget` para fazer o download.
     baixavel: bool,
-    rotulo: &'static str,
+    /// Qual modelo o botão baixa. Era o padrão, sempre; passou a ser o que a
+    /// configuração aponta, que é o que quem escolheu um modelo de CPU na tela
+    /// de configurações espera ver oferecido aqui.
+    modelo: &'static crate::modelo::Modelo,
+    rotulo: String,
     nota: &'static str,
 }
 
@@ -405,6 +409,10 @@ impl eframe::App for App {
         // janela fica fora do caminho.
         let view = state.tela_visivel();
         let modelo_carregando = state.model == ModelState::Loading;
+        // Há um aviso de "copiado" contando os três segundos dele agora? É o que
+        // faz a tela de configurações — que normalmente fica parada — se
+        // redesenhar até ele sumir.
+        let aviso_expirando = state.copied_at.is_some_and(|t| t.elapsed() < AVISO_COPIADO);
         // Ao abrir as configurações, dois controles precisam mostrar o que o
         // sistema realmente tem, não o que ficou gravado da última vez: o
         // interruptor de início automático e o tema, que o usuário pode ter
@@ -434,7 +442,7 @@ impl eframe::App for App {
             crate::programas::reler();
         }
 
-        match cadencia_de_repintura(view, modelo_carregando) {
+        match cadencia_de_repintura(view, modelo_carregando, aviso_expirando) {
             Some(intervalo) if intervalo.is_zero() => ctx.request_repaint(),
             Some(intervalo) => ctx.request_repaint_after(intervalo),
             None => {}
@@ -854,9 +862,7 @@ impl App {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            let copiado = state
-                .copied_at
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(3));
+            let copiado = state.copied_at.is_some_and(|t| t.elapsed() < AVISO_COPIADO);
 
             let principal = Botao::new(if copiado { "Copiado" } else { "Copiar" })
                 .principal()
@@ -1039,10 +1045,7 @@ impl App {
                             .color(paleta().erro),
                     )
                     .on_hover_text(&state.message);
-                } else if state
-                    .copied_at
-                    .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
-                {
+                } else if state.copied_at.is_some_and(|t| t.elapsed() < AVISO_COPIADO) {
                     ui.label(
                         RichText::new("na área de transferência")
                             .size(12.5)
@@ -1100,15 +1103,15 @@ impl App {
                 Some(oferta) => {
                     ui.add_enabled_ui(oferta.baixavel, |ui| {
                         if ui
-                            .add(Botao::new(oferta.rotulo).principal())
+                            .add(Botao::new(oferta.rotulo.clone()).principal())
                             .on_hover_text(format!(
                                 "Baixa {} de huggingface.co para {}",
-                                crate::modelo::PADRAO,
-                                crate::modelo::caminho(crate::modelo::PADRAO).display()
+                                oferta.modelo.nome,
+                                crate::modelo::caminho(oferta.modelo.nome).display()
                             ))
                             .clicked()
                         {
-                            self.act(UiAction::DownloadModel);
+                            self.act(UiAction::DownloadModel(oferta.modelo.nome.to_string()));
                         }
                     });
                 }
@@ -1200,20 +1203,32 @@ impl App {
     /// botão sumia, `--baixar-modelo` respondia "já existe", e o único botão
     /// restante recarregava eternamente o mesmo arquivo ruim.
     fn oferta_de_download(&self, state: &crate::state::Shared) -> Option<Oferta> {
+        // Qual modelo oferecer: o que a configuração aponta, quando ele é do
+        // catálogo, e senão o sugerido para esta máquina. A distinção importa
+        // desde que existe um sugerido para CPU — antes, quem escolhesse o
+        // modelo leve e apagasse o arquivo recebia a oferta de baixar os 574 MB
+        // do padrão de volta.
+        let modelo = crate::modelo::qual_e(&state.config.model_path).unwrap_or_else(|| {
+            let com_gpu = state.config.use_gpu && stt::GPU_CAPABLE;
+            crate::modelo::achar(crate::modelo::sugerido(com_gpu))
+                .expect("o modelo sugerido está no catálogo")
+        });
         let arquivo_ruim = state.model == ModelState::Failed
-            && state.config.model_path == crate::modelo::caminho(crate::modelo::PADRAO)
+            && crate::modelo::qual_e(&state.config.model_path).is_some()
             && state.config.model_path.exists();
         if state.config.model_path.exists() && !arquivo_ruim {
             return None;
         }
 
         let baixavel = crate::modelo::disponivel();
+        let tamanho = crate::modelo::tamanho_legivel(modelo.tamanho);
         Some(Oferta {
             baixavel,
+            modelo,
             rotulo: if arquivo_ruim {
-                "Baixar o modelo de novo (574 MB)"
+                format!("Baixar o modelo de novo ({tamanho})")
             } else {
-                "Baixar o modelo (574 MB)"
+                format!("Baixar o modelo ({tamanho})")
             },
             nota: if !baixavel {
                 "Preciso do curl ou do wget para baixar: sudo apt install curl"
@@ -1446,6 +1461,50 @@ impl App {
             // Windows — e um `match` sobre um enum que só existe no Linux
             // colocaria um `cfg` no meio do desenho da interface.
             ui.label(nota(crate::autostart::explicacao()));
+
+            ui.add_space(8.0);
+            widgets::interruptor(
+                ui,
+                &mut state.draft.aviso_de_versao,
+                "Avisar quando sair uma versão nova",
+            );
+            ui.add_space(2.0);
+            ui.label(nota(
+                "Uma consulta por dia ao GitHub, só para ler o número da última \
+                 versão publicada. Nada é enviado — nem a versão que você tem, nem \
+                 nada sobre a máquina — e o Ditador não se atualiza sozinho: quem \
+                 atualiza é você, pelo mesmo caminho por onde instalou.",
+            ));
+
+            // O aviso mora aqui, ao lado da chave que o liga, e não no alto da
+            // tela: quem já sabe da versão nova não precisa de um selo
+            // acompanhando cada visita às configurações, e quem quiser desligar
+            // o aviso encontra as duas coisas juntas.
+            if let Some(nova) = state.versao_nova.clone() {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    widgets::etiqueta(
+                        ui,
+                        &format!("Versão {} disponível", nova.versao),
+                        paleta().ok,
+                    );
+                    if widgets::botao(ui, "Copiar o link").clicked() {
+                        // Copiar, e não abrir o navegador: abrir exigiria uma
+                        // dependência a mais e, na sessão gráfica de quem roda
+                        // isto por serviço de usuário, nem sempre funciona. O
+                        // link na área de transferência funciona sempre.
+                        self.act(UiAction::CopiarOEnderecoDaVersao);
+                    }
+                    if state.copied_at.is_some_and(|t| t.elapsed() < AVISO_COPIADO) {
+                        ui.label(
+                            RichText::new("na área de transferência")
+                                .size(12.5)
+                                .color(paleta().ok),
+                        );
+                    }
+                });
+                ui.label(nota(&nova.endereco));
+            }
         });
     }
 
@@ -1541,6 +1600,21 @@ impl App {
             });
 
             widgets::interruptor(ui, &mut state.draft.translate, "Traduzir para inglês");
+
+            ui.add_space(6.0);
+            widgets::interruptor(
+                ui,
+                &mut state.draft.aparar_silencio,
+                "Aparar o silêncio das pontas",
+            );
+            ui.add_space(2.0);
+            ui.label(nota(
+                "Todo ditado começa e termina com silêncio — o tempo entre apertar a \
+                 tecla e falar, e entre calar e soltar. É nele que o Whisper inventa \
+                 frase (\"Legendas pela comunidade\", \"Obrigado.\"). Cortando as \
+                 pontas, ele não tem o que inventar. O silêncio do meio da fala fica \
+                 onde está, e na dúvida nada é cortado.",
+            ));
         });
     }
 
@@ -1807,26 +1881,150 @@ impl App {
                 state.draft.threads = threads as i32;
             }
 
+            ui.add_space(6.0);
+            widgets::interruptor(
+                ui,
+                &mut state.draft.descarregar_o_modelo.ativo,
+                "Soltar o modelo da memória quando parado",
+            );
             ui.add_space(2.0);
-            ui.label("Modelo");
-            let mut caminho = state.draft.model_path.display().to_string();
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut caminho)
-                        .desired_width(f32::INFINITY)
-                        .margin(Margin::symmetric(10, 8)),
-                )
-                .changed()
-            {
-                state.draft.model_path = caminho.into();
-            }
+            ui.label(nota(
+                "O modelo ocupa a memória dele o dia inteiro para trabalhar alguns \
+                 minutos por dia. Ligando isto, ele sai quando você para de ditar e \
+                 volta no instante em que você aperta a tecla de novo — carregando \
+                 enquanto você fala, e não depois. Num ditado de uma palavra logo \
+                 após uma pausa longa, dá para sentir.",
+            ));
+            ui.add_enabled_ui(state.draft.descarregar_o_modelo.ativo, |ui| {
+                ui.add_space(4.0);
+                widgets::linha(ui, "Depois de", |ui| {
+                    let atual = state.draft.descarregar_o_modelo.minutos;
+                    lista(ui, "ociosidade", &minutos_por_extenso(atual)).show_ui(ui, |ui| {
+                        for minutos in crate::config::Ociosidade::MINUTOS {
+                            ui.selectable_value(
+                                &mut state.draft.descarregar_o_modelo.minutos,
+                                minutos,
+                                minutos_por_extenso(minutos),
+                            );
+                        }
+                    });
+                });
+            });
 
-            let existe = state.draft.model_path.exists();
+            ui.add_space(8.0);
+            self.escolha_do_modelo(ui, state);
+        });
+    }
+
+    /// A escolha do modelo: uma lista do catálogo, e o caminho para o resto.
+    ///
+    /// Isto era um campo de texto com o caminho de um arquivo, e só. Funcionava
+    /// para quem já sabia qual arquivo queria e onde ele estava — ou seja, para
+    /// quem escreveu o programa. Quem não tem GPU não tinha como descobrir aqui
+    /// que existe um modelo três vezes mais leve feito para a máquina dele.
+    fn escolha_do_modelo(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
+        use crate::modelo::{self, Porte};
+
+        let com_gpu = state.draft.use_gpu && stt::GPU_CAPABLE;
+        let escolhido = modelo::qual_e(&state.draft.model_path);
+
+        ui.label("Modelo");
+        ui.add_space(4.0);
+
+        let rotulo_atual = match escolhido {
+            Some(m) => format!("{} · {}", m.rotulo, modelo::tamanho_legivel(m.tamanho)),
+            // Um arquivo de fora do catálogo continua sendo uma escolha
+            // legítima — modelo afinado por conta própria, cópia noutra pasta —
+            // e a lista precisa mostrar isso em vez de fingir que nada está
+            // escolhido.
+            None => "Outro arquivo".to_string(),
+        };
+        lista(ui, "modelo", &rotulo_atual).show_ui(ui, |ui| {
+            // Uma dúzia de `exists()` por quadro, e só enquanto a lista está
+            // aberta. É consulta ao disco dentro do desenho, que o `programas.rs`
+            // deste projeto teve o cuidado de tirar do caminho — a diferença é a
+            // ordem de grandeza: lá eram processos `which` a cada quadro da tela
+            // inteira; aqui são doze chamadas de sistema baratas, num menu
+            // suspenso que fica aberto por segundos. Guardar isto em memória
+            // custaria decidir quando invalidar (o download que termina com a
+            // lista aberta, o arquivo apagado por fora), e essa é a parte que
+            // envelhece torta.
+            for m in modelo::CATALOGO {
+                let marca = if m.baixado() {
+                    "✓"
+                } else if m.nome == modelo::sugerido(com_gpu) {
+                    "★"
+                } else {
+                    " "
+                };
+                let rotulo = format!(
+                    "{marca} {} · {} · {}",
+                    m.rotulo,
+                    modelo::tamanho_legivel(m.tamanho),
+                    m.parametros
+                );
+                let mut escolhido_agora = escolhido.is_some_and(|e| e.nome == m.nome);
+                if ui
+                    .selectable_value(&mut escolhido_agora, true, rotulo)
+                    .clicked()
+                {
+                    state.draft.model_path = modelo::caminho(m.nome);
+                }
+            }
+        });
+
+        // Relido depois da lista, e não aproveitado de cima: clicar numa linha
+        // troca o caminho **neste mesmo quadro**, e tudo daqui para baixo — a
+        // nota, o aviso de porte, o botão de baixar — fala do modelo escolhido
+        // agora. Com o valor de cima, o primeiro quadro depois do clique
+        // mostraria o tamanho de um modelo ao lado do nome de outro.
+        let escolhido = modelo::qual_e(&state.draft.model_path);
+
+        // A nota do modelo escolhido, e o aviso de quem escolheu um porte que
+        // não combina com o que a máquina vai usar para transcrever. O segundo é
+        // o motivo de tudo isto existir: escolher o Large numa build só-CPU é
+        // exatamente o caminho para "o Ditador é lento".
+        if let Some(m) = escolhido {
+            ui.add_space(4.0);
+            ui.label(nota(m.nota));
+            if m.porte == Porte::Gpu && !com_gpu {
+                ui.label(
+                    RichText::new(format!(
+                        "Sem GPU, este modelo transcreve mais devagar do que você fala. \
+                         O sugerido para CPU é o {}.",
+                        modelo::achar(modelo::PADRAO_CPU).map_or(modelo::PADRAO_CPU, |s| s.rotulo)
+                    ))
+                    .size(12.5)
+                    .color(paleta().erro),
+                );
+            }
+        }
+
+        // O caminho continua editável, embaixo da lista: escolher pela lista o
+        // preenche, e escrever nele à mão desmarca a lista. As duas coisas
+        // escrevem no mesmo campo da configuração, que é o que impede as duas
+        // metades desta tela de discordarem.
+        ui.add_space(6.0);
+        let mut caminho = state.draft.model_path.display().to_string();
+        if ui
+            .add(
+                egui::TextEdit::singleline(&mut caminho)
+                    .desired_width(f32::INFINITY)
+                    .margin(Margin::symmetric(10, 8)),
+            )
+            .on_hover_text("O arquivo do modelo. A lista acima preenche este campo.")
+            .changed()
+        {
+            state.draft.model_path = caminho.into();
+        }
+
+        let existe = state.draft.model_path.exists();
+        ui.horizontal(|ui| {
             ui.label(
                 RichText::new(if existe {
                     "Arquivo encontrado."
                 } else {
-                    "Arquivo não encontrado — a tela inicial oferece baixá-lo"
+                    "Ainda não baixado."
                 })
                 .size(12.5)
                 .color(if existe {
@@ -1835,7 +2033,47 @@ impl App {
                     paleta().erro
                 }),
             );
+
+            // O botão de baixar mora aqui desde que há mais de um modelo: antes,
+            // o único caminho para trocar de modelo dentro do programa era
+            // escolher o arquivo que ainda não existia, salvar, cair na tela de
+            // erro e aceitar a oferta de lá.
+            let baixando = state
+                .download
+                .as_ref()
+                .is_some_and(|d| d.lock().unwrap_or_else(|e| e.into_inner()).andando());
+            if let Some(m) = escolhido
+                && !existe
+                && !baixando
+            {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled_ui(modelo::disponivel(), |ui| {
+                        if widgets::botao(
+                            ui,
+                            format!("Baixar ({})", modelo::tamanho_legivel(m.tamanho)),
+                        )
+                        .on_hover_text(if modelo::disponivel() {
+                            "Baixa de huggingface.co. Pode fechar esta janela — o \
+                             download continua."
+                        } else {
+                            "Preciso do curl ou do wget: sudo apt install curl"
+                        })
+                        .clicked()
+                        {
+                            self.act(UiAction::DownloadModel(m.nome.to_string()));
+                        }
+                    });
+                });
+            }
         });
+
+        if let Some(andamento) = &state.download {
+            let p = andamento.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if p.andando() {
+                ui.add_space(6.0);
+                widgets::progresso(ui, p.fracao(), "Baixando o modelo");
+            }
+        }
     }
 
     fn settings_avancado(&self, ui: &mut egui::Ui, state: &mut crate::state::Shared) {
@@ -1968,7 +2206,19 @@ fn altura_util(ui: &egui::Ui, rodape: f32) -> f32 {
 /// repintura os dois congelavam no instante em que a lista foi aberta, com o
 /// aviso verde de uma cópia velha em cima de um botão que ninguém tinha
 /// clicado.
-fn cadencia_de_repintura(view: View, modelo_carregando: bool) -> Option<Duration> {
+/// Quanto tempo o "na área de transferência" fica na tela.
+///
+/// Uma constante só porque três telas a usam — resultado, transcrições e
+/// configurações — e porque a `cadencia_de_repintura` precisa concordar com
+/// elas: um aviso que expira numa tela que não se redesenha sozinha fica lá até
+/// alguém mexer no mouse.
+const AVISO_COPIADO: Duration = Duration::from_secs(3);
+
+fn cadencia_de_repintura(
+    view: View,
+    modelo_carregando: bool,
+    aviso_expirando: bool,
+) -> Option<Duration> {
     /// Quatro vezes por segundo: o bastante para nenhum número na tela ficar
     /// mais de um quarto de segundo desatualizado, e longe de custar alguma
     /// coisa numa janela que não está animando.
@@ -1986,6 +2236,12 @@ fn cadencia_de_repintura(view: View, modelo_carregando: bool) -> Option<Duration
         // (três segundos), o fechamento automático do resultado e o "há tanto
         // tempo" de cada transcrição guardada.
         View::Result | View::Historico => Some(SEM_PRESSA),
+        // As configurações não animam nada e não contam tempo — exceto nos três
+        // segundos em que o "na área de transferência" está na tela, depois de
+        // alguém copiar o link da versão nova. Sem esta linha o aviso ficaria lá
+        // até a pessoa mexer no mouse, que é o defeito que a lista de
+        // transcrições já teve.
+        View::Settings if aviso_expirando => Some(SEM_PRESSA),
         View::Hidden | View::Settings | View::Error => None,
     }
 }
@@ -1998,6 +2254,16 @@ fn cadencia_de_repintura(view: View, modelo_carregando: bool) -> Option<Duration
 /// escolhesse 53 % de volume — ou 53 de exigência do dicionário — reabria as
 /// configurações e via 52, sem nada explicando por quê, e o valor gravado
 /// mudava junto no primeiro Salvar seguinte.
+/// "5 minutos", "1 hora" — o prazo da ociosidade como se diz em voz alta.
+fn minutos_por_extenso(minutos: u64) -> String {
+    match minutos {
+        1 => "1 minuto".to_string(),
+        60 => "1 hora".to_string(),
+        n if n % 60 == 0 => format!("{} horas", n / 60),
+        n => format!("{n} minutos"),
+    }
+}
+
 fn por_cento(fracao: f32) -> i64 {
     (fracao * 100.0).round() as i64
 }
@@ -2096,7 +2362,7 @@ mod tests {
         // resultado — congelavam no instante em que a lista foi aberta.
         for tela in [View::Result, View::Historico] {
             assert_eq!(
-                cadencia_de_repintura(tela, false),
+                cadencia_de_repintura(tela, false, false),
                 Some(Duration::from_millis(250)),
                 "{tela:?} conta tempo na tela e precisa se redesenhar sozinha"
             );
@@ -2104,18 +2370,33 @@ mod tests {
 
         // Quem anima repinta todo quadro.
         for tela in [View::Recording, View::Processing] {
-            assert_eq!(cadencia_de_repintura(tela, false), Some(Duration::ZERO));
+            assert_eq!(
+                cadencia_de_repintura(tela, false, false),
+                Some(Duration::ZERO)
+            );
         }
         assert_eq!(
-            cadencia_de_repintura(View::Error, true),
+            cadencia_de_repintura(View::Error, true, false),
             Some(Duration::ZERO),
             "o anel da carga do modelo precisa girar"
         );
 
         // E quem não tem nada andando fica quieto até o estado mudar.
-        assert_eq!(cadencia_de_repintura(View::Error, false), None);
-        assert_eq!(cadencia_de_repintura(View::Settings, false), None);
-        assert_eq!(cadencia_de_repintura(View::Hidden, false), None);
+        assert_eq!(cadencia_de_repintura(View::Error, false, false), None);
+        assert_eq!(cadencia_de_repintura(View::Settings, false, false), None);
+        assert_eq!(cadencia_de_repintura(View::Hidden, false, false), None);
+
+        // Menos as configurações com um "na área de transferência" na tela: o
+        // aviso expira em três segundos, e uma tela que não se redesenha o
+        // deixaria lá até alguém mexer no mouse. É o mesmo defeito que a lista
+        // de transcrições já teve, do outro lado da casa.
+        assert_eq!(
+            cadencia_de_repintura(View::Settings, false, true),
+            Some(Duration::from_millis(250)),
+            "o aviso de copiado das configurações precisa sumir sozinho"
+        );
+        // E isso não vale para quem já está parado por outros motivos.
+        assert_eq!(cadencia_de_repintura(View::Hidden, false, true), None);
     }
 
     #[test]

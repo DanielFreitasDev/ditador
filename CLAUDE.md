@@ -110,6 +110,27 @@ lá, que é onde ela cabe.
 
 O formato de cada entrada e as regras de organização estão no topo do próprio `docs/LEARNINGS.md`.
 
+## Dependências
+
+**Biblioteca boa, bem testada e muito usada pode entrar.** A lista curta do `Cargo.toml` e as
+justificativas escritas ao lado de cada dependência não são uma proibição — são o registro de decisões
+que já foram tomadas pelo mérito. Não escreva à mão o que uma biblioteca conhecida faz melhor só para
+não acrescentar uma linha ali.
+
+O que continua valendo é **avaliar o custo real**, que neste projeto não é o número de crates:
+
+- o que ela arrasta para o empacotamento (`.deb`, instalador do Windows, MSIX) — uma biblioteca nativa
+  de dezenas de megabytes é um problema de release, não de compilação;
+- se ela exige `libclang`/bindgen, que a CI do Windows não tem e cuja ausência já é motivo declarado de
+  escolha no `Cargo.toml` (veja o comentário do `whisper-rs-sys`);
+- se ela traz um runtime que faça despacho de instruções por conta própria. Este é o risco caro, e há
+  precedente medido: o projeto que serviu de referência (Handy) documenta no `Cargo.toml` dele que o
+  ONNX Runtime pré-compilado que ele usava tinha `/arch:AVX2` global e **matava o processo no arranque**
+  em CPU pré-Haswell. É o mesmo defeito que o `GGML_NATIVE=OFF` daqui existe para evitar.
+
+Escolhendo implementar à mão, escreva no módulo por que a biblioteca não serviu — como o `src/vad.rs`
+e o `src/versao.rs` fazem.
+
 ## Build e empacotamento
 
 **O `.cargo/config.toml` põe `GGML_NATIVE=OFF`, e essa linha não é enfeite.** Sem
@@ -698,6 +719,35 @@ investigação que produziu o conhecimento — sintoma, diagnóstico, o que se t
 - **O SHA-256 de um modelo da Hugging Face é o `x-linked-etag`, não o `etag`.** O primeiro vem no
   redirecionamento e é o `lfs.oid`; o segundo vem na resposta final do CDN e é o hash do Xet. Conferir
   contra o `etag` reprova **todo** download bom. Detalhes em `docs/LEARNINGS.md`.
+- **Nenhum teste pode gravar no disco de quem roda `cargo test`.** A `Bancada` do `controller.rs` já
+  desliga cópia automática, sons e histórico por isso; falta**va** a configuração, e ela é a pior das
+  quatro: `apply_draft` chama `Config::save()`, que escreve no `~/.config/ditador/config.json` **real** —
+  e o que fica gravado lá são os ajustes da bancada, por cima das escolhas de uma pessoa, sem cópia de
+  onde voltar. Já aconteceu uma vez, e não apareceu em teste nenhum: os 200 continuaram verdes, e o
+  estrago só foi visto numa captura de tela. Precisando exercitar o Salvar, use `apply_audio_settings`,
+  que aplica sem gravar. Há uma trava lendo o próprio arquivo
+  (`nenhum_teste_daqui_grava_a_configuracao_de_quem_roda_os_testes`).
+- **Todo `Command` de programa de terminal passa por `programas::sem_janela`** (`curl`, `wget`, e o que
+  vier depois). No Windows o `ditador.exe` é iniciado sem console pelo `Ditador.Windows`, e um processo
+  sem console que cria um processo *de* console faz o Windows alocar um console para o filho — uma
+  janela preta piscando na tela. No download seria feio; na conferência de versão, que acontece sozinha
+  uma vez por dia, seria um defeito sem explicação possível para quem visse.
+- **A recarga do modelo por ociosidade é silenciosa, e tem de continuar sendo** (`recarga`, em
+  `src/stt.rs`). Ela **não** emite `SttEvent::Loading`: esse evento põe o programa inteiro em
+  `ModelState::Loading`, e o `start_recording` recusa gravar nesse estado — o atalho pararia de
+  funcionar sozinho depois de dez minutos de pausa, sem nada na tela explicando por quê. A carga de um
+  modelo *novo* continua se anunciando; a volta do mesmo modelo, não. Falha das duas, sim: um
+  `LoadFailed` sai nos dois casos, e o `Transcribe` que estava esperando pela recarga recebe um
+  `Failed` (é o que a macro `desistir!` garante).
+- **O `SttCmd::Aquecer` sai no *começo* da gravação, e não no fim.** É o que faz o descarregamento por
+  ociosidade caber num programa de ditado: o modelo volta para a memória enquanto a pessoa fala. Movido
+  para o `stop_recording`, a espera pela recarga apareceria inteira depois de a tecla ser solta, que é
+  justamente quando alguém está olhando para a tela esperando o texto. Ele sai sempre, com a opção
+  ligada ou não — com o modelo carregado é um comando que só adia o próximo descarregamento.
+- **O `vad::achar_a_fala` roda antes do `resample::normalize`, nunca depois** (`src/stt.rs`). O
+  `normalize` multiplica o sinal por até dez para levantar microfone fraco, e depois dele uma gravação
+  de puro silêncio fica com o mesmo aspecto de uma de fala — o critério absoluto do VAD (o pico em
+  dBFS) deixaria de querer dizer o que quer dizer.
 - **Antes de escrever em `state.view`, pergunte de quem é a janela agora** — `state.gravando()` ou
   `view == View::Settings` quer dizer que ela é de outra coisa. A regra já existe em
   `resultado_pode_aparecer`, mas ela mora dentro do `on_transcription`: quem chega por outro caminho

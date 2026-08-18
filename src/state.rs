@@ -200,8 +200,12 @@ pub enum UiAction {
     /// para o vazio, que é como se desliga o cancelamento por tecla.
     DefinirAtalho(QualAtalho, Vec<String>),
     ReloadModel,
-    /// Baixa o modelo sugerido (só faz sentido quando ele está faltando).
-    DownloadModel,
+    /// Baixa um modelo do catálogo, pelo nome (`src/modelo.rs`).
+    ///
+    /// Carrega o nome desde que existe mais de um modelo para escolher: antes
+    /// era sempre o padrão, e a tela de configurações não tinha como pedir o
+    /// leve para quem transcreve na CPU.
+    DownloadModel(String),
     /// Para o download em curso e apaga o arquivo pela metade.
     CancelDownload,
     /// Abre a lista das transcrições guardadas.
@@ -213,6 +217,12 @@ pub enum UiAction {
     CopiarDoHistorico(usize),
     /// Apaga o histórico inteiro, texto e áudio.
     LimparHistorico,
+    /// Põe na área de transferência o endereço da versão nova, quando há uma.
+    ///
+    /// Sem carga: quem sabe qual é o endereço é o estado (`versao_nova`), e uma
+    /// cópia dele viajando pela ação seria uma segunda fonte para a mesma coisa.
+    /// É a mesma forma do `CopiarDoHistorico`.
+    CopiarOEnderecoDaVersao,
     /// Descarta a gravação em curso sem transcrever.
     Cancelar,
     Quit,
@@ -280,6 +290,10 @@ pub struct Shared {
     pub historico: Vec<crate::historico::Entrada>,
     /// Quanto o histórico ocupa em disco, em bytes, na hora em que foi lido.
     pub historico_em_disco: u64,
+    /// A versão publicada, quando ela for mais nova que esta (ver
+    /// `src/versao.rs`). Fica `None` a vida inteira de quem está em dia — e de
+    /// quem desligou a conferência, que nem chega a perguntar.
+    pub versao_nova: Option<crate::versao::Novidade>,
 }
 
 impl Shared {
@@ -305,6 +319,7 @@ impl Shared {
             integracoes: Integracoes::default(),
             historico: Vec::new(),
             historico_em_disco: 0,
+            versao_nova: None,
         }
     }
 

@@ -528,6 +528,52 @@ curl -s -X POST https://huggingface.co/api/models/ggerganov/whisper.cpp/paths-in
 
 **Arquivos** — `src/modelo.rs` (`SOMAS`, `linked_etag`, `conferir`, `somar`).
 
+## Testes — um teste apagou as configurações da máquina, e nenhum teste reprovou
+
+**Contexto** — ao acrescentar uma opção nova (soltar o modelo da memória por
+ociosidade), foi escrito um teste conferindo que salvar as configurações leva a
+opção até a thread do Whisper. Ele chamava `Controller::apply_draft`, que é o que
+o botão *Salvar* chama.
+
+**Sintoma** — nenhum. Os 200 testes passaram, o clippy passou, a compilação
+passou. O estrago apareceu por acaso, horas depois, numa captura de tela feita
+para conferir o desenho da interface: a tela de configurações mostrava a opção
+nova **ligada com 5 minutos**, que era exatamente o que o teste tinha escolhido.
+Conferindo o `~/.config/ditador/config.json`, ele estava com a configuração da
+`Bancada` de testes — cópia automática desligada, sons desligados, histórico
+desligado —, por cima das escolhas de quem usa a máquina.
+
+**Causa** — `apply_draft` grava a configuração em disco (`Config::save()`), e
+`Config::save()` usa `config_path()`, que é global: num teste, ele aponta para o
+`~/.config/ditador` de quem rodou `cargo test`. A `Bancada` já tinha o cuidado de
+desligar cópia automática, sons e histórico justamente para não encostar na
+máquina de quem testa; a configuração era o quarto efeito colateral, e o único
+que **apaga** alguma coisa. Não há cópia de onde voltar: o `salvar_em` grava de
+forma atômica (arquivo temporário + `rename`) justamente para não deixar arquivo
+pela metade, e o `rename` substitui o anterior.
+
+**Solução** — o teste passou a chamar `apply_audio_settings`, que é a parte que
+aplica as configurações às threads sem tocar no disco; e uma trava passou a ler o
+próprio `src/controller.rs` (`include_str!`) e reprovar se o módulo de testes
+mencionar `apply_draft` ou `ApplyDraft`. Os nomes procurados são montados em
+pedaços (`format!("apply_{}(", "draft")`) porque, escritos por extenso, a própria
+trava casaria com a busca.
+
+O que dava para restaurar foi restaurado pelo que se podia provar: os padrões
+documentados no README para as três chaves que a bancada mexe, e o
+`start_with_session` pelo `systemctl --user is-enabled ditador`, que é a fonte de
+verdade daquele campo. O que era personalização e não deixou rastro — atalho,
+idioma, prompt inicial, termos próprios — não tem como voltar.
+
+**Prevenção** — antes de chamar qualquer coisa do programa dentro de um teste,
+pergunte **onde aquilo escreve**. Neste projeto as portas para o disco são duas
+(`config_dir()` e `data_dir()`, ambas em `src/config.rs`), e qualquer caminho que
+chegue a uma delas num teste está escrevendo na máquina de alguém. Um teste verde
+não é prova de que nada foi destruído — ele só olha o que você mandou ele olhar.
+
+**Arquivos** — `src/controller.rs` (`Bancada`, `apply_draft`,
+`apply_audio_settings`), `src/config.rs` (`salvar_em`, `config_path`).
+
 ## Testes — um `MutexGuard` nos argumentos de uma chamada trava o próprio teste
 
 **Contexto** — um teste novo do controlador pendurava para sempre, sem falhar e
@@ -689,6 +735,143 @@ justamente nesse ponto.
 **Arquivos** — `src/audio.rs` (`Captura::max_samples`, `ajustar_o_teto`,
 `teto_em_amostras`, o braço `Configure` do `run`).
 **Ambiente** — os dois sistemas; só aparece com `microfone_sempre_aberto`.
+
+## VAD/testes — o detector de fala recusava o seno puro do teste, e estava certo
+
+**Contexto** — ao escrever o `src/vad.rs` (aparar o silêncio das pontas antes de
+transcrever), o teste que verifica o caso "fala do começo ao fim, sem silêncio de
+onde tirar o piso de ruído" reprovou logo na primeira execução.
+
+**Sintoma** —
+
+```
+thread 'vad::tests::a_fala_do_comeco_ao_fim_volta_inteira' panicked:
+há fala aqui
+```
+
+O detector devolvia `None` (nenhuma fala) para um áudio que o teste montava com
+um seno de 220 Hz do primeiro ao último quadro, em amplitude alta.
+
+**Causa** — não era defeito do detector: era defeito do sinal de teste. Um dos
+dois critérios absolutos do módulo é a **dinâmica** — a diferença entre o quadro
+mais forte e o percentil 10 dos quadros. Ruído de máquina (chiado do microfone,
+ventilador, zumbido de rede elétrica) tem pico e piso quase colados; fala tem
+sílaba, sobe e desce umas quatro vezes por segundo, e abre facilmente 15 dB entre
+um e outro. Um seno contínuo é, por essa régua, exatamente ruído de máquina — e
+recusá-lo é a resposta certa.
+
+**Solução** — o gerador de fala dos testes ganhou envelope silábico
+(`0,15 + 0,85·|sen(2π·4t)|`), que é o que separa voz de tom constante. O vale não
+chega a zero de propósito: nem entre duas sílabas a voz some por completo.
+
+**Prevenção** — sinal sintético para testar detecção de voz precisa ter envelope.
+Um seno puro não é fala e nenhum detector honesto vai dizer que é; quem "consertar"
+o detector para aceitá-lo estará ensinando o programa a transcrever o zumbido do
+ventilador. O mesmo vale para o ruído: use ruído de amplitude constante quando
+quiser justamente o caso que **não** é fala.
+
+**Arquivos** — `src/vad.rs` (a constante `DINAMICA_MINIMA_DB`, os auxiliares
+`fala` e `chiado` do módulo de testes).
+
+**Comandos** — `cargo test --no-default-features --features cpu vad::`
+
+## Whisper — o que ele inventa não é silêncio digital, é **ruído de sala**
+
+**Contexto** — ao ligar o aparo de silêncio (`src/vad.rs`), a primeira conferência
+foi a óbvia: mandar três segundos de zeros ao modelo e ver o que ele responde.
+
+**Sintoma** — nada. O texto saiu vazio **mesmo sem o aparo**, o que parecia
+indicar que a funcionalidade nova não resolvia problema nenhum.
+
+**Causa** — silêncio digital (amostras todas em zero) já era coberto pelas duas
+defesas que o `transcribe` tinha: o `no_speech_probability > 0.85` e o
+`is_non_speech_marker`. Só que silêncio digital **não é o caso de verdade**: um
+microfone de verdade nunca entrega zeros. Ele entrega o piso dele — chiado, o
+ventilador da máquina, o zumbido da rede elétrica —, e é diante *disso* que o
+modelo inventa.
+
+Repetido o ensaio com ruído a -55 dBFS (amplitude 0,004), quatro segundos, modelo
+`small-q5_1`:
+
+```
+    ruído de sala SEM o aparo:  "ស\u{17d2}\u{17d2}\u{17d2}\u{17d2}"
+    ruído de sala COM o aparo:  ""
+```
+
+Cinco caracteres de khmer. Não são marcador (não estão entre colchetes nem
+parênteses), têm letra (então o filtro de "só pontuação" não pega) e a
+probabilidade de silêncio do segmento ficou abaixo do corte — ou seja,
+**atravessavam as duas defesas** e caíam na área de transferência de quem
+esbarrou na tecla.
+
+E, com fala presente, o ruído nas pontas muda a decodificação: a mesma frase
+cercada de dois segundos de ruído de cada lado perdeu uma vírgula em relação à
+frase nua ("And so my fellow Americans" contra "And so, my fellow Americans").
+
+**Solução** — o `vad::achar_a_fala` corta as pontas antes de o áudio chegar ao
+modelo, e descarta a gravação inteira quando não há fala.
+
+**Prevenção** — ao testar qualquer coisa relacionada a "o modelo diante de
+silêncio", **use ruído de sala, não zeros**. Zeros são um caso mais fácil que
+qualquer defesa pega, e testar com eles produz a conclusão errada: a de que não
+havia problema. O auxiliar `ensaio::ruido_de_sala`, em `src/stt.rs`, existe para
+isso.
+
+**Arquivos** — `src/vad.rs`, `src/stt.rs` (`transcribe` e o `mod ensaio`).
+
+**Comandos** —
+
+```bash
+DITADOR_AUDIO_DE_TESTE=/tmp/jfk.wav \
+  cargo test --release --no-default-features --features cpu ensaio \
+  -- --ignored --nocapture
+```
+
+## Whisper/CPU — o modelo padrão transcreve mais devagar do que se fala, e o número
+
+**Contexto** — a escolha de qual modelo sugerir a quem não tem GPU, ao montar o
+`CATALOGO` do `src/modelo.rs`.
+
+**Sintoma** — nada quebra: simplesmente ditar numa máquina sem GPU é uma
+experiência ruim, e não havia número que dissesse **quanto** ruim nem qual modelo
+resolveria.
+
+**Causa** — o `large-v3-turbo-q5_0` tem 809 M de parâmetros. Ele é o padrão
+porque com Vulkan roda a 42× o tempo real (medido no `Cargo.toml`); na CPU, o
+mesmo modelo cai para menos de 1× — ou seja, a transcrição demora mais do que a
+fala durou.
+
+**Solução** — medido nesta máquina (Ryzen 5 4600G, 12 threads, binário
+`--features cpu`), os mesmos 11,0 s de fala, três passadas cada:
+
+```
+    large-v3-turbo-q5_0    18,1 s     0,6× o tempo real
+    small-q5_1              3,5 s     3,2× o tempo real
+```
+
+Daí o `modelo::PADRAO_CPU = "small-q5_1"`, que é o que a tela marca com estrela e
+o `--baixar-modelo` sem argumento escolhe num binário só-CPU.
+
+**Prevenção** — ao comparar modelos, o que interessa não é a razão entre eles e
+sim **de que lado do 1× cada um cai**: abaixo disso o programa perde a razão de
+existir naquela máquina. E meça com o mesmo áudio, na mesma máquina, na mesma
+tarde — comparar com número lembrado de outra medição não vale.
+
+**Arquivos** — `src/modelo.rs` (`PADRAO_CPU`, `CATALOGO`), `src/stt.rs` (o teste
+`medicao::mede_o_backend`).
+
+**Ambiente** — CPU. Com GPU a pergunta não se coloca.
+
+**Comandos** — o arnês aceita escolher o modelo sem mexer na configuração de quem
+roda o teste:
+
+```bash
+curl -sL -o /tmp/jfk.wav \
+  https://github.com/ggerganov/whisper.cpp/raw/master/samples/jfk.wav
+DITADOR_AUDIO_DE_TESTE=/tmp/jfk.wav DITADOR_MODELO_DE_TESTE=small-q5_1 \
+  cargo test --release --no-default-features --features cpu mede_o_backend \
+  -- --ignored --nocapture
+```
 
 # Histórico
 

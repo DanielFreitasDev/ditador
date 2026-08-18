@@ -54,6 +54,8 @@ mod stt;
 mod tema;
 mod tray;
 mod ui;
+mod vad;
+mod versao;
 mod widgets;
 
 use crate::audio::AudioSettings;
@@ -129,8 +131,20 @@ fn main() -> Result<()> {
             return Ok(());
         }
         Some("--baixar-modelo") => {
-            let nome = args.get(1).map_or(modelo::PADRAO, String::as_str);
-            return baixar_modelo(nome);
+            if matches!(args.get(1).map(String::as_str), Some("--lista" | "-l")) {
+                listar_modelos();
+                return Ok(());
+            }
+            // Sem nome, o sugerido para **esta** instalação, e não o padrão
+            // sempre. Num binário compilado só para CPU, ou com a GPU desligada
+            // na configuração, mandar 574 MB de modelo de GPU é entregar a
+            // pessoa a uma transcrição mais lenta do que a própria fala — que é
+            // o número que o `Cargo.toml` mede e o `modelo::PADRAO_CPU` existe
+            // para evitar.
+            let config = config::Config::load();
+            let padrao = modelo::sugerido(config.use_gpu && stt::GPU_CAPABLE);
+            let nome = args.get(1).map_or(padrao, String::as_str);
+            return baixar_modelo(nome, &config);
         }
         Some("--microfones") => {
             for nome in audio::list_input_devices() {
@@ -424,6 +438,14 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
     plataforma::integracoes::start(shared.clone(), &sinal, ipc_tx.clone(), levels.clone());
     tray::start(shared.clone(), &sinal, ipc_tx.clone());
 
+    // A conferência de versão nova é a única coisa aqui que fala com a rede sem
+    // ninguém ter pedido, e é por isso que a pergunta é feita **antes** de criar
+    // a thread: desligada, ela não existe — não há conexão adiada, thread
+    // dormindo nem chamada de sistema esperando um interruptor mudar de ideia.
+    if state::lock(&shared).config.aviso_de_versao {
+        versao::vigiar(shared.clone(), sinal.clone());
+    }
+
     if let Some(comando) = ao_iniciar {
         let _ = ipc_tx.send(comando);
     }
@@ -526,7 +548,33 @@ fn sair_sem_desmontar(codigo: i32) -> ! {
 /// Baixa o modelo pelo terminal, com a mesma máquina que a interface usa.
 /// Existe para instalações sem tela (um servidor, uma sessão por SSH) e para
 /// quem prefere resolver tudo de uma vez antes de usar o programa.
-fn baixar_modelo(nome: &str) -> Result<()> {
+/// O catálogo, como o `--baixar-modelo --lista` o imprime.
+///
+/// Existe porque o `baixar-modelo.sh` não é instalado com o programa: quem
+/// recebeu o `.deb` tem o binário e não tem o script, e até aqui a única forma
+/// de descobrir que existe um modelo leve era ler o README no GitHub.
+fn listar_modelos() {
+    println!("Modelos disponíveis (o ✓ já está baixado, o ★ é o sugerido):\n");
+    let sugerido_daqui = modelo::sugerido(config::Config::load().use_gpu && stt::GPU_CAPABLE);
+    for m in modelo::CATALOGO {
+        let marca = if m.baixado() {
+            '✓'
+        } else if m.nome == sugerido_daqui {
+            '★'
+        } else {
+            ' '
+        };
+        println!(
+            "  {marca} {:<22} {:>8}  {}",
+            m.nome,
+            modelo::tamanho_legivel(m.tamanho),
+            m.nota
+        );
+    }
+    println!("\nUso: ditador --baixar-modelo [nome]");
+}
+
+fn baixar_modelo(nome: &str, config: &config::Config) -> Result<()> {
     use std::io::Write as _;
 
     let destino = modelo::caminho(nome);
@@ -556,6 +604,18 @@ fn baixar_modelo(nome: &str) -> Result<()> {
         match &p.fim {
             Some(Ok(caminho)) => {
                 println!("\rPronto: {}                    ", caminho.display());
+                // Baixar não é escolher. Quem pediu um modelo diferente do que
+                // está em uso precisa ouvir isso agora, e não descobrir depois
+                // que o Ditador continua transcrevendo com o de antes — a
+                // configuração é da instância que está rodando, e não deste
+                // processo de linha de comando.
+                if *caminho != config.model_path {
+                    println!(
+                        "Para passar a usá-lo: Configurações → Desempenho → Modelo \
+                         (o atual é {}).",
+                        config::caminho_curto(&config.model_path)
+                    );
+                }
                 return Ok(());
             }
             Some(Err(e)) => anyhow::bail!("{e}"),
@@ -820,7 +880,9 @@ USO
   ditador --historico --janela   abre a lista na janela do Ditador
   ditador --status           mostra o estado da instância em execução
   ditador --encerrar         fecha o aplicativo
-  ditador --baixar-modelo    baixa o modelo de transcrição (~574 MB)
+  ditador --baixar-modelo    baixa o modelo sugerido para esta máquina
+  ditador --baixar-modelo --lista   mostra todos os modelos e os tamanhos
+  ditador --baixar-modelo <nome>    baixa um modelo específico da lista
   ditador --microfones       lista os microfones disponíveis
   ditador --diagnostico      confere tudo de que o Ditador depende
   ditador --versao           versão e backend

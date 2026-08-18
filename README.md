@@ -34,13 +34,23 @@ Se algo não funcionar, `ditador --diagnostico` confere, um a um, tudo de que o
 programa depende e diz o que está faltando.
 
 Saia da sessão e entre de novo. Abra o **Ditador** pelo menu de aplicativos: na
-primeira vez ele oferece baixar o modelo de transcrição (~574 MB) ali mesmo, com
-barra de progresso e conferência de soma no fim — um download corrompido é
-recusado e refeito, em vez de virar um arquivo que o Whisper não abre. Depois
-disso, tudo roda sem internet.
+primeira vez ele oferece baixar o modelo de transcrição ali mesmo, com barra de
+progresso e conferência de soma no fim — um download corrompido é recusado e
+refeito, em vez de virar um arquivo que o Whisper não abre. O modelo oferecido é
+o que serve à sua máquina: 574 MB de modelo grande para quem tem GPU, 190 MB de
+modelo leve para quem vai transcrever na CPU (veja
+[Qual modelo usar](#qual-modelo-usar)). Depois disso, tudo roda sem internet.
 
 Em *Configurações → Sistema* está o interruptor **Iniciar junto com a sessão** —
 ligue e o Ditador sobe sozinho toda vez que você entrar, já em segundo plano.
+
+**Sobre atualizar.** O Ditador não se atualiza sozinho: quem instalou pelo `.deb`
+espera que quem mande no arquivo seja o `dpkg`, e não o aplicativo. O que ele faz
+é **avisar** — uma consulta por dia a `api.github.com`, só para ler o número da
+última versão publicada, e uma linha em *Configurações → Sistema* quando houver
+uma mais nova, com o link para copiar. Nada é enviado nessa consulta: nem a versão
+que você tem, nem nada sobre a máquina. Quem não quiser conexão nenhuma desliga no
+mesmo lugar, e desligado ele nem cria a thread que perguntaria.
 
 **Compilando você mesmo:**
 
@@ -128,7 +138,7 @@ nenhum dos dois, o Ditador funciona igual — só avisa no log que ficou sem íc
 
 ### O que o Ditador guarda, corrige e avisa
 
-Quatro coisas que vale conhecer antes de mexer nas configurações. Todas são
+Cinco coisas que vale conhecer antes de mexer nas configurações. Todas são
 opcionais, todas nascem ligadas, e nenhuma delas fala com a rede.
 
 <p align="center">
@@ -175,6 +185,31 @@ detalhe e não é: com a janela de resultado desligada — ou com a extensão do
 no ar, que recolhe a sobreposição — não aparece nada na tela, e o som é a única
 confirmação de que o atalho pegou. Volume regulável em *Configurações → Sons*.
 
+**O silêncio das pontas é aparado.** Todo ditado começa e termina com silêncio: o
+tempo entre apertar a tecla e falar, e entre calar e soltar. É nele que o Whisper
+inventa frase — diante de nada para transcrever, o modelo devolve a frase mais
+provável do treino dele. Antes de transcrever, o Ditador mede o ruído *daquela*
+gravação, acha onde a fala começa e termina, e manda ao modelo só esse trecho,
+com uma folga de cada lado.
+
+Os dois efeitos, medidos com o `small-q5_1` e o `jfk.wav` (o ensaio está em
+`stt::ensaio`, no `src/stt.rs`):
+
+- **quatro segundos de ruído de sala**, daqueles que qualquer microfone entrega
+  quando ninguém fala, saíram do modelo como `"ស្្្្"` — cinco caracteres de
+  khmer que ninguém falou, que não são marcador nem têm probabilidade de silêncio
+  alta o bastante, e que portanto atravessavam as defesas que já existiam e caíam
+  na área de transferência de quem esbarrou na tecla. Com o aparo: nada;
+- **a mesma frase cercada de dois segundos de ruído de cada lado** perdeu uma
+  vírgula em relação à frase nua ("And so my fellow Americans" em vez de "And so,
+  my fellow Americans"): o modelo lê o ruído como parte da fala e decide a
+  prosódia por ele. Com o aparo, o texto sai idêntico ao da frase nua.
+
+O silêncio **do meio** da fala não é tocado — ele carrega a pontuação, e emendar
+dois trechos que não eram vizinhos estraga mais do que conserta. Na dúvida, nada
+é cortado: não achando fala com segurança, o áudio vai inteiro. Desliga-se em
+*Configurações → Transcrição*.
+
 ### Como o texto sai
 
 Com a entrega automática ligada, *Configurações → Área de transferência* decide
@@ -192,6 +227,53 @@ num campo de chat vira falar e soltar — a mensagem já foi, sem você encostar
 teclado. O Ctrl+Enter existe porque em vários programas é ele que envia e o Enter
 sozinho quebra a linha. Há também um interruptor para acrescentar um espaço no
 fim, que serve para ditar duas frases seguidas sem elas grudarem.
+
+### Qual modelo usar
+
+Em *Configurações → Desempenho → Modelo* há uma lista com doze modelos do
+Whisper, cada um com o tamanho do arquivo e para quem ele serve; o que estiver
+faltando tem um botão de baixar ao lado. Pelo terminal, `ditador --baixar-modelo
+--lista` mostra a mesma lista, e `ditador --baixar-modelo <nome>` baixa um deles.
+
+Dois vêm marcados, e a escolha entre eles é uma só pergunta — **tem GPU?**:
+
+| | Modelo | Tamanho |
+|---|---|---|
+| **Com GPU** | `large-v3-turbo-q5_0` | 574 MB |
+| **Só CPU** | `small-q5_1` | 190 MB |
+
+Isso não é preciosismo. Medido nesta máquina (Ryzen 5 4600G, 12 threads, binário
+`--features cpu`), transcrevendo os mesmos 11,0 s de fala, três passadas cada,
+pelo teste `stt::medicao::mede_o_backend`:
+
+```
+    large-v3-turbo-q5_0    18,1 s     0,6× o tempo real
+    small-q5_1              3,5 s     3,2× o tempo real
+```
+
+O que importa não é o "5,2 vezes mais rápido" — é de que lado do 1× cada um cai.
+Com o modelo grande na CPU, uma frase de dez segundos leva dezoito para virar
+texto: **ditar fica mais lento do que digitar**, e o programa perde a razão de
+existir naquela máquina. Com o leve, os mesmos dez segundos viram texto em três.
+
+O preço do leve é qualidade — 244 milhões de parâmetros contra 809 milhões. Ele
+erra mais em nome próprio e em jargão, que é justamente o que *Termos próprios*
+conserta depois. Quem tem GPU não precisa escolher: com Vulkan, o modelo grande
+transcreve a 42× o tempo real (o número está no `Cargo.toml`).
+
+Trocar de modelo não pede reinício: escolha na lista, salve, e o Ditador troca o
+que está na memória. O campo de caminho continua embaixo da lista, para quem
+aponta para um modelo afinado por conta própria.
+
+**O modelo pode sair da memória quando você não está ditando.** Ele ocupa a
+memória dele o dia inteiro — 574 MB, no padrão — para trabalhar alguns minutos
+por dia. Em *Configurações → Desempenho* há um interruptor que o solta depois de
+um tempo parado (10 minutos, por padrão; a lista vai de 1 minuto a 1 hora). Ele
+volta **no instante em que você aperta a tecla**, e não quando você solta: o
+modelo carrega enquanto você fala, de modo que na maioria dos ditados não há
+espera nenhuma. Num ditado de uma palavra logo depois de uma pausa longa, dá para
+sentir — e é por isso que o interruptor nasce desligado, com a escolha na mão de
+quem conhece a própria máquina.
 
 ### Modo portátil
 
@@ -521,6 +603,14 @@ Os campos acrescentados na 0.7, todos com o padrão entre parênteses:
 | `dicionario.ativo` / `.termos` / `.sensibilidade` (`true` / `[]` / `0.72`) | a correção de termos próprios |
 | `historico.ativo` / `.limite` / `.guardar_audio` (`true` / `200` / `false`) | o registro das transcrições |
 
+E os da 0.8:
+
+| Campo | O que faz |
+|---|---|
+| `aparar_silencio` (`true`) | tira o silêncio das pontas antes de transcrever, e descarta a gravação em que ninguém falou |
+| `descarregar_o_modelo.ativo` / `.minutos` (`false` / `10`) | solta o modelo da memória depois de tanto tempo parado; ele volta quando você aperta a tecla |
+| `aviso_de_versao` (`true`) | uma consulta por dia ao GitHub, só para saber se saiu versão nova |
+
 Um cuidado no `atalho_de_cancelar`: igual ao `hotkey`, ele cancelaria todo ditado
 no instante em que ele começa — o mesmo aperto dispararia os dois. Nesse caso o
 programa avisa no log e ignora o de cancelar, ficando sem ele em vez de ficar sem
@@ -632,7 +722,15 @@ quando o tema do sistema ainda não tem os nossos.
   pessoas. Desligando, volta o comportamento antigo: o microfone abre no
   instante do aperto, e em máquina lenta isso pode cortar a primeira sílaba.
 - Trocar de modelo com o programa aberto libera o contexto anterior da GPU; se
-  isso se mostrar instável no seu driver, reinicie o serviço depois de trocar.
+  isso se mostrar instável no seu driver, reinicie o serviço depois de trocar. O
+  mesmo caminho é usado por *soltar o modelo da memória quando parado* — se o seu
+  driver reclamar de um, reclamará do outro.
+- **Aparar o silêncio** (ligado por padrão) decide pelo nível do áudio, e não por
+  uma rede neural: ele reconhece fala perto do microfone, que é o caso deste
+  programa. Ditando com o microfone longe, numa sala barulhenta ou com música ao
+  fundo, o silêncio pode não ser reconhecido como silêncio — e aí nada é aparado,
+  que é o resultado seguro. O contrário, cortar fala, é o que as três regras
+  conservadoras do `src/vad.rs` existem para impedir.
 
 ## Licença
 
