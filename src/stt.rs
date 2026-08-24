@@ -972,8 +972,10 @@ mod medicao {
         assert_eq!(canais, 1, "o WAV precisa ser mono");
         let dados = dados.expect("o WAV não tem bloco de dados");
         let amostras = dados
-            .chunks_exact(2)
-            .map(|par| i16::from_le_bytes([par[0], par[1]]) as f32 / i16::MAX as f32)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|par| i16::from_le_bytes(*par) as f32 / i16::MAX as f32)
             .collect();
         (amostras, taxa)
     }

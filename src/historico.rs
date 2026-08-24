@@ -522,8 +522,10 @@ mod tests {
     fn amostras_do_wav(caminho: &Path) -> Vec<i16> {
         let bytes = std::fs::read(caminho).expect("lendo o wav");
         bytes[44..]
-            .chunks_exact(2)
-            .map(|par| i16::from_le_bytes([par[0], par[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|par| i16::from_le_bytes(*par))
             .collect()
     }
 
@@ -619,8 +621,10 @@ mod tests {
         gravar_wav(&caminho, &[2.0, -2.0, 0.0], 16_000).expect("gravando");
         let bytes = std::fs::read(&caminho).expect("lendo");
         let amostras: Vec<i16> = bytes[44..]
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
             .collect();
         assert_eq!(amostras, vec![i16::MAX, -i16::MAX, 0]);
         let _ = std::fs::remove_dir_all(&dir);
