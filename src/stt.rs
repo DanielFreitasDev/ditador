@@ -20,6 +20,27 @@ pub const GPU_CAPABLE: bool = cfg!(any(feature = "cuda", feature = "vulkan"));
 /// O whisper.cpp rejeita áudio muito curto; completamos com silêncio.
 const MIN_SAMPLES: usize = (WHISPER_SAMPLE_RATE as usize * 11) / 10;
 
+/// A janela do encoder inteira: 1500 quadros, que são os 30 s do Whisper.
+const JANELA_CHEIA: i32 = 1500;
+
+/// Quadros de encoder por segundo de áudio — os mesmos 1500 ÷ 30 s.
+const QUADROS_POR_SEGUNDO: f64 = JANELA_CHEIA as f64 / 30.0;
+
+/// Nunca menos do que isto, por mais curta que seja a frase.
+///
+/// Não é economia de conta: abaixo daqui a margem deixa de compensar o risco
+/// descrito em `janela_do_encoder`, e o que se ganha em segundos já é quase
+/// todo o ganho possível — de 1500 para 768 o encoder cai para 40% do tempo,
+/// e de 768 para 512 cai só mais 10 pontos.
+const JANELA_MINIMA: i32 = 768;
+
+/// Quantas vezes a duração da fala a janela precisa cobrir.
+///
+/// O caso que fixou o número em dois: 5 s de fala cortada no meio de uma
+/// palavra — que é o que acontece quando alguém solta o atalho cedo demais —
+/// saíram certos com 512 quadros (2,05×) e viraram repetição com 384 (1,54×).
+const FOLGA: f64 = 2.0;
+
 #[derive(Debug, Clone)]
 pub struct TranscribeOptions {
     pub language: Option<String>,
@@ -393,6 +414,46 @@ enum Saida {
     Fim,
 }
 
+/// Quantos quadros do encoder vale a pena calcular para um áudio deste tamanho.
+///
+/// O encoder do Whisper trabalha sempre numa janela de 30 s: uma frase de dois
+/// segundos custa exatamente o mesmo que uma de trinta, porque o que sobra é
+/// preenchido com silêncio e computado do mesmo jeito. Onde há GPU isso não se
+/// nota. Onde não há, é o ditado inteiro — medido num i7-13700T (35 W, sem
+/// placa dedicada), com o `large-v3-turbo-q5_0`: **15 s de espera para uma
+/// frase de dois**.
+///
+/// O `audio_ctx` do whisper.cpp encurta essa janela, e o preço de encurtá-la
+/// demais **não é texto pior — é texto repetido**. O modelo entra em laço e
+/// devolve a mesma oração até encher o limite, que num programa de ditado é
+/// bem pior do que demorar. Medido aqui, em português, com o mesmo modelo:
+///
+/// ```text
+///   fala    janela   encoder   texto
+///    7 s     1500     15,1 s   certo
+///    7 s      768      6,5 s   certo, igual ao de 1500
+///    7 s      512      3,9 s   certo, igual ao de 1500
+///   18 s      900      —       certo
+///   18 s      768      —       "para daniel.empresa.empresa. Daniel.empresa."
+///   18 s      640      —       a última oração repetida oito vezes
+///   33 s      900      —       "O Rafael ficou respiro." três vezes
+/// ```
+///
+/// Daí as duas metades da conta. A janela cresce com a fala — `FOLGA` vezes o
+/// que ela ocupa —, e nunca desce de `JANELA_MINIMA`. Passando de 30 s o áudio
+/// deixa de caber numa janela só e o whisper.cpp o parte em pedaços de 30 s: o
+/// primeiro pedaço é cheio, e encurtar seria a mesma repetição de novo.
+fn janela_do_encoder(amostras: usize) -> i32 {
+    let segundos = amostras as f64 / f64::from(WHISPER_SAMPLE_RATE);
+    let quadros = (segundos * QUADROS_POR_SEGUNDO * FOLGA).ceil();
+    // A comparação é feita em `f64` de propósito: uma gravação de dois minutos
+    // dá um número que não cabe em `i32` e o `as` o truncaria em silêncio.
+    if quadros >= f64::from(JANELA_CHEIA) {
+        return JANELA_CHEIA;
+    }
+    (quadros as i32).max(JANELA_MINIMA)
+}
+
 fn transcribe(
     state: &mut whisper_rs::WhisperState,
     samples: Vec<f32>,
@@ -464,6 +525,10 @@ fn transcribe(
     if !options.initial_prompt.is_empty() {
         params.set_initial_prompt(&options.initial_prompt);
     }
+    // Depois do aparo do silêncio e do preenchimento até `MIN_SAMPLES`, que são
+    // os dois que mexem no tamanho: a janela é medida sobre o áudio que o
+    // modelo vai mesmo receber.
+    params.set_audio_ctx(janela_do_encoder(samples.len()));
 
     state
         .full(params, &samples)
@@ -1047,6 +1112,52 @@ mod medicao {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn janela_de(segundos: f64) -> i32 {
+        janela_do_encoder((f64::from(WHISPER_SAMPLE_RATE) * segundos) as usize)
+    }
+
+    #[test]
+    fn uma_frase_curta_nao_paga_a_janela_de_trinta_segundos() {
+        // O caso comum do programa, e a razão inteira de `janela_do_encoder`
+        // existir: dois segundos de fala custavam os mesmos 1500 quadros de
+        // uma gravação de meio minuto.
+        assert_eq!(janela_de(2.0), JANELA_MINIMA);
+    }
+
+    #[test]
+    fn a_janela_cresce_com_a_fala_depois_que_o_piso_deixa_de_bastar() {
+        // Até 7,68 s a `FOLGA` ainda cabe embaixo do piso; passando disso a
+        // janela passa a acompanhar a fala.
+        assert_eq!(janela_de(7.0), JANELA_MINIMA);
+        assert_eq!(janela_de(10.0), 1000);
+        assert!(janela_de(12.0) > janela_de(10.0));
+    }
+
+    #[test]
+    fn a_janela_cobre_o_dobro_do_que_a_pessoa_falou() {
+        // A folga é o que separa o texto certo da repetição, e é ela que este
+        // teste tranca: quem mexer no `FOLGA` para baixo tem de vir aqui e
+        // dizer por quê.
+        for segundos in [8.0, 10.0, 14.0] {
+            let cobertura = f64::from(janela_de(segundos)) / QUADROS_POR_SEGUNDO;
+            assert!(
+                cobertura >= segundos * FOLGA,
+                "{segundos} s de fala ficaram com uma janela de só {cobertura:.1} s"
+            );
+        }
+    }
+
+    #[test]
+    fn gravacao_longa_usa_a_janela_cheia_e_nao_estoura_a_conta() {
+        // Passando de 30 s o whisper.cpp parte o áudio em pedaços de 30 s, e o
+        // primeiro pedaço é cheio. Os dois minutos são o teto de gravação das
+        // configurações — o número que faria a conta transbordar um `i32` se
+        // ela fosse fechada antes da comparação.
+        assert_eq!(janela_de(15.0), JANELA_CHEIA);
+        assert_eq!(janela_de(30.0), JANELA_CHEIA);
+        assert_eq!(janela_de(120.0), JANELA_CHEIA);
+    }
 
     /// Um modelo que não existe, para exercitar a máquina de estados da thread
     /// sem carregar 574 MB — o que nenhum agente de CI tem como fazer.

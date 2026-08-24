@@ -968,6 +968,136 @@ DITADOR_AUDIO_DE_TESTE=/tmp/jfk.wav DITADOR_MODELO_DE_TESTE=small-q5_1 \
   -- --ignored --nocapture
 ```
 
+## Whisper/Vulkan/Intel — a GPU integrada é **mais lenta** que a CPU, e o padrão do `.deb` a usa
+
+**Contexto** — Dell OptiPlex Micro Plus 7010, i7-13700T (8 P + 8 E, 24 threads,
+35 W de PL1) com UHD 770 e sem placa dedicada, Kubuntu 24.04, Mesa 25.2.8. O
+`.deb` de GPU instalado e `use_gpu: true`, que é o padrão dele.
+
+**Sintoma** — ditar era lento sem nada estar quebrado: 0,9 s de fala viravam
+texto em 9,7 s, 1,9 s em 13,5 s. Nenhum erro no journal, o `--diagnostico` dizia
+"Tudo o que o Ditador precisa está no lugar", e a linha de carga confirmava
+`backend Vulkan, gpu=true` — que é justamente o que fazia parecer que estava
+tudo certo.
+
+**Causa** — a UHD 770 não tem com que rodar o ggml depressa, e o próprio
+ggml-vulkan diz isso na linha de descoberta do dispositivo:
+
+```
+ggml_vulkan: 0 = Intel(R) Graphics (RPL-S) (Intel open-source Mesa driver)
+  | uma: 1 | fp16: 1 | bf16: 0 | warp size: 32 | shared memory: 65536
+  | int dot: 0 | matrix cores: none
+```
+
+`int dot: 0` e `matrix cores: none` querem dizer que os dois caminhos rápidos do
+ggml-vulkan não existem ali. Medido com o `whisper-bench` do whisper.cpp 1.8.3,
+o mesmo `large-v3-turbo-q5_0`, o mesmo encoder de 30 s:
+
+```
+    Vulkan (UHD 770)     36,1 s
+    CPU (16 threads)     15,2 s
+```
+
+Ou seja: a GPU integrada custa **2,4× o tempo da CPU**. Não é defeito de
+configuração nem de driver — é a peça. Some a isso que a iGPU divide os mesmos
+35 W e a mesma memória com a CPU, e não sobra nada a favor dela.
+
+**Solução** — `use_gpu: false`. O binário continua sendo o do `.deb` de Vulkan;
+o que muda é ele não pedir o dispositivo, e a linha de carga passa a dizer
+`(backend Vulkan, gpu=false)`.
+
+**Prevenção** — "tem GPU" não é a pergunta certa; a pergunta é **qual**. Antes de
+recomendar o `.deb` de GPU para uma máquina de vídeo integrado, olhe a linha
+`ggml_vulkan:` do log: sem `int dot` e sem `matrix cores`, a CPU ganha. E note
+que o rótulo do `--diagnostico` (`backend Vulkan`) é o do **binário**, não o do
+que está em uso — quem responde isso é a linha `gpu=` do `ditador::stt`.
+
+**Arquivos** — `src/stt.rs` (`GPU_CAPABLE`, `BACKEND`, `params.use_gpu`),
+`src/config.rs` (`use_gpu`).
+
+**Ambiente** — Linux, vídeo integrado Intel (Xe-LP / UHD 7xx). Placa dedicada é
+outro caso: numa RTX 3060 o Vulkan roda a 42× o tempo real.
+
+**Comandos** — o que revela o dispositivo e o que ele tem:
+
+```bash
+RUST_LOG=debug ditador 2>&1 | grep -E "ggml_vulkan|using .* backend|gpu="
+```
+
+## Whisper — o encoder cobra 30 s por qualquer frase, e quem corta isso é o `audio_ctx`
+
+**Contexto** — procurando por que ditar duas palavras custava o mesmo que ditar
+meio minuto, numa máquina que transcreve na CPU.
+
+**Sintoma** — o tempo de transcrição praticamente não depende do tamanho da
+fala. No journal: 0,9 s de áudio em 9,7 s; 1,9 s em 13,5 s. E o `whisper-bench`,
+que só roda o encoder, dava o mesmo número dos ditados de verdade.
+
+**Causa** — o encoder do Whisper trabalha numa janela fixa de 1500 quadros, que
+são os 30 s do modelo. O que falta é preenchido com silêncio e **computado do
+mesmo jeito**. Não há redução automática para áudio curto no whisper.cpp 1.8.3:
+`exp_n_audio_ctx` só sai de zero quando alguém escreve nele. O `whisper-rs` 0.16
+expõe isso como `FullParams::set_audio_ctx`, e o Ditador não o chamava.
+
+**Solução** — `janela_do_encoder`, em `src/stt.rs`: a janela passou a acompanhar
+o tamanho do áudio que o modelo vai receber, com o dobro de folga e um piso de
+768 quadros. Medido nesta máquina, `large-v3-turbo-q5_0` na CPU com 16 threads,
+os mesmos 7,0 s de fala em português, pelo `medicao::mede_o_backend`:
+
+```
+    janela cheia (1500)     15,1 s     (14,2 · 15,1 · 16,1 · 15,2, só o encoder)
+    janela adaptativa (768)  6,5 s     (6,37 · 7,45 · 6,75 · 6,36)
+```
+
+De ponta a ponta, pelo `medicao::mede_o_backend` — que é o `whisper_full`
+inteiro, com reamostragem e normalização —, o mesmo áudio passou a sair em
+**5,84 s** (5,84 · 5,86 · 5,84), com o texto idêntico ao da janela cheia. E há
+um segundo ganho de graça: o aparo do silêncio, que já existia, agora encurta a
+janela junto com o áudio.
+
+⚠️ **Meça intercalando as duas configurações, não uma bateria de cada.** Este
+i7-13700T tem PL1 de 35 W e PL2 de 106 W: partindo frio, o mesmo encoder de
+janela cheia mediu 9,7 s; morno, 15 s; depois de uma bateria seguida, 31,7 s.
+São 3× de diferença sem nada ter mudado no programa, e é exatamente a armadilha
+que faz uma medição isolada "provar" o que se quiser.
+
+**Prevenção** — **encurtar demais não degrada o texto, faz o modelo repetir**, que
+num programa de ditado é bem pior do que demorar. Foi isso que fixou a folga em
+dois e o piso em 768; os números que a sustentam, com o mesmo modelo:
+
+```
+     fala    janela   texto
+      7 s      512    certo, igual ao da janela cheia
+      5 s      512    certo — e este é o caso apertado: fala cortada no
+                      meio de uma palavra, que é o que acontece quando
+                      alguém solta o atalho cedo (margem de 2,05×)
+      5 s      384    "Ask not. Ask not. Ask not." (margem de 1,54×)
+     18 s      900    certo
+     18 s      768    "para daniel.empresa.empresa. Daniel.empresa."
+     33 s      900    "O Rafael ficou respiro." três vezes
+```
+
+Quem for baixar a `FOLGA` precisa refazer esta medição — inclusive o caso da
+fala cortada no meio, que é o que reprova antes dos outros. Há teste trancando
+isso (`a_janela_cobre_o_dobro_do_que_a_pessoa_falou`).
+
+**Arquivos** — `src/stt.rs` (`janela_do_encoder`, `JANELA_CHEIA`,
+`JANELA_MINIMA`, `FOLGA`, `QUADROS_POR_SEGUNDO`).
+
+**Ambiente** — vale nos dois sistemas e nos três backends; só se **nota** onde o
+encoder é o custo do ditado, que é a CPU.
+
+**Comandos** — a varredura que produziu a tabela, com o `whisper-cli` do
+whisper.cpp (o `-ac` é o mesmo `audio_ctx`):
+
+```bash
+for ac in 0 900 768 640 512; do
+  whisper-cli -m ggml-large-v3-turbo-q5_0.bin -f fala.wav \
+    -l pt -bo 1 -bs 1 -mc 0 -nt -t 16 -ac $ac
+done
+```
+
+
 # Histórico
 
 ## Histórico — a entrada mostrava o áudio de outra frase

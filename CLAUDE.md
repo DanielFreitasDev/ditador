@@ -784,6 +784,12 @@ investigação que produziu o conhecimento — sintoma, diagnóstico, o que se t
   com código zero e a unidade é `Restart=on-failure`: para o systemd o programa terminou de
   propósito, e ele fica parado até o próximo login. O `postinst` do `.deb` resolve isso com um
   bilhete em `/run`; o `instalar.sh` pergunta `is-active` antes e dá `restart` no fim.
+- **A `FOLGA` de `janela_do_encoder` (`src/stt.rs`) não desce sem medição nova.** A janela do encoder
+  acompanha o tamanho da fala em vez dos 30 s cheios, e é isso que faz o ditado na CPU caber em segundos;
+  mas encurtá-la demais não piora o texto — **faz o modelo repetir a mesma oração até encher o limite**.
+  O caso que reprova primeiro é a fala cortada no meio de uma palavra, que é o que acontece quando alguém
+  solta o atalho cedo. A tabela de medições está em `docs/LEARNINGS.md`, e o teste
+  `a_janela_cobre_o_dobro_do_que_a_pessoa_falou` tranca o número.
 - **Nenhum argumento de uma chamada que trave o estado pode vir de `lock(&shared)`.** O `MutexGuard`
   temporário vive até o fim da expressão, então `on_stt(Evento { ditado: b.estado().ditado_atual, .. })`
   trava o teste para sempre — sem falhar e sem mensagem. Tire o valor antes da chamada.
