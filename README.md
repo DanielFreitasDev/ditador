@@ -226,6 +226,26 @@ Com a entrega automática ligada, *Configurações → Área de transferência* 
 | **Ctrl+Shift+V** | os terminais do GNOME e do KDE |
 | **Digitar** | digita o texto tecla a tecla, **sem passar pela área de transferência** — o que você tinha copiado continua lá |
 
+No Linux quem tecla o Ctrl+V é o **ydotool**, e ele precisa do serviço
+`ydotoold` no ar. São dois pacotes separados no Debian e no Ubuntu, e o serviço
+precisa poder abrir o `/dev/uinput` — que é do `root`. Instalando só o cliente,
+a colagem aborta bem depois de a transcrição ficar pronta, com o texto já
+copiado. A receita completa, que também é o que o `ditador --diagnostico`
+imprime quando falta:
+
+```bash
+sudo apt install ydotool ydotoold
+# o /dev/uinput passa a ser do grupo input, que é o mesmo que o atalho já exige
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+  | sudo tee /etc/udev/rules.d/60-ditador-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=uinput
+# o pacote do Ubuntu não traz unidade nenhuma; esta roda como você, sem root
+mkdir -p ~/.config/systemd/user
+printf '[Unit]\nDescription=ydotoold\n[Service]\nExecStart=/usr/bin/ydotoold\nRestart=always\n[Install]\nWantedBy=default.target\n' \
+  > ~/.config/systemd/user/ydotoold.service
+systemctl --user daemon-reload && systemctl --user enable --now ydotoold
+```
+
 E **o que apertar depois de colar**: nada, Enter ou Ctrl+Enter. Com Enter, ditar
 num campo de chat vira falar e soltar — a mensagem já foi, sem você encostar no
 teclado. O Ctrl+Enter existe porque em vários programas é ele que envia e o Enter
@@ -742,7 +762,8 @@ quando o tema do sistema ainda não tem os nossos.
 
 - **Colagem automática** (desligada por padrão) depende de a janela em foco
   continuar sendo a sua — a sobreposição pode roubar o foco em alguns
-  gerenciadores de janela. No Linux ela também exige o `ydotool`; no Windows usa o
+  gerenciadores de janela. No Linux ela também exige o `ydotool` **e o serviço
+  `ydotoold`** (veja *Como o texto sai*); no Windows usa o
   `SendInput` do próprio sistema, que não alcança janelas abertas como
   administrador. A cópia automática não tem nenhum desses problemas.
 - **Manter o microfone aberto** (ligado por padrão) deixa o indicador de

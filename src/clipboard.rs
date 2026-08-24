@@ -11,7 +11,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::plataforma::clipboard as nativo;
 
-pub use nativo::{COMO_HABILITAR_A_COLAGEM, SOBRE_A_COLAGEM};
+pub use nativo::{COMO_HABILITAR_A_COLAGEM, COMO_LIGAR_A_COLAGEM, SOBRE_A_COLAGEM};
 
 static ARBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
 
@@ -82,4 +82,15 @@ pub fn submit(tecla: crate::config::TeclaDeEnvio) -> Result<()> {
 /// Aviso de que a cópia está indo por um caminho pior, se estiver.
 pub fn aviso_da_copia() -> Option<&'static str> {
     nativo::aviso_da_copia()
+}
+
+/// O que falta para a colagem automática funcionar, se falta algo.
+///
+/// Diferente do `COMO_HABILITAR_A_COLAGEM`, que responde "não dá para colar
+/// nesta máquina": aqui a resposta é sobre uma máquina onde dá, mas hoje não
+/// vai. No Linux é o serviço do `ydotool` fora do ar — o caso em que a chave
+/// está ligada, a tela promete entregar o texto e a colagem aborta com o texto
+/// já copiado. No Windows não há o que faltar.
+pub fn aviso_da_colagem() -> Option<&'static str> {
+    nativo::aviso_da_colagem()
 }

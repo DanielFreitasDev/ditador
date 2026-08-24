@@ -197,6 +197,22 @@ pub fn aviso_da_copia() -> Option<&'static str> {
     None
 }
 
+/// Não falta nada para colar aqui: o `SendInput` é do próprio sistema.
+///
+/// Existe porque no Linux falta — lá a colagem depende de um serviço de fora,
+/// que pode estar instalado e fora do ar —, e é a plataforma que responde essa
+/// pergunta para a interface e para o `--diagnostico`.
+pub fn aviso_da_colagem() -> Option<&'static str> {
+    None
+}
+
+/// Não há receita para imprimir onde não falta nada.
+///
+/// Ela existe para o `--diagnostico` poder ser escrito uma vez só, sem `cfg`
+/// nenhum: ele imprime esta receita exatamente quando o `aviso_da_colagem` tem
+/// algo a dizer, e aqui ele nunca tem.
+pub const COMO_LIGAR_A_COLAGEM: &str = "";
+
 /// Uma tecla a apertar ou a soltar, antes de virar `INPUT`.
 ///
 /// Existe para separar a decisão (que sequência mandar) do envio (o Win32), que

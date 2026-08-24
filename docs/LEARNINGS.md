@@ -730,6 +730,205 @@ gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/
   --method org.freedesktop.DBus.GetNameOwner io.github.danielfreitasdev.Ditador
 ```
 
+## Linux/colagem — `ydotool falhou (signal: 6)` numa máquina onde o `ydotool` está instalado
+
+**Contexto** — Ubuntu 24.04, Wayland, colagem automática ligada. O `ydotool`
+está no PATH e o Ditador oferece a chave "Entregar o texto na janela em foco"
+como disponível, porque a pergunta que ele fazia era só essa: o binário existe?
+
+**Sintoma** — a transcrição termina, o texto é copiado, e a tela de resultado
+aparece com a linha vermelha:
+
+```
+Copiei, mas não consegui colar: ydotool falhou (signal: 6)
+```
+
+À mão, o `ydotool` conta o resto — que o Ditador jogava fora:
+
+```
+$ ydotool key 29:1 47:1 47:0 29:0
+ydotool: notice: ydotoold backend unavailable (may have latency+delay issues)
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  failed to open uinput device
+```
+
+**Causa** — duas, em série:
+
+1. **No Debian e no Ubuntu o `ydotool` e o `ydotoold` são pacotes separados.**
+   `apt install ydotool` traz **só o cliente** (`dpkg -L ydotool` lista um
+   arquivo executável, `/usr/bin/ydotool`), e era essa a receita que o Ditador
+   dava em três lugares: no `COMO_HABILITAR_A_COLAGEM`, no `Suggests` do `.deb`
+   e no README.
+2. **Sem o serviço, o cliente tenta abrir o `/dev/uinput` sozinho** — e esse
+   arquivo é `crw------- root root` em instalação de fábrica. O `open` devolve
+   `EACCES`, o C++ do `ydotool` levanta uma exceção que ninguém captura, e o
+   processo morre de `SIGABRT`. Daí o `signal: 6`: não é defeito do Ditador nem
+   da combinação de teclas, é falta de permissão.
+
+O conselho da mensagem antiga (`systemctl --user status ydotool`) piorava a
+busca: **não existe unidade nenhuma** com esse nome. O `ydotoold` 0.1.8 do
+Ubuntu é um binário solto — sem serviço de sistema, sem serviço de usuário e sem
+opções de linha de comando —, e `systemctl` responder "Unit could not be found"
+manda procurar no lugar errado.
+
+**Solução** — do lado da máquina, instalar o serviço, dar ao `/dev/uinput` o
+grupo `input` (o mesmo que o atalho global já exige, então não é um privilégio
+novo) e rodar o `ydotoold` como usuário:
+
+```bash
+sudo apt install ydotool ydotoold
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+  | sudo tee /etc/udev/rules.d/60-ditador-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=uinput
+mkdir -p ~/.config/systemd/user
+printf '[Unit]\nDescription=ydotoold\n[Service]\nExecStart=/usr/bin/ydotoold\nRestart=always\n[Install]\nWantedBy=default.target\n' \
+  > ~/.config/systemd/user/ydotoold.service
+systemctl --user daemon-reload && systemctl --user enable --now ydotoold
+```
+
+Rodar o `ydotoold` como `root` também funcionaria, e é o que várias receitas da
+internet mandam fazer — mas aí o socket dele nasce fora do alcance de quem vai
+colar, e abri-lo para todos deixa um serviço de sistema com poder de digitar em
+qualquer janela de qualquer usuário. A regra do udev é o caminho mais barato.
+
+Do lado do Ditador, quatro mudanças:
+
+- `rodar_ydotool` passou a usar `output()` no lugar de `status()`. O código
+  antigo pedia `stderr(Stdio::piped())` e **nunca lia o cano** — a queixa do
+  `ydotool`, que é a única coisa que distingue uma falha da outra, ia para o
+  lixo, e sobrava um número de sinal na tela de quem precisava saber que pacote
+  instalar.
+- `servico_no_ar()` responde se o `ydotoold` está de pé, **conectando** ao
+  socket. Perguntar se o arquivo existe não serve: o `ydotoold` cria o socket
+  *antes* de abrir o `/dev/uinput` e morre ali quando não tem permissão,
+  deixando um `srw-------` para trás. O caminho é procurado em três lugares
+  (`$YDOTOOL_SOCKET`, `$XDG_RUNTIME_DIR/.ydotool_socket`,
+  `/tmp/.ydotool_socket`) porque mudou entre as versões e o binário não sabe
+  dizer qual é a dele — `ydotool --version` responde `Unknown tool`.
+- `diagnostico_da_falha` põe a causa na frente da frase, porque a tela de
+  resultado mostra uma linha só e corta o resto.
+- as três receitas escritas pela metade viraram `ydotool ydotoold`, e o
+  `--diagnostico` ganhou uma terceira resposta: instalado **e** no ar, instalado
+  e fora do ar (com a receita acima impressa), ou não instalado.
+
+**Prevenção** — quando a colagem depender de um programa de fora, "está no PATH"
+não é a pergunta certa: o que interessa é se ele **consegue teclar agora**. E
+receita de instalação escrita numa mensagem de erro é código — quando ela
+envelhece ou está pela metade, custa a mesma hora de investigação que um `unwrap`
+mal posto.
+
+**Arquivos** — `src/plataforma/linux/clipboard.rs`, `src/programas.rs`,
+`src/main.rs` (`--diagnostico`), `src/ui.rs`, `empacotar.sh`, `README.md`.
+
+**Ambiente** — Linux; Ubuntu 24.04 com `ydotool`/`ydotoold` 0.1.8. Do 1.0 em
+diante o `ydotoold` aceita `--socket-path`/`--socket-own` e honra a
+`YDOTOOL_SOCKET`, e algumas distribuições já empacotam uma unidade do systemd —
+confira antes de repetir a receita à risca.
+
+**Comandos**
+
+```bash
+ydotool key 29:1 47:1 47:0 29:0   # a queixa de verdade, que a interface resume
+ditador --diagnostico             # a linha "Colagem automática"
+systemctl --user status ydotoold
+ls -l /dev/uinput                 # tem de ser do grupo input, 0660
+```
+
+## Linux/colagem — o Ditador cola `2442` no lugar do texto (`ydotool` 0.1.8)
+
+**Contexto** — Ubuntu 24.04 com o `ydotool` 0.1.8 (o único que o noble
+empacota), serviço `ydotoold` no ar, colagem automática em Ctrl+V.
+
+**Sintoma** — a transcrição fica pronta, o texto vai para a área de
+transferência, e o que aparece na janela de destino é **`2442`**. Sempre o
+mesmo. Nenhum erro: o `ydotool` sai com código zero e o Ditador tem todo o
+direito de achar que colou.
+
+**Causa** — **o `ydotool` 1.0 reescreveu a sintaxe do `key`, e as duas não se
+encontram.** O Ditador mandava a de hoje:
+
+```
+ydotool key 29:1 47:1 47:0 29:0     # código do evdev e estado — sintaxe do 1.0
+```
+
+O 0.1.8 quer a de antes: nomes de tecla unidos por `+` (`ydotool key ctrl+v`).
+Recebendo `29:1`, ele não recusa — resolve o token pelo primeiro caractere,
+`2`, que é um nome de tecla válido. Lido o dispositivo virtual do `ydotoold`
+enquanto o comando roda:
+
+```
+key 29:1 47:1 47:0 29:0  ->  (3,1) (3,0) (5,1) (5,0) (5,1) (5,0) (3,1) (3,0)
+```
+
+Keycode 3 é `KEY_2` e 5 é `KEY_4`: **2, 4, 4, 2**. O Ctrl+V virou a digitação
+de quatro algarismos.
+
+As duas ajudas, lado a lado — é o que diz qual máquina é qual:
+
+```
+$ ydotool key --help          # 0.1.8
+Each key sequence can be any number of modifiers and keys, separated by plus (+)
+For example: alt+r Alt+F4 CTRL+alt+f3 aLT+1+2+3 ctrl+Backspace
+
+$ strings /usr/bin/ydotool    # 1.0.4
+Usage: key [OPTION]... [KEYCODES]...
+we're using raw keycodes now.
+Syntax: <keycode>:<pressed>
+```
+
+**Solução** — o Ditador passou a perguntar qual sintaxe a máquina entende e a
+falar a língua dela (`Dialeto::Nomes` / `Dialeto::Codigos`, em
+`src/plataforma/linux/clipboard.rs`). A sonda é o **`ydotool help`**, e cada
+detalhe dela é uma tentativa que não deu certo antes:
+
+- não há `--version`: `ydotool --version` responde `Unknown tool`;
+- o `ydotool key --help` **não** serve de sonda: no 1.0 ele falha quando o
+  serviço está fora do ar, e no 0.1.8 ele abre o backend antes de imprimir
+  qualquer coisa — sem serviço e sem permissão no `/dev/uinput`, aborta;
+- o `ydotool help` não abre backend nenhum e responde nas duas versões. O que se
+  procura na resposta é a menção a `YDOTOOL_SOCKET`, que nasceu na **mesma**
+  reescrita do 1.0 que trocou a sintaxe do `key` — o 0.1.8 não tem essa string
+  nem dentro do binário.
+
+Os nomes que o 0.1.8 aceita foram medidos, não deduzidos — ali `ctrl` é o Ctrl
+**esquerdo** (29), enquanto o nome do evdev para 29 é `leftctrl`:
+
+```
+key ctrl+v        -> CTRL:1 V:1 V:0 CTRL:0
+key shift+insert  -> SHIFT:1 INSERT:1 INSERT:0 SHIFT:0
+key ctrl+shift+v  -> CTRL:1 SHIFT:1 V:1 V:0 SHIFT:0 CTRL:0
+key ctrl+enter    -> CTRL:1 ENTER:1 ENTER:0 CTRL:0
+key enter         -> ENTER:1 ENTER:0
+```
+
+Ou seja: no dialeto de nomes quem aperta na ordem e solta na inversa é o próprio
+`ydotool`, e ele faz igual ao que o Ditador fazia à mão. O `ydotool type -- texto`
+do método *Digitar* funciona nas duas versões — foi conferido, inclusive com
+texto começando por hífen.
+
+**Prevenção** — programa de fora que **sai com código zero** fazendo a coisa
+errada não aparece em nenhum teste de erro, e é por isso que a sintaxe dele
+merece uma sonda de versão em vez de fé. E, quando o comportamento a conferir é
+"que teclas foram apertadas", dá para medir: o dispositivo virtual do
+`ydotoold` aparece em `/proc/bus/input/devices` e qualquer membro do grupo
+`input` pode ler os `struct input_event` que saem dele.
+
+**Arquivos** — `src/plataforma/linux/clipboard.rs` (`Dialeto`, `dialeto`,
+`Tecla`, `argumentos_da_combinacao`).
+
+**Ambiente** — Linux. Ubuntu 24.04 e Debian 12 empacotam o 0.1.8; do Ubuntu
+25.04 em diante é o 1.0.4. A entrada
+[o `ydotool falhou (signal: 6)`](#linuxcolagem--ydotool-falhou-signal-6-numa-máquina-onde-o-ydotool-está-instalado)
+é a outra metade desta história: a máquina em que isto foi descoberto tinha os
+dois problemas ao mesmo tempo.
+
+**Comandos**
+
+```bash
+ydotool help | grep -c YDOTOOL_SOCKET   # 1 = sintaxe de códigos (1.0+); 0 = de nomes (0.1.x)
+grep -A5 -i ydotool /proc/bus/input/devices   # acha o event* do dispositivo virtual
+```
+
 # Áudio
 
 ## Áudio — a "Gravação máxima" das configurações não valia até reiniciar o programa

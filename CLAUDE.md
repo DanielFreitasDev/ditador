@@ -682,6 +682,13 @@ investigação que produziu o conhecimento — sintoma, diagnóstico, o que se t
   para o resultado (372), a sobra daquele quadro dá 92 e a conta dava −6 — e o `set_min_height` do egui
   entra em pânico com altura negativa, derrubando o programa. Já derrubava na 0.6.0; só ninguém rodava
   o passeio numa build de depuração. Investigação em `docs/LEARNINGS.md`.
+- **A colagem no Linux fala duas sintaxes de `ydotool`, e a escolha não é opcional.** O 1.0 reescreveu o
+  `key`: `29:1 47:1 47:0 29:0` (códigos do evdev) só vale dele para cima, e o 0.1.8 — que é o do Ubuntu
+  24.04 — quer `ctrl+v`. O errado **não dá erro**: o 0.1.8 lê `29:1` como a tecla `2` e cola `2442`, com
+  código de saída zero. Quem decide é o `dialeto()`, perguntando ao `ydotool help`; não simplifique para
+  uma sintaxe só. E o `ydotool` sem o serviço `ydotoold` no ar tenta abrir o `/dev/uinput` sozinho e
+  morre de SIGABRT — são pacotes separados no Debian e no Ubuntu. Os dois casos estão em
+  `docs/LEARNINGS.md`.
 - **A correção de termos do `src/dicionario.rs` não pode voltar a ser gulosa.** Ela mede *todas* as
   janelas de *todas* as posições antes de decidir, e aceita por semelhança decrescente. Experimentando
   a janela maior primeiro — que é o que parece certo — "usei o kubernetes" virava "usei Kubernetes": a

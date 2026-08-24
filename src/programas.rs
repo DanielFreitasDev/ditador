@@ -45,12 +45,28 @@ pub fn sem_janela(cmd: &mut Command) -> &mut Command {
 
 /// O programa está no PATH?
 pub fn existe(programa: &'static str) -> bool {
-    if let Some(lembrado) = memoria().get(programa) {
+    lembrar(programa, || procurar(programa))
+}
+
+/// Guarda a resposta de uma pergunta sobre o ambiente, como o `existe` faz com
+/// o PATH.
+///
+/// Existe porque nem tudo que a interface pergunta a cada quadro é uma varredura
+/// do PATH: saber se o serviço do `ydotool` está no ar é uma conexão a um socket,
+/// e ela paga o mesmo preço de ser feita sessenta vezes por segundo. A `chave`
+/// não precisa ser um nome de programa, mas **divide a mesma memória com eles**:
+/// escolha uma que nenhum programa possa ter, ou a resposta de uma pergunta sai
+/// como se fosse a da outra.
+///
+/// A pergunta é feita com a memória **destravada**: quem responde pode chamar o
+/// `existe` no meio do caminho, e com o cadeado na mão isso travaria o programa.
+pub fn lembrar(chave: &'static str, responder: impl FnOnce() -> bool) -> bool {
+    if let Some(lembrado) = memoria().get(chave) {
         return *lembrado;
     }
-    let achado = procurar(programa);
-    memoria().insert(programa, achado);
-    achado
+    let resposta = responder();
+    memoria().insert(chave, resposta);
+    resposta
 }
 
 /// O primeiro da lista que estiver instalado.

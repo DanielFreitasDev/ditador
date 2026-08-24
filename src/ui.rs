@@ -1845,6 +1845,15 @@ impl App {
                 // mesmas no Linux e no Windows, e por isso quem as escreve é a
                 // plataforma.
                 ui.label(nota(clipboard::SOBRE_A_COLAGEM));
+                // E, quando o que falta é de agora — o serviço instalado mas
+                // fora do ar —, o aviso vem junto. Ligar a chave sem ele é
+                // prometer uma entrega que vai falhar com o texto já copiado, e
+                // a tela de resultado só conta isso depois.
+                if let Some(aviso) = clipboard::aviso_da_colagem() {
+                    ui.label(nota(format!(
+                        "{aviso} No terminal, ditador --diagnostico mostra como resolver."
+                    )));
+                }
             }
 
             ui.add_space(6.0);

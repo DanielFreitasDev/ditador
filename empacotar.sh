@@ -139,6 +139,9 @@ DEPS="$LIGADAS, $DLABERTAS"
 # O wl-clipboard não vem por padrão no Ubuntu, e o wl-copy é o caminho confiável
 # da cópia no Wayland (o arboard é só a reserva pelo XWayland). O ydotool é o
 # que faz a colagem automática, que é opcional — daí Suggests e não Recommends.
+# Os dois pacotes do ydotool, e não só o cliente: no Debian e no Ubuntu o serviço
+# (ydotoold) é pacote à parte, e sem ele o `ydotool` tenta abrir o /dev/uinput
+# sozinho e aborta. Sugerir só o primeiro entrega uma colagem que não cola.
 # O dpkg-shlibdeps pode já ter encontrado a biblioteca do backend; repetir o
 # nome no Depends não quebra nada, mas suja a saída do `apt show`.
 DEPS="$(printf '%s' "$DEPS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' \
@@ -155,7 +158,7 @@ Architecture: $ARQ
 Maintainer: Daniel Freitas <danielsfreitas97@gmail.com>
 Depends: $DEPS
 Recommends: curl | wget, wl-clipboard${SUGERE:+, $SUGERE}
-Suggests: ydotool
+Suggests: ydotool, ydotoold
 Provides: ditador-backend
 Conflicts: ditador-backend
 Replaces: ditador-backend

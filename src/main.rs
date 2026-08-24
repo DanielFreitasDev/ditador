@@ -763,17 +763,35 @@ fn diagnostico() -> Result<()> {
         clipboard::aviso_da_copia()
             .unwrap_or("funcionando pelo caminho nativo desta área de trabalho."),
     );
-    linha(
-        // Informativo quando não há: no Linux a colagem é um extra que o usuário
-        // escolhe instalar, e "não tem" não é defeito — dá para ditar sem ela.
-        clipboard::paste_available().then_some(true),
+    // Três respostas, e não duas. "Instalado" não quer dizer "funciona": no
+    // Linux o `ydotool` precisa de um serviço à parte, e sem ele a colagem
+    // aborta **depois** de a transcrição ficar pronta e ser copiada — hora
+    // péssima para descobrir que faltava um pacote.
+    let aviso_da_colagem = clipboard::aviso_da_colagem();
+    let colagem_ok = linha(
+        match (clipboard::paste_available(), aviso_da_colagem.is_some()) {
+            // Informativo quando não há: no Linux a colagem é um extra que o
+            // usuário escolhe instalar, e "não tem" não é defeito — dá para
+            // ditar sem ela.
+            (false, _) => None,
+            (true, true) => Some(false),
+            (true, false) => Some(true),
+        },
         "Colagem automática",
-        &if clipboard::paste_available() {
-            format!("disponível. {}", clipboard::SOBRE_A_COLAGEM)
-        } else {
-            clipboard::COMO_HABILITAR_A_COLAGEM.to_string()
+        &match (clipboard::paste_available(), aviso_da_colagem) {
+            (false, _) => clipboard::COMO_HABILITAR_A_COLAGEM.to_string(),
+            (true, Some(aviso)) => format!("{aviso}{}", clipboard::COMO_LIGAR_A_COLAGEM),
+            (true, None) => format!("disponível. {}", clipboard::SOBRE_A_COLAGEM),
         },
     );
+    // Entra no veredito só de quem ligou a chave. Sem ela, não ter colagem não é
+    // problema nenhum — dá para ditar a semana inteira sem ela; com ela, há um
+    // recurso ligado nas configurações que não vai acontecer, e terminar o
+    // relatório dizendo "tudo o que o Ditador precisa está no lugar" logo abaixo
+    // de um `!!` é a contradição que faz alguém parar de ler o relatório.
+    if config.auto_paste {
+        tudo_bem &= colagem_ok;
+    }
 
     // 5. Download do modelo.
     linha(
@@ -866,7 +884,12 @@ fn diagnostico() -> Result<()> {
         println!("Tudo o que o Ditador precisa está no lugar.");
         Ok(())
     } else {
-        println!("Há o que resolver acima antes de o ditado funcionar.");
+        // Não "antes de o ditado funcionar": desde que a colagem automática
+        // entrou no veredito, um relatório inteiro em `ok` pode terminar aqui só
+        // porque falta o serviço do ydotool — e aí o ditado funciona, o que não
+        // funciona é a entrega do texto. Quem diz o que é cada coisa é a linha
+        // marcada, não o fecho.
+        println!("Há o que resolver acima: o que está marcado com !! não está pronto.");
         std::process::exit(1);
     }
 }
