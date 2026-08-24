@@ -518,6 +518,20 @@ fn transcribe(
     // `is_non_speech_marker`, que é filtro nosso e não custa vocabulário.
     params.set_suppress_nst(false);
     params.set_temperature(0.0);
+    // Os dois limiares que decidem quando o decodificador desistiu e precisa
+    // tentar de novo com temperatura maior. O padrão do whisper.cpp (2,4 e
+    // -1,0) deixa passar uma janela quase silenciosa que satisfaz a conferência
+    // de repetição e sai com a despedida mais provável do treino — "Obrigado
+    // por assistir", "Legendas pela comunidade". Apertá-los é o que o
+    // OpenWhispr mediu em 4 814 ditados de verdade: a cauda alucinada caiu de
+    // 2,25% para 0,06%.
+    //
+    // Aqui eles valem dobrado, porque a `janela_do_encoder` encurtou a entrada
+    // do encoder — e o modo como uma janela curta demais falha é exatamente
+    // este, repetindo a mesma oração até encher o limite. Estes são os números
+    // que fazem o decodificador perceber e recomeçar em vez de entregar.
+    params.set_entropy_thold(2.8);
+    params.set_logprob_thold(-1.25);
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
