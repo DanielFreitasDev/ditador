@@ -482,6 +482,9 @@ impl Controller {
 
         {
             let mut state = lock(&self.shared);
+            // Antes de montar o rodapé, porque é o mesmo número que ele mostra:
+            // quanto se esperou por este texto.
+            state.julgar_a_espera(elapsed_ms);
             state.status = format!(
                 "{:.1} s · {} · {}",
                 elapsed_ms as f64 / 1000.0,

@@ -1155,11 +1155,16 @@ impl App {
     /// modelo faltando nascem juntos numa instalação nova — dividindo um campo
     /// só, um dos dois sumia sem nunca ter sido lido.
     fn rodape_do_atalho(&self, ui: &mut egui::Ui, state: &crate::state::Shared) {
-        let Some(aviso) = &state.aviso_atalho else {
-            return;
-        };
-        ui.add_space(8.0);
-        ui.label(RichText::new(aviso).size(12.5).color(paleta().erro));
+        // Os dois saem juntos quando os dois existem, e é de propósito: um fala
+        // do atalho que não responde, o outro da espera que não acaba, e quem
+        // tiver os dois problemas precisa saber dos dois.
+        for aviso in [&state.aviso_atalho, &state.aviso_desempenho]
+            .into_iter()
+            .flatten()
+        {
+            ui.add_space(8.0);
+            ui.label(RichText::new(aviso).size(12.5).color(paleta().erro));
+        }
     }
 
     /// A barra do download em curso, se houver um.

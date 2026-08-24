@@ -246,6 +246,17 @@ pub struct Shared {
     /// ilegível e modelo faltando — e, dividindo um campo só, o segundo apagava
     /// o primeiro antes de alguém ler.
     pub aviso_atalho: Option<String>,
+    /// Aviso de que o ditado está demorando mais do que se aguenta esperar.
+    ///
+    /// Campo próprio pelo mesmo motivo do `aviso_atalho`: dividindo o `message`
+    /// com o aviso do modelo faltando, um dos dois some antes de ser lido.
+    pub aviso_desempenho: Option<String>,
+    /// Quantas transcrições seguidas passaram do `LIMITE_DE_ESPERA_MS`.
+    ///
+    /// Duas em vez de uma porque a primeira lenta não quer dizer nada: o modelo
+    /// pode ter acabado de voltar da ociosidade, ou a máquina estar ocupada com
+    /// outra coisa. Duas seguidas já é o regime.
+    pub lentas_seguidas: u8,
     /// Qual atalho a tela está capturando agora, se algum.
     pub capturando: Option<QualAtalho>,
     pub copied_at: Option<Instant>,
@@ -296,6 +307,16 @@ pub struct Shared {
     pub versao_nova: Option<crate::versao::Novidade>,
 }
 
+/// A partir daqui a espera deixa de ser "o programa pensando" e vira defeito.
+///
+/// Dez segundos é o número em que uma frase ditada deixa de valer a pena contra
+/// digitá-la. Não é teto de nada — o programa continua funcionando —, é só onde
+/// o aviso passa a ser mais útil do que o silêncio.
+const LIMITE_DE_ESPERA_MS: u128 = 10_000;
+
+/// Quantas lentas seguidas antes de avisar. Ver `julgar_a_espera`.
+const LENTAS_ATE_AVISAR: u8 = 2;
+
 impl Shared {
     pub fn new(config: Config, devices: Vec<String>) -> Self {
         Self {
@@ -307,6 +328,8 @@ impl Shared {
             message: String::new(),
             status: String::new(),
             aviso_atalho: None,
+            aviso_desempenho: None,
+            lentas_seguidas: 0,
             capturando: None,
             copied_at: None,
             recording_since: None,
@@ -331,6 +354,47 @@ impl Shared {
     /// enquanto a janela do ditado anterior está por cima de quem fala agora.
     pub fn gravando(&self) -> bool {
         self.recording_since.is_some()
+    }
+
+    /// Pesa quanto se esperou por esta transcrição e acende o aviso, se for hora.
+    ///
+    /// Existe porque a causa mais cara de lentidão é invisível para quem usa:
+    /// numa máquina de vídeo integrado o `.deb` de GPU faz o Whisper rodar
+    /// **mais devagar** do que rodaria na CPU — medido numa UHD 770, 34 s
+    /// contra 15 s no mesmo encoder —, e nada na tela explica isso. O
+    /// `--diagnostico` dizia "tudo no lugar", porque de fato estava: nada
+    /// falhou, só demorou.
+    ///
+    /// O critério é o tempo de parede, e não a razão contra a duração da fala,
+    /// porque com o Whisper toda frase curta é mais lenta do que o tempo real —
+    /// o encoder tem piso. O que se pode prometer é quanto alguém espera
+    /// olhando para a tela, e é isso que se mede.
+    pub fn julgar_a_espera(&mut self, elapsed_ms: u128) {
+        if elapsed_ms < LIMITE_DE_ESPERA_MS {
+            // Voltou ao normal: some o aviso junto com a contagem. Sem isto ele
+            // ficaria na tela depois de a pessoa ter resolvido o problema, que
+            // é a pior hora para um conselho continuar aparecendo.
+            self.lentas_seguidas = 0;
+            self.aviso_desempenho = None;
+            return;
+        }
+        self.lentas_seguidas = self.lentas_seguidas.saturating_add(1);
+        if self.lentas_seguidas < LENTAS_ATE_AVISAR {
+            return;
+        }
+        let segundos = elapsed_ms / 1000;
+        self.aviso_desempenho = Some(if self.config.use_gpu {
+            format!(
+                "As transcrições estão levando {segundos} s. Se o vídeo desta \
+                 máquina for integrado, a GPU atrasa em vez de ajudar — \
+                 experimente desligar \"Usar a GPU\" em Configurações → Desempenho."
+            )
+        } else {
+            format!(
+                "As transcrições estão levando {segundos} s. Um modelo menor \
+                 resolve — veja Configurações → Modelo."
+            )
+        });
     }
 
     /// O estado como o D-Bus e o ícone da barra o publicam.
@@ -442,6 +506,67 @@ mod tests {
         let mut s = Shared::new(Config::default(), Vec::new());
         s.model = ModelState::Ready;
         s
+    }
+
+    #[test]
+    fn uma_transcricao_lenta_sozinha_nao_acende_o_aviso() {
+        // A primeira lenta não quer dizer nada: pode ser o modelo voltando da
+        // ociosidade, ou a máquina ocupada com outra coisa naquele instante.
+        let mut s = shared();
+        s.julgar_a_espera(LIMITE_DE_ESPERA_MS + 1);
+        assert!(s.aviso_desempenho.is_none());
+    }
+
+    #[test]
+    fn duas_lentas_seguidas_acendem_o_aviso() {
+        let mut s = shared();
+        s.julgar_a_espera(14_000);
+        s.julgar_a_espera(14_000);
+        assert!(s.aviso_desempenho.is_some());
+    }
+
+    #[test]
+    fn o_aviso_aponta_a_gpu_quando_ela_esta_ligada_e_o_modelo_quando_nao() {
+        // É a diferença que faz o aviso valer alguma coisa: numa máquina de
+        // vídeo integrado o conselho certo é desligar a GPU, e depois de
+        // desligada o único caminho que sobra é um modelo menor.
+        let mut com_gpu = shared();
+        com_gpu.config.use_gpu = true;
+        com_gpu.julgar_a_espera(14_000);
+        com_gpu.julgar_a_espera(14_000);
+        assert!(com_gpu.aviso_desempenho.as_deref().unwrap().contains("GPU"));
+
+        let mut sem_gpu = shared();
+        sem_gpu.config.use_gpu = false;
+        sem_gpu.julgar_a_espera(14_000);
+        sem_gpu.julgar_a_espera(14_000);
+        let aviso = sem_gpu.aviso_desempenho.as_deref().unwrap();
+        assert!(aviso.contains("modelo menor"), "aviso inesperado: {aviso}");
+    }
+
+    #[test]
+    fn uma_transcricao_rapida_apaga_o_aviso_e_zera_a_contagem() {
+        // Depois de a pessoa resolver o problema, o conselho continuar na tela
+        // é a pior hora possível para ele aparecer.
+        let mut s = shared();
+        s.julgar_a_espera(14_000);
+        s.julgar_a_espera(14_000);
+        assert!(s.aviso_desempenho.is_some());
+        s.julgar_a_espera(2_000);
+        assert!(s.aviso_desempenho.is_none());
+        assert_eq!(s.lentas_seguidas, 0);
+    }
+
+    #[test]
+    fn o_aviso_do_atalho_e_o_do_desempenho_nao_dividem_campo() {
+        // A armadilha registrada neste projeto: dois avisos num campo só, e o
+        // segundo apaga o primeiro antes de alguém ler.
+        let mut s = shared();
+        s.aviso_atalho = Some("sem acesso ao teclado".to_string());
+        s.julgar_a_espera(14_000);
+        s.julgar_a_espera(14_000);
+        assert!(s.aviso_atalho.is_some());
+        assert!(s.aviso_desempenho.is_some());
     }
 
     #[test]

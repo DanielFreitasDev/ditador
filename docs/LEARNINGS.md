@@ -1012,6 +1012,23 @@ recomendar o `.deb` de GPU para uma máquina de vídeo integrado, olhe a linha
 que o rótulo do `--diagnostico` (`backend Vulkan`) é o do **binário**, não o do
 que está em uso — quem responde isso é a linha `gpu=` do `ditador::stt`.
 
+Desde então o programa avisa sozinho: `Shared::julgar_a_espera` acende o
+`aviso_desempenho` depois de duas transcrições seguidas acima de dez segundos,
+e o texto muda conforme a GPU esteja ligada ou não. **O critério é tempo de
+parede, e não a razão contra a duração da fala** — com o Whisper toda frase
+curta é mais lenta do que o tempo real, porque o encoder tem piso; medir a razão
+faria o aviso acender em máquina sadia.
+
+⚠️ A tentativa óbvia — ler a própria linha `ggml_vulkan:` de dentro do programa e
+decidir por ela — **não funciona**, e não vale gastar tempo nela de novo. A linha
+sai em `DEBUG` pelo `whisper_rs::ggml_logging_hook`, que o `FILTRO_PADRAO` do
+`src/main.rs` mantém em `warn`: o registro é descartado na macro do `log`, antes
+de chegar a qualquer logger nosso. Vê-la exigiria subir o nível global para
+`debug` e filtrar depois — pagando a formatação de todo log do ggml em toda
+execução, que é justamente o que aquele filtro existe para evitar. E o ggml não
+publica essas capacidades por API: `ggml_backend_dev_props` traz nome, memória e
+tipo, mas nem `int dot` nem `matrix cores`, que ficam internos ao ggml-vulkan.
+
 **Arquivos** — `src/stt.rs` (`GPU_CAPABLE`, `BACKEND`, `params.use_gpu`),
 `src/config.rs` (`use_gpu`).
 

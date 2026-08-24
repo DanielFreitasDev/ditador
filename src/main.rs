@@ -404,7 +404,11 @@ fn executar(ao_iniciar: Option<IpcCommand>) -> Result<()> {
                         stt::BACKEND,
                         // Numa linha só: a resposta trafega pelo socket terminada
                         // por `\n`, e o cliente lê exatamente uma linha.
-                        match &estado.aviso_atalho {
+                        match estado
+                            .aviso_atalho
+                            .as_deref()
+                            .or(estado.aviso_desempenho.as_deref())
+                        {
                             Some(aviso) => format!(" · atenção: {aviso}"),
                             None => String::new(),
                         }
