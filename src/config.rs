@@ -573,12 +573,34 @@ impl Tema {
     }
 }
 
+/// Quantas threads o Whisper leva quando ninguém escolheu.
+///
+/// Três quartos dos núcleos, com teto de doze — a mesma conta do OpenWhispr,
+/// que é o projeto parecido com mais máquinas diferentes rodando atrás dela.
+/// O teto existe porque o ganho para de vir muito antes de a CPU acabar:
+/// medido num i7-13700T de 24 threads, com o `large-v3-turbo-q5_0`, o encoder
+/// leva 16,9 s com 8 threads, 16,1 s com 12, 15,2 s com 16 e 14,9 s com 20 —
+/// dobrar as threads depois dos doze compra 8%, e em troca não sobra máquina
+/// para mais nada enquanto o ditado é transcrito.
+///
+/// A fatia, e não o número cheio, é o que deixa a interface responder e o que
+/// evita acordar todos os núcleos de um notebook por uma frase de dois
+/// segundos. O piso de quatro é para a máquina pequena, onde três quartos
+/// arredondaria para baixo demais.
+fn threads_padrao(nucleos: usize) -> i32 {
+    const FATIA: f64 = 0.75;
+    const PISO: usize = 4;
+    const TETO: usize = 12;
+    ((nucleos as f64 * FATIA) as usize).clamp(PISO, TETO) as i32
+}
+
 impl Default for Config {
     fn default() -> Self {
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .clamp(1, 8) as i32;
+        let threads = threads_padrao(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
+        );
 
         Self {
             hotkey: vec!["KEY_PAUSE".to_string()],
@@ -836,6 +858,26 @@ mod testes_de_caminho {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn as_threads_padrao_deixam_folga_e_param_no_teto() {
+        // A máquina grande não leva tudo: doze é onde o ganho já parou de vir,
+        // e o resto da CPU continua servindo para a interface e para o que a
+        // pessoa estava fazendo enquanto ditava.
+        assert_eq!(threads_padrao(24), 12);
+        assert_eq!(threads_padrao(16), 12);
+        assert_eq!(threads_padrao(12), 9);
+        assert_eq!(threads_padrao(8), 6);
+    }
+
+    #[test]
+    fn a_maquina_pequena_nunca_fica_com_menos_do_que_o_piso() {
+        // Três quartos de dois é um, e transcrever com uma thread numa máquina
+        // de duas é pior do que disputá-las.
+        assert_eq!(threads_padrao(1), 4);
+        assert_eq!(threads_padrao(2), 4);
+        assert_eq!(threads_padrao(4), 4);
+    }
 
     #[test]
     fn config_antiga_ganha_a_aparencia_padrao() {
