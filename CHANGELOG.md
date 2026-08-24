@@ -13,6 +13,14 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.11.1 — 2026-08-24
+
+### Correções e ajustes
+
+- A colagem automática funciona com o ydotool que o Ubuntu 24.04 traz ([`b75a36e`](https://github.com/DanielFreitasDev/ditador/commit/b75a36ecdf5165b00fd840a666c098d2c6939874))
+
+[Todas as mudanças desde a `v0.11.0`](https://github.com/DanielFreitasDev/ditador/compare/v0.11.0...v0.11.1)
+
 ## 0.11.0 — 2026-08-24
 
 ### Novidades

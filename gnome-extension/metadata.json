@@ -2,7 +2,7 @@
     "uuid": "ditador@danielfreitasdev.github.io",
     "name": "Ditador",
     "description": "Integração do Ditador com o GNOME Shell: um indicador discreto na barra superior, os controles nas Configurações rápidas e um aviso na tela enquanto você dita.\n\nPrecisa do aplicativo Ditador instalado à parte. A extensão só conversa com ele pelo D-Bus — não grava áudio, não transcreve nada, não lê o teclado e não acessa a rede.",
-    "version-name": "0.11.0",
+    "version-name": "0.11.1",
     "shell-version": ["50"],
     "settings-schema": "org.gnome.shell.extensions.ditador",
     "url": "https://github.com/DanielFreitasDev/ditador"
