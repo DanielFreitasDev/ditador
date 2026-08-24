@@ -13,6 +13,19 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.11.0 — 2026-08-24
+
+### Novidades
+
+- O programa avisa quando a espera pelo texto deixa de ser normal ([`c7044f5`](https://github.com/DanielFreitasDev/ditador/commit/c7044f561927651788dbf8bd3fb702317236a84f))
+
+### Correções e ajustes
+
+- As threads padrão passam a acompanhar a máquina, com teto ([`9e878a7`](https://github.com/DanielFreitasDev/ditador/commit/9e878a7c05214f0157ccea63eca7753834007bb0))
+- O decodificador desiste mais cedo do que ele acha que é fala ([`1a07aa2`](https://github.com/DanielFreitasDev/ditador/commit/1a07aa2ef3ac02674f91bf46632a68260de72d21))
+
+[Todas as mudanças desde a `v0.10.0`](https://github.com/DanielFreitasDev/ditador/compare/v0.10.0...v0.11.0)
+
 ## 0.10.0 — 2026-08-24
 
 ### Novidades
