@@ -13,6 +13,19 @@ Como publicar uma versão: [`docs/CI-E-RELEASES.md`](docs/CI-E-RELEASES.md).
 
 <!-- as versões novas entram logo abaixo desta linha -->
 
+## 0.10.0 — 2026-08-24
+
+### Novidades
+
+- O encoder deixa de cobrar trinta segundos por uma frase de dois ([`2b7a368`](https://github.com/DanielFreitasDev/ditador/commit/2b7a3681d5d09cc6a8ef137fb8c06e649f90fbfc))
+
+### Correções e ajustes
+
+- O artefato interno da CI não entra mais nos anexos da release ([`9ea8ddb`](https://github.com/DanielFreitasDev/ditador/commit/9ea8ddb2eccfb650afc6e39a31e2a15078bcebe1))
+- O clippy 1.98 pede `as_chunks` onde o pedaço tem tamanho fixo ([`7cde855`](https://github.com/DanielFreitasDev/ditador/commit/7cde855bc8abdd6eefb1a50ccf86847413d67f6f))
+
+[Todas as mudanças desde a `v0.9.0`](https://github.com/DanielFreitasDev/ditador/compare/v0.9.0...v0.10.0)
+
 ## 0.9.0 — 2026-08-18
 
 ### Novidades
